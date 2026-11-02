@@ -12,7 +12,8 @@ public sealed class RemoteFileClient(string host, int port)
             .ForContext("RemotePath", request.Path).ForContext("Host", host).ForContext("Port", port);
         try
         {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(request.Command is "text" or "save" ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(30));
             using var socket = await Wire.ConnectAsync(host, port, timeout.Token);
             var stream = socket.GetStream();
             log.Information("开始远程文件操作");

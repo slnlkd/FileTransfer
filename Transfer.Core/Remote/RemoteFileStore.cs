@@ -7,7 +7,7 @@ namespace Transfer.Core.Remote;
 
 public sealed class RemoteFileStore
 {
-    public const int TextLimit = 1024 * 1024;
+    public const int TextLimit = 10 * 1024 * 1024;
     public const long ImageLimit = 64 * 1024 * 1024;
     public string Root { get; }
     public SemaphoreSlim Mutation { get; } = new(1);
@@ -78,7 +78,7 @@ public sealed class RemoteFileStore
     private static async Task<byte[]> ReadTextBytesAsync(string path, CancellationToken ct)
     {
         await using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 65536, true);
-        if (input.Length > TextLimit) throw new IOException("文本预览最多支持 1 MiB，请缩小文件后查看");
+        if (input.Length > TextLimit) throw new IOException($"文本预览最多支持 10 MiB，当前文件 {input.Length / 1048576d:F1} MiB，请缩小文件后查看");
         using var memory = new MemoryStream();
         var buffer = new byte[65536];
         int n;
@@ -108,7 +108,7 @@ public sealed class RemoteFileStore
         if (Convert.ToHexString(SHA256.HashData(original)) != request.Version) throw new IOException("文件已被其他程序修改，请重新打开后再编辑");
         var encoding = FromId(request.EncodingName);
         byte[] body = encoding.GetPreamble().Concat(encoding.GetBytes(request.Text)).ToArray();
-        if (body.Length > TextLimit) throw new IOException("保存文本超过 1 MiB 上限");
+        if (body.Length > TextLimit) throw new IOException($"保存文本超过 10 MiB 上限（当前 {body.Length / 1048576d:F1} MiB）");
         await AtomicWriteAsync(path, body, request.Version, ct);
         Log.Information("远程文本保存成功；路径 {RemotePath}，长度 {Length}，编码 {Encoding}", request.Path, body.Length, request.EncodingName);
         return new(true, Version: Convert.ToHexString(SHA256.HashData(body)), EncodingName: request.EncodingName);

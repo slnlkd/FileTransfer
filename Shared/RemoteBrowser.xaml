@@ -1,18 +1,296 @@
-<UserControl x:Class="RemoteFiles.Desktop.RemoteBrowser" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:RemoteFiles.Desktop">
-<UserControl.Resources><local:FileIconConverter x:Key="FileIcon"/></UserControl.Resources>
-<DockPanel Margin="8">
- <StackPanel DockPanel.Dock="Top">
-  <WrapPanel><Button Content="刷新当前目录" Click="Refresh_Click"/><Button Content="返回上一级" Click="Parent_Click"/><Button Content="上传文件到当前目录" Click="Upload_Click"/><Button Content="新建文件夹" Click="NewFolder_Click"/><TextBox x:Name="NewFolderBox" Width="160" ToolTip="新建文件夹名称"/></WrapPanel>
-  <TextBlock x:Name="PathText" Text="尚未连接" Margin="4,8" TextWrapping="Wrap"/>
- </StackPanel>
- <StackPanel DockPanel.Dock="Bottom"><ProgressBar x:Name="UploadProgress" Maximum="100" Height="10"/><TextBlock x:Name="StatusText" Text="右键文件或文件夹添加压缩包；右键 ZIP 下载；右键文件可删除服务端文件。" Margin="4,8" TextWrapping="Wrap"/></StackPanel>
- <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="260"/><ColumnDefinition Width="5"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-  <TreeView x:Name="FolderTree" SelectedItemChanged="Tree_Selected" MouseDoubleClick="Tree_DoubleClick"/>
-  <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"/>
-  <DataGrid x:Name="FileGrid" Grid.Column="2" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" MouseDoubleClick="Grid_DoubleClick" Sorting="Grid_Sorting">
-   <DataGrid.Columns><DataGridTemplateColumn Header="名称" SortMemberPath="Name" Width="*"><DataGridTemplateColumn.CellTemplate><DataTemplate><StackPanel Orientation="Horizontal"><Image Width="18" Height="18" Margin="2,0,6,0" Source="{Binding Converter={StaticResource FileIcon}}"/><TextBlock Text="{Binding Name}" VerticalAlignment="Center"/></StackPanel></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn><DataGridTextColumn Header="类型" Binding="{Binding Kind}" Width="75"/><DataGridTextColumn Header="大小" Binding="{Binding Size}" Width="100"/><DataGridTextColumn Header="创建时间" Binding="{Binding CreatedLocal, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="160"/><DataGridTextColumn Header="修改时间" Binding="{Binding ModifiedLocal, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="160"/></DataGrid.Columns>
-  </DataGrid>
- </Grid>
-</DockPanel>
-</UserControl>
+<UserControl x:Class="RemoteFiles.Desktop.RemoteBrowser"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:RemoteFiles.Desktop">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Theme/Controls.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <local:FileIconConverter x:Key="FileIcon" />
+            <local:FileKindConverter x:Key="FileKind" />
+            <local:FileSizeConverter x:Key="FileSize" />
+        </ResourceDictionary>
+    </UserControl.Resources>
 
+    <DockPanel>
+        <!-- 工具栏 -->
+        <Border DockPanel.Dock="Top"
+                Padding="8,6"
+                Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource LineBrush}"
+                BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                    <Button Margin="0,0,4,0"
+                            Click="Parent_Click"
+                            Content="上一级"
+                            ToolTip="返回上一级目录" />
+                    <Button Click="Refresh_Click"
+                            Content="刷新"
+                            ToolTip="刷新当前目录" />
+                </StackPanel>
+
+                <Border Grid.Column="1"
+                        Width="1" Height="18"
+                        Margin="8,0"
+                        VerticalAlignment="Center"
+                        Background="{StaticResource LineBrush}" />
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                    <Button Margin="0,0,4,0"
+                            Click="Upload_Click"
+                            Content="上传"
+                            Style="{StaticResource PrimaryButton}"
+                            ToolTip="上传文件到当前目录" />
+                    <Button Margin="0,0,6,0"
+                            Click="NewFolder_Click"
+                            Content="新建文件夹" />
+                    <TextBox x:Name="NewFolderBox"
+                             Width="150"
+                             ToolTip="新建文件夹名称" />
+                </StackPanel>
+
+                <TextBlock Grid.Column="3"
+                           x:Name="ItemCountText"
+                           Margin="12,0,0,0"
+                           VerticalAlignment="Center"
+                           FontSize="11"
+                           Foreground="{StaticResource MutedBrush}" />
+            </Grid>
+        </Border>
+
+        <!-- 路径 -->
+        <Border DockPanel.Dock="Top"
+                Padding="8,4"
+                Background="{StaticResource HeaderBrush}"
+                BorderBrush="{StaticResource LineBrush}"
+                BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="PathText"
+                           Grid.Column="0"
+                           VerticalAlignment="Center"
+                           FontSize="12"
+                           Text="尚未连接"
+                           TextTrimming="CharacterEllipsis" />
+                <TextBlock x:Name="EndpointText"
+                           Grid.Column="1"
+                           Margin="12,0,0,0"
+                           VerticalAlignment="Center"
+                           FontFamily="{StaticResource MonoFontFamily}"
+                           FontSize="11"
+                           Foreground="{StaticResource MutedBrush}" />
+            </Grid>
+        </Border>
+
+        <!-- 浏览器状态 / 传输进度 -->
+        <Border DockPanel.Dock="Bottom"
+                Height="24"
+                Margin="0,4,0,0"
+                Padding="2,0"
+                Background="Transparent">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Grid Grid.Column="0" VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Ellipse x:Name="BrowserStatusDot"
+                             Width="5" Height="5"
+                             Margin="0,0,6,0"
+                             Fill="{StaticResource MutedBrush}" />
+                    <TextBlock Grid.Column="1"
+                               x:Name="StatusText"
+                               VerticalAlignment="Center"
+                               FontSize="11"
+                               Foreground="{StaticResource MutedBrush}"
+                               Text="右键查看更多操作"
+                               TextTrimming="CharacterEllipsis" />
+                </Grid>
+                <StackPanel Grid.Column="1"
+                            x:Name="ProgressPanel"
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal"
+                            Visibility="Collapsed">
+                    <TextBlock x:Name="UploadText"
+                               MaxWidth="220"
+                               Margin="0,0,8,0"
+                               VerticalAlignment="Center"
+                               FontSize="11"
+                               Foreground="{StaticResource MutedBrush}"
+                               TextTrimming="CharacterEllipsis" />
+                    <ProgressBar x:Name="UploadProgress"
+                                 Width="140" Height="6"
+                                 Maximum="100" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 树 + 文件列表 -->
+        <Grid Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="240" />
+                <ColumnDefinition Width="5" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0"
+                    Background="{StaticResource SurfaceBrush}"
+                    BorderBrush="{StaticResource LineBrush}"
+                    BorderThickness="1"
+                    CornerRadius="2">
+                <DockPanel>
+                    <Border DockPanel.Dock="Top"
+                            Height="28"
+                            Padding="8,0"
+                            Background="{StaticResource HeaderBrush}"
+                            BorderBrush="{StaticResource LineBrush}"
+                            BorderThickness="0,0,0,1">
+                        <TextBlock VerticalAlignment="Center"
+                                   FontSize="11"
+                                   FontWeight="SemiBold"
+                                   Foreground="{StaticResource MutedBrush}"
+                                   Text="目录" />
+                    </Border>
+                    <TreeView x:Name="FolderTree"
+                              Padding="6,4"
+                              MouseDoubleClick="Tree_DoubleClick"
+                              SelectedItemChanged="Tree_Selected" />
+                </DockPanel>
+            </Border>
+
+            <GridSplitter Grid.Column="1"
+                          Width="5"
+                          HorizontalAlignment="Stretch"
+                          Background="{StaticResource CanvasBrush}" />
+
+            <Grid Grid.Column="2">
+                <DataGrid x:Name="FileGrid"
+                          AutoGenerateColumns="False"
+                          IsReadOnly="True"
+                          MouseDoubleClick="Grid_DoubleClick"
+                          SelectionMode="Single"
+                          Sorting="Grid_Sorting">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="名称" SortMemberPath="Name" Width="*">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Image Width="16" Height="16"
+                                               Margin="0,0,6,0"
+                                               VerticalAlignment="Center"
+                                               Source="{Binding Converter={StaticResource FileIcon}}" />
+                                        <TextBlock Grid.Column="1"
+                                                   VerticalAlignment="Center"
+                                                   Text="{Binding Name}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding Name}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTextColumn Header="类型"
+                                            Width="80"
+                                            Binding="{Binding Converter={StaticResource FileKind}}"
+                                            SortMemberPath="Kind">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="VerticalAlignment" Value="Center" />
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+
+                        <DataGridTextColumn Header="大小"
+                                            Width="90"
+                                            Binding="{Binding Converter={StaticResource FileSize}}"
+                                            SortMemberPath="Size">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="HorizontalAlignment" Value="Right" />
+                                    <Setter Property="VerticalAlignment" Value="Center" />
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+
+                        <DataGridTextColumn Header="创建时间"
+                                            Width="140"
+                                            Binding="{Binding CreatedLocal, StringFormat={}{0:yyyy.MM.dd HH:mm}}"
+                                            SortMemberPath="CreatedLocal">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="VerticalAlignment" Value="Center" />
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+
+                        <DataGridTextColumn Header="修改时间"
+                                            Width="140"
+                                            Binding="{Binding ModifiedLocal, StringFormat={}{0:yyyy.MM.dd HH:mm}}"
+                                            SortMemberPath="ModifiedLocal">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="VerticalAlignment" Value="Center" />
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+
+                <Border x:Name="EmptyState"
+                        Margin="1,29,1,1"
+                        Padding="0,36,0,0"
+                        Background="{StaticResource SurfaceBrush}">
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Top">
+                        <TextBlock x:Name="EmptyText"
+                                   HorizontalAlignment="Center"
+                                   FontSize="12"
+                                   Foreground="{StaticResource MutedBrush}"
+                                   Text="连接后可浏览共享目录" />
+                        <Button x:Name="EmptyUploadButton"
+                                Margin="0,12,0,0"
+                                HorizontalAlignment="Center"
+                                Click="Upload_Click"
+                                Content="上传文件"
+                                Style="{StaticResource PrimaryButton}"
+                                Visibility="Collapsed" />
+                    </StackPanel>
+                </Border>
+
+                <Border x:Name="BusyOverlay"
+                        Margin="1,29,1,1"
+                        Background="#CCFFFFFF"
+                        Visibility="Collapsed">
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <ProgressBar Width="180" Height="4" IsIndeterminate="True" />
+                        <TextBlock x:Name="BusyText"
+                                   Margin="0,10,0,0"
+                                   HorizontalAlignment="Center"
+                                   FontSize="11"
+                                   Foreground="{StaticResource MutedBrush}"
+                                   Text="正在处理…" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Grid>
+    </DockPanel>
+</UserControl>

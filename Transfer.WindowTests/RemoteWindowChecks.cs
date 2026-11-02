@@ -53,6 +53,9 @@ internal static class RemoteWindowChecks
         var browser = (ClientBrowser)client.FindName("Browser"); var grid = (DataGrid)browser.FindName("FileGrid");
         var tree = (TreeView)browser.FindName("FolderTree");
         await WaitAsync(() => grid.Items.Count == 4 && ((Button)client.FindName("ConnectButton")).IsEnabled);
+        var rootOrder = grid.Items.Cast<RemoteEntry>().ToArray();
+        if (rootOrder.SkipWhile(e => e.IsDirectory).Any(e => e.IsDirectory))
+            throw new Exception("按名称排序未把文件夹排在文件前");
         if (grid.Columns[0].SortDirection != System.ComponentModel.ListSortDirection.Ascending)
             throw new Exception("初次连接未默认按名称升序排序");
         CheckNamePresentation(grid);
@@ -199,9 +202,14 @@ internal static class RemoteWindowChecks
         var header = FindHeader(grid, "名称") ?? throw new Exception("找不到名称列标题");
         var click = typeof(System.Windows.Controls.Primitives.DataGridColumnHeader).GetMethod("OnClick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
         click.Invoke(header, null);
+        header.UpdateLayout();
+        var nameArrow = header.Template.FindName("SortArrow", header) as System.Windows.Shapes.Path;
+        if (nameArrow?.Visibility != Visibility.Visible) throw new Exception("名称升序未显示排序箭头");
         if (!grid.Items.Cast<RemoteEntry>().Select(e => e.Name).SequenceEqual(new[] { "1", "2", "10", "A6-DPQG-009", "A6-DPQG-020" }))
             throw new Exception("名称升序未按数字大小排序");
         click.Invoke(header, null);
+        header.UpdateLayout();
+        if (nameArrow?.Visibility != Visibility.Visible) throw new Exception("名称降序未显示排序箭头");
         if (!grid.Items.Cast<RemoteEntry>().Select(e => e.Name).SequenceEqual(new[] { "A6-DPQG-020", "A6-DPQG-009", "10", "2", "1" }))
             throw new Exception("名称降序未按数字大小排序");
         grid.UpdateLayout();
@@ -214,6 +222,11 @@ internal static class RemoteWindowChecks
         var typeHeader = FindHeader(grid, "类型") ?? throw new Exception("找不到类型列标题");
         click.Invoke(typeHeader, null);
         if (grid.Columns[1].SortDirection == null) throw new Exception("切换其他列后无法排序");
+        typeHeader.UpdateLayout();
+        header.UpdateLayout();
+        var typeArrow = typeHeader.Template.FindName("SortArrow", typeHeader) as System.Windows.Shapes.Path;
+        if (typeArrow?.Visibility != Visibility.Visible || nameArrow?.Visibility != Visibility.Collapsed)
+            throw new Exception("切换排序列后箭头状态错误");
         Console.WriteLine("通过：名称自然排序、其他列排序及常见文件类型图标");
     }
     private static System.Windows.Controls.Primitives.DataGridColumnHeader? FindHeader(DependencyObject parent, string label)

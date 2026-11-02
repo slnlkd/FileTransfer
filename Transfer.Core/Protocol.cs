@@ -1,7 +1,9 @@
 ﻿using Serilog;
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Unicode;
 
 namespace Transfer.Core;
 public record SharedFile(string Id, string Name, long Length, string Sha256, long ModifiedTicks, string? RelativePath = null, bool IsDirectory = false);
@@ -15,9 +17,15 @@ public record TransferProgress(string FileId, string Name, string Session, long 
 
 public static class Wire
 {
+    private const int MaxHeaderBytes = 64 * 1024 * 1024;
+    // 中文按 UTF-8 直接写入协议头，避免 \uXXXX 转义把 10 MiB 文本撑到 20 MiB 以上。
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        Encoder = JavaScriptEncoder.Create(UnicodeRanges.All)
+    };
     public static async Task WriteAsync<T>(Stream stream, T value, CancellationToken ct = default)
     {
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(value);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions);
         Log.Verbose("发送协议头；类型 {HeaderType}，字节数 {HeaderBytes}", typeof(T).Name, bytes.Length);
         await stream.WriteAsync(bytes, ct);
         await stream.WriteAsync(new byte[] { 10 }, ct);
@@ -32,11 +40,11 @@ public static class Wire
         {
             if (await stream.ReadAsync(one, ct) == 0) throw new EndOfStreamException("连接已关闭");
             if (one[0] == 10) break;
-            if (header.Length >= 16 * 1024 * 1024) throw new InvalidDataException("协议头过大");
+            if (header.Length >= MaxHeaderBytes) throw new InvalidDataException("协议头过大");
             header.WriteByte(one[0]);
         }
         Log.Verbose("接收协议头；类型 {HeaderType}，字节数 {HeaderBytes}", typeof(T).Name, header.Length);
-        return JsonSerializer.Deserialize<T>(header.ToArray()) ?? throw new InvalidDataException("协议数据为空");
+        return JsonSerializer.Deserialize<T>(header.ToArray(), JsonOptions) ?? throw new InvalidDataException("协议数据为空");
     }
     public static async Task<TcpClient> ConnectAsync(string host, int port, CancellationToken ct)
     {
