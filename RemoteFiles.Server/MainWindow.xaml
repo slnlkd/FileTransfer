@@ -1,0 +1,21 @@
+﻿<Window x:Class="RemoteFiles.Server.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:RemoteFiles.Desktop" Title="远程文件管理 · 服务端" Width="1280" Height="820" MinWidth="1000" MinHeight="600" Background="#F3F5F8">
+<DockPanel Margin="16">
+ <StackPanel DockPanel.Dock="Top"><TextBlock Text="远程文件管理 / 服务端" FontSize="24" FontWeight="SemiBold" Margin="0,0,0,12"/>
+  <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="共享根目录" VerticalAlignment="Center"/><TextBox x:Name="RootBox" Grid.Column="1" Margin="8,0" IsReadOnly="True"/><Button x:Name="ChooseButton" Grid.Column="2" Content="选择文件夹" Click="Choose_Click"/></Grid>
+  <WrapPanel><TextBlock Text="TCP 端口" VerticalAlignment="Center"/><TextBox x:Name="PortBox" Text="9501" Width="85" Margin="8,0"/><Button x:Name="StartButton" Content="启动服务" Click="Start_Click"/><Button x:Name="StopButton" Content="停止服务" IsEnabled="False" Click="Stop_Click"/><Button Content="打开日志目录" Click="Logs_Click"/></WrapPanel>
+  <TextBlock x:Name="StatusText" Text="选择共享根目录后启动；仅在选定目录内提供文件读写和程序管理。" TextWrapping="Wrap" Margin="4,8"/>
+ </StackPanel>
+ <StackPanel DockPanel.Dock="Bottom">
+  <TextBlock Text="压缩 / 下载进度（各客户端请求）" Margin="4"/>
+  <DataGrid x:Name="TransferGrid" Height="130" AutoGenerateColumns="False" IsReadOnly="True">
+   <DataGrid.Columns>
+    <DataGridTextColumn Header="路径" Binding="{Binding Path}" Width="*"/>
+    <DataGridTextColumn Header="阶段" Binding="{Binding Stage}" Width="240"/>
+    <DataGridTemplateColumn Header="进度" Width="200"><DataGridTemplateColumn.CellTemplate><DataTemplate><Grid><ProgressBar Minimum="0" Maximum="100" Value="{Binding Percent}" Height="20"/><TextBlock Text="{Binding Percent, StringFormat={}{0:F1}%}" HorizontalAlignment="Center"/></Grid></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
+   </DataGrid.Columns>
+  </DataGrid>
+  <TextBox x:Name="ActivityBox" Height="65" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
+ </StackPanel>
+ <local:RemoteBrowser x:Name="Browser"/>
+</DockPanel>
+</Window>

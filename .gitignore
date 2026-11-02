@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+*.user
+*.part
+*.part.json
+*.part.lock
+.local/
+artifacts/

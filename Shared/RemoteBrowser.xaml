@@ -1,0 +1,18 @@
+<UserControl x:Class="RemoteFiles.Desktop.RemoteBrowser" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:RemoteFiles.Desktop">
+<UserControl.Resources><local:FileIconConverter x:Key="FileIcon"/></UserControl.Resources>
+<DockPanel Margin="8">
+ <StackPanel DockPanel.Dock="Top">
+  <WrapPanel><Button Content="刷新当前目录" Click="Refresh_Click"/><Button Content="返回上一级" Click="Parent_Click"/><Button Content="上传文件到当前目录" Click="Upload_Click"/><Button Content="新建文件夹" Click="NewFolder_Click"/><TextBox x:Name="NewFolderBox" Width="160" ToolTip="新建文件夹名称"/></WrapPanel>
+  <TextBlock x:Name="PathText" Text="尚未连接" Margin="4,8" TextWrapping="Wrap"/>
+ </StackPanel>
+ <StackPanel DockPanel.Dock="Bottom"><ProgressBar x:Name="UploadProgress" Maximum="100" Height="10"/><TextBlock x:Name="StatusText" Text="右键文件或文件夹添加压缩包；右键 ZIP 下载；右键文件可删除服务端文件。" Margin="4,8" TextWrapping="Wrap"/></StackPanel>
+ <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="260"/><ColumnDefinition Width="5"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+  <TreeView x:Name="FolderTree" SelectedItemChanged="Tree_Selected" MouseDoubleClick="Tree_DoubleClick"/>
+  <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"/>
+  <DataGrid x:Name="FileGrid" Grid.Column="2" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" MouseDoubleClick="Grid_DoubleClick" Sorting="Grid_Sorting">
+   <DataGrid.Columns><DataGridTemplateColumn Header="名称" SortMemberPath="Name" Width="*"><DataGridTemplateColumn.CellTemplate><DataTemplate><StackPanel Orientation="Horizontal"><Image Width="18" Height="18" Margin="2,0,6,0" Source="{Binding Converter={StaticResource FileIcon}}"/><TextBlock Text="{Binding Name}" VerticalAlignment="Center"/></StackPanel></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn><DataGridTextColumn Header="类型" Binding="{Binding Kind}" Width="75"/><DataGridTextColumn Header="大小" Binding="{Binding Size}" Width="100"/><DataGridTextColumn Header="创建时间" Binding="{Binding CreatedLocal, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="160"/><DataGridTextColumn Header="修改时间" Binding="{Binding ModifiedLocal, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="160"/></DataGrid.Columns>
+  </DataGrid>
+ </Grid>
+</DockPanel>
+</UserControl>
+

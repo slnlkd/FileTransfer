@@ -1,0 +1,12 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<TargetFramework>net10.0-windows</TargetFramework>
+		<UseWPF>true</UseWPF>
+		<StartupObject>Transfer.WindowTests.Program</StartupObject>
+	</PropertyGroup>
+	<ItemGroup>
+		<ProjectReference Include="../Transfer.Server/Transfer.Server.csproj"/>
+		<ProjectReference Include="../Transfer.Client/Transfer.Client.csproj"/>
+	<ProjectReference Include="../RemoteFiles.Server/RemoteFiles.Server.csproj" Aliases="RemoteServer"/><ProjectReference Include="../RemoteFiles.Client/RemoteFiles.Client.csproj" Aliases="RemoteClient"/></ItemGroup>
+</Project>

@@ -1,0 +1,9 @@
+﻿<Window x:Class="RemoteFiles.Client.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:RemoteFiles.Desktop" Title="远程文件管理 · 客户端" Width="1280" Height="820" MinWidth="1000" MinHeight="600" Background="#F3F5F8">
+<DockPanel Margin="16">
+ <StackPanel DockPanel.Dock="Top"><TextBlock Text="远程文件管理 / 客户端" FontSize="24" FontWeight="SemiBold" Margin="0,0,0,12"/>
+ <WrapPanel><TextBlock Text="服务端 IP" VerticalAlignment="Center"/><TextBox x:Name="HostBox" Text="127.0.0.1" Width="180" Margin="8,0"/><TextBlock Text="TCP 端口" VerticalAlignment="Center"/><TextBox x:Name="PortBox" Text="9501" Width="85" Margin="8,0"/><Button x:Name="ConnectButton" Content="连接 / 刷新根目录" Click="Connect_Click"/><Button Content="打开日志目录" Click="Logs_Click"/></WrapPanel>
+ <TextBlock x:Name="StatusText" Text="连接后可浏览共享目录；文本支持 txt / log / json，图片支持 jpg / png，程序支持 exe。" TextWrapping="Wrap" Margin="4,8"/>
+ </StackPanel>
+ <local:RemoteBrowser x:Name="Browser"/>
+</DockPanel>
+</Window>
