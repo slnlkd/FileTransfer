@@ -12,16 +12,41 @@
 ## 环境要求
 
 - Windows 10 / 11
-- .NET 10 SDK（从源码构建）
-- 或使用支持 .NET 10 的 Visual Studio，并安装“.NET 桌面开发”工作负载
+- 运行**完整版**发布包：无需安装 .NET 运行时
+- 运行**精简版**发布包：需要安装 [.NET 10 桌面运行时](https://dotnet.microsoft.com/download/dotnet/10.0)
+- 从源码构建：需要 .NET 10 SDK，或安装支持 .NET 10 的 Visual Studio 及“.NET 桌面开发”工作负载
+
+## 下载发布包
+
+每个版本提供两个压缩包，按需选择：
+
+| 发布包 | 体积 | 说明 |
+| --- | --- | --- |
+| `FileTransfer-<版本>-win-x64.zip` | 约 65 MB | 完整版。四个程序共用一份 .NET 运行时，解压即用，无需安装 .NET。 |
+| `FileTransfer-<版本>-win-x64-framework.zip` | 约 4 MB | 精简版。框架依赖，四个程序分别放在独立目录，运行前需安装 .NET 10 桌面运行时。 |
+
+完整版解压后，四个程序位于同一个目录：
+
+```text
+FileTransfer/
+├─ RemoteFiles.Client.exe   远程文件管理客户端
+├─ RemoteFiles.Server.exe   远程文件管理服务端
+├─ Transfer.Client.exe      文件传输客户端
+├─ Transfer.Server.exe      文件传输服务端
+└─ README.md
+```
+
+这些程序共用同目录下的运行时文件，请**不要单独移动某个 exe**，否则可能无法启动。精简版则可以把单个程序目录整体拷走使用。
 
 ## 快速开始
 
-在项目目录打开 PowerShell，先构建解决方案：
+从源码运行时，先在项目目录打开 PowerShell 并构建解决方案：
 
 ```powershell
 dotnet build .\FileTransfer.sln -c Release
 ```
+
+使用发布包时无需构建，解压后直接双击对应的 `.exe`：先启动服务端并设置共享目录和端口，再用客户端连接服务端 IP 和端口。
 
 ### 文件传输
 

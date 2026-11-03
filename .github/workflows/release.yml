@@ -27,41 +27,72 @@ jobs:
       - name: Build
         run: dotnet build .\FileTransfer.sln -c Release --no-restore
 
-      - name: Publish RemoteFiles client
-        run: dotnet publish .\RemoteFiles.Client\RemoteFiles.Client.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o .\publish\RemoteFiles.Client
+      # 主包：四个程序共用一个自包含运行时目录，用户无需预装 .NET。
+      - name: Publish shared self-contained bundle
+        shell: pwsh
+        run: |
+          $projects = @(
+            ".\RemoteFiles.Client\RemoteFiles.Client.csproj",
+            ".\RemoteFiles.Server\RemoteFiles.Server.csproj",
+            ".\Transfer.Client\Transfer.Client.csproj",
+            ".\Transfer.Server\Transfer.Server.csproj"
+          )
+          New-Item -ItemType Directory -Path .\publish\FileTransfer -Force | Out-Null
+          foreach ($project in $projects) {
+            dotnet publish $project -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o .\publish\FileTransfer
+            if ($LASTEXITCODE -ne 0) { throw "自包含发布失败：$project" }
+          }
+          Get-ChildItem .\publish\FileTransfer -Filter *.exe | Select-Object Name, Length
 
-      - name: Publish RemoteFiles server
-        run: dotnet publish .\RemoteFiles.Server\RemoteFiles.Server.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o .\publish\RemoteFiles.Server
-
-      - name: Publish Transfer client
-        run: dotnet publish .\Transfer.Client\Transfer.Client.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o .\publish\Transfer.Client
-
-      - name: Publish Transfer server
-        run: dotnet publish .\Transfer.Server\Transfer.Server.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o .\publish\Transfer.Server
+      # 小包：框架依赖，体积小，需要用户预装 .NET 10 桌面运行时。
+      - name: Publish framework-dependent bundle
+        shell: pwsh
+        run: |
+          $apps = @{
+            "RemoteFiles.Client" = ".\RemoteFiles.Client\RemoteFiles.Client.csproj"
+            "RemoteFiles.Server" = ".\RemoteFiles.Server\RemoteFiles.Server.csproj"
+            "Transfer.Client"    = ".\Transfer.Client\Transfer.Client.csproj"
+            "Transfer.Server"    = ".\Transfer.Server\Transfer.Server.csproj"
+          }
+          foreach ($name in $apps.Keys) {
+            dotnet publish $apps[$name] -c Release -r win-x64 --self-contained false -p:PublishSingleFile=false -o ".\publish\framework\FileTransfer\$name"
+            if ($LASTEXITCODE -ne 0) { throw "框架依赖发布失败：$name" }
+          }
 
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path .\release\FileTransfer -Force | Out-Null
-          Copy-Item .\publish\RemoteFiles.Client .\release\FileTransfer\RemoteFiles.Client -Recurse
-          Copy-Item .\publish\RemoteFiles.Server .\release\FileTransfer\RemoteFiles.Server -Recurse
-          Copy-Item .\publish\Transfer.Client .\release\FileTransfer\Transfer.Client -Recurse
-          Copy-Item .\publish\Transfer.Server .\release\FileTransfer\Transfer.Server -Recurse
+          Copy-Item .\publish\FileTransfer\* .\release\FileTransfer -Recurse
           Copy-Item .\README.md .\release\FileTransfer\README.md
-          Compress-Archive -Path .\release\FileTransfer\* -DestinationPath ".\FileTransfer-$env:GITHUB_REF_NAME-win-x64.zip" -Force
-          Get-ChildItem ".\FileTransfer-$env:GITHUB_REF_NAME-win-x64.zip" | Select-Object Name, Length
+          Compress-Archive -Path .\release\FileTransfer -DestinationPath ".\FileTransfer-$env:GITHUB_REF_NAME-win-x64.zip" -Force
+
+          New-Item -ItemType Directory -Path .\release-framework\FileTransfer -Force | Out-Null
+          Copy-Item .\publish\framework\FileTransfer\* .\release-framework\FileTransfer -Recurse
+          Copy-Item .\README.md .\release-framework\FileTransfer\README.md
+          $notice = @(
+            "此版本为框架依赖版，体积较小。",
+            "运行前请先安装 .NET 10 Desktop Runtime（桌面运行时）：",
+            "https://dotnet.microsoft.com/download/dotnet/10.0",
+            "",
+            "如果不想安装运行时，请下载不带 -framework 后缀的完整版。"
+          ) -join "`r`n"
+          Set-Content -Path .\release-framework\FileTransfer\运行前必读.txt -Value $notice -Encoding utf8
+          Compress-Archive -Path .\release-framework\FileTransfer -DestinationPath ".\FileTransfer-$env:GITHUB_REF_NAME-win-x64-framework.zip" -Force
+
+          Get-ChildItem .\FileTransfer-*.zip | Select-Object Name, @{ n = "MB"; e = { [math]::Round($_.Length / 1MB, 1) } }
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
           name: FileTransfer-win-x64
-          path: FileTransfer-*-win-x64.zip
+          path: FileTransfer-*-win-x64*.zip
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: FileTransfer ${{ github.ref_name }}
-          files: FileTransfer-${{ github.ref_name }}-win-x64.zip
+          files: FileTransfer-${{ github.ref_name }}-win-x64*.zip
           generate_release_notes: true
           draft: false
           prerelease: false
