@@ -7,3 +7,5 @@ obj/
 *.part.lock
 .local/
 artifacts/
+publish/
+release/

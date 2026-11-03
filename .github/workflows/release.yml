@@ -1,0 +1,69 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore .\FileTransfer.sln
+
+      - name: Build
+        run: dotnet build .\FileTransfer.sln -c Release --no-restore
+
+      - name: Publish RemoteFiles client
+        run: dotnet publish .\RemoteFiles.Client\RemoteFiles.Client.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o .\publish\RemoteFiles.Client
+
+      - name: Publish RemoteFiles server
+        run: dotnet publish .\RemoteFiles.Server\RemoteFiles.Server.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o .\publish\RemoteFiles.Server
+
+      - name: Publish Transfer client
+        run: dotnet publish .\Transfer.Client\Transfer.Client.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o .\publish\Transfer.Client
+
+      - name: Publish Transfer server
+        run: dotnet publish .\Transfer.Server\Transfer.Server.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o .\publish\Transfer.Server
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path .\release\FileTransfer -Force | Out-Null
+          Copy-Item .\publish\RemoteFiles.Client .\release\FileTransfer\RemoteFiles.Client -Recurse
+          Copy-Item .\publish\RemoteFiles.Server .\release\FileTransfer\RemoteFiles.Server -Recurse
+          Copy-Item .\publish\Transfer.Client .\release\FileTransfer\Transfer.Client -Recurse
+          Copy-Item .\publish\Transfer.Server .\release\FileTransfer\Transfer.Server -Recurse
+          Copy-Item .\README.md .\release\FileTransfer\README.md
+          Compress-Archive -Path .\release\FileTransfer\* -DestinationPath ".\FileTransfer-$env:GITHUB_REF_NAME-win-x64.zip" -Force
+          Get-ChildItem ".\FileTransfer-$env:GITHUB_REF_NAME-win-x64.zip" | Select-Object Name, Length
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: FileTransfer-win-x64
+          path: FileTransfer-*-win-x64.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: FileTransfer ${{ github.ref_name }}
+          files: FileTransfer-${{ github.ref_name }}-win-x64.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
