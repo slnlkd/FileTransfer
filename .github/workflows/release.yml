@@ -77,7 +77,7 @@ jobs:
             "",
             "如果不想安装运行时，请下载不带 -framework 后缀的完整版。"
           ) -join "`r`n"
-          Set-Content -Path .\release-framework\FileTransfer\运行前必读.txt -Value $notice -Encoding utf8
+          Set-Content -Path .\release-framework\FileTransfer\framework-dependent.txt -Value $notice -Encoding utf8
           Compress-Archive -Path .\release-framework\FileTransfer -DestinationPath ".\FileTransfer-$env:GITHUB_REF_NAME-win-x64-framework.zip" -Force
 
           Get-ChildItem .\FileTransfer-*.zip | Select-Object Name, @{ n = "MB"; e = { [math]::Round($_.Length / 1MB, 1) } }
