@@ -17,6 +17,8 @@ public sealed class RemoteFileService : IAsyncDisposable
     private int sequence;
     private bool disposed;
     public RemoteFileStore Store { get; }
+    // 可选的目录过滤扩展；未设置时列表请求保持原样。
+    public Func<string, string, RemoteEntry[], Task<RemoteFilterResult>>? ListFilter { get; set; }
     public event Action<string>? Activity;
     public event Action<RemoteTransferProgress>? TransferProgress;
     public int Port => (listener?.LocalEndpoint as IPEndPoint)?.Port ?? 0;
@@ -74,7 +76,7 @@ public sealed class RemoteFileService : IAsyncDisposable
                 RemoteResponse response;
                 switch (request.Command)
                 {
-                    case "list": response = new(true, Entries: Store.List(request.Path), RootName: Path.GetFileName(Store.Root)); break;
+                    case "list": response = await ListAsync(request); break;
                     case "text": response = await Store.ReadTextAsync(request.Path, ct); break;
                     case "image":
                         string imagePath = Store.Resolve(request.Path);
@@ -183,6 +185,22 @@ public sealed class RemoteFileService : IAsyncDisposable
         TransferProgress?.Invoke(new(request.RequestId, request.Path, stage, percent, completed, total));
         Log.Debug("远程传输进度；阶段 {Stage}，进度 {Percent:F1}，字节 {Completed}/{Total}", stage, percent, completed, total);
         await Wire.WriteAsync(stream, new RemoteResponse(true, Stage: stage, Percent: percent, CompletedBytes: completed, TotalBytes: total), ct);
+    }
+    private async Task<RemoteResponse> ListAsync(RemoteRequest request)
+    {
+        var entries = Store.List(request.Path);
+        string rootName = Path.GetFileName(Store.Root);
+        if (request.Filter is null || ListFilter is null) return new(true, Entries: entries, RootName: rootName);
+        try
+        {
+            var filtered = await ListFilter(request.Filter, request.Path, entries);
+            return new(true, Entries: filtered.Entries, RootName: rootName, Warning: filtered.Warning);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "目录过滤失败，回退显示全部；过滤器 {Filter}，路径 {RemotePath}", request.Filter, request.Path);
+            return new(true, Entries: entries, RootName: rootName, Warning: "目录过滤失败，已显示全部：" + ex.Message);
+        }
     }
     private RemoteResponse CreateFolder(string relative)
     {

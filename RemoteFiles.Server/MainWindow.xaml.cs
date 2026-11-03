@@ -60,6 +60,7 @@ public partial class MainWindow : Window
             if (!int.TryParse(PortBox.Text, out int port) || port is < 1 or > 65535) throw new IOException("端口请输入 1～65535");
             if (service != null) { await service.DisposeAsync(); service = null; }
             service = new RemoteFileService(RootBox.Text);
+            ConfigureService(service);
             transfers.Clear();
             service.TransferProgress += progress => Dispatcher.BeginInvoke(() =>
             {
@@ -104,6 +105,8 @@ public partial class MainWindow : Window
         try { Process.Start(new ProcessStartInfo(AppLogging.LogDirectory) { UseShellExecute = true }); }
         catch (Exception ex) { Log.Error(ex, "打开日志目录失败"); StatusText.Text = ex.Message; }
     }
+    // 由本地个性化扩展实现；未实现时不附加目录过滤。
+    partial void ConfigureService(RemoteFileService service);
 }
 
 

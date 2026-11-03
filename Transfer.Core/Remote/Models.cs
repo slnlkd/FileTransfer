@@ -14,10 +14,14 @@ public record RemoteEntry(string Name, string Path, bool IsDirectory, long Lengt
 public record RemoteTransferProgress(string RequestId, string Path, string Stage, double Percent, long CompletedBytes = 0, long TotalBytes = 0);
 public record ProcessState(int[] ProcessIds, string State, string? Detail = null);
 public record RemoteRequest(string Command, string Path = "", string? Text = null, string? Version = null,
-    string? EncodingName = null, long Length = 0, string? Sha256 = null, bool Overwrite = false)
+    string? EncodingName = null, long Length = 0, string? Sha256 = null, bool Overwrite = false,
+    string? Filter = null)
 {
     public string RequestId { get; init; } = Guid.NewGuid().ToString("N");
 }
 public record RemoteResponse(bool Ok, string? Error = null, RemoteEntry[]? Entries = null, string? Text = null,
     string? Version = null, string? EncodingName = null, long Length = 0, ProcessState? Process = null, string? RootName = null,
-    string? Stage = null, double Percent = 0, string? ArchivePath = null, long CompletedBytes = 0, long TotalBytes = 0);
+    string? Stage = null, double Percent = 0, string? ArchivePath = null, long CompletedBytes = 0, long TotalBytes = 0,
+    string? Warning = null);
+// 目录过滤扩展的返回值：过滤后的条目，以及可选的提示信息。
+public record RemoteFilterResult(RemoteEntry[] Entries, string? Warning = null);

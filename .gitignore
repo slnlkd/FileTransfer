@@ -6,6 +6,8 @@ obj/
 *.part.json
 *.part.lock
 .local/
+Local/
+Directory.Build.local.props
 artifacts/
 publish/
 release/

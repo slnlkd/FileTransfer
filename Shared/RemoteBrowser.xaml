@@ -44,7 +44,9 @@
                         VerticalAlignment="Center"
                         Background="{StaticResource LineBrush}" />
 
-                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                <StackPanel Grid.Column="2"
+                            x:Name="FilterHost"
+                            Orientation="Horizontal">
                     <Button Margin="0,0,4,0"
                             Click="Upload_Click"
                             Content="上传"

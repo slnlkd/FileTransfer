@@ -26,6 +26,9 @@ public partial class RemoteBrowser : UserControl
     private Window? hostWindow;
     private int pendingUp;
     private bool navigatingUp;
+    private string? listFilter;
+    private Func<string, string?>? localEmptyText = null;
+    private ScrollViewer? fileScroll;
     public bool IsBusy => busy;
     private void Grid_Sorting(object sender, DataGridSortingEventArgs e)
     {
@@ -73,6 +76,7 @@ public partial class RemoteBrowser : UserControl
         style.Setters.Add(new Setter(ContextMenuProperty, new ContextMenu()));
         FileGrid.RowStyle = style;
         UpdateEmptyState();
+        BuildLocalFilters(FilterHost);
         Loaded += Browser_Loaded;
         Unloaded += Browser_Unloaded;
     }
@@ -108,15 +112,18 @@ public partial class RemoteBrowser : UserControl
         else BusyText.Text = "正在读取目录…";
         try
         {
-            var response = await Endpoint.CallAsync(new("list", path));
+            var response = await Endpoint.CallAsync(new("list", path, Filter: listFilter));
             if (!string.Equals(directory, path, StringComparison.Ordinal))
             {
                 foreach (var column in FileGrid.Columns) column.SortDirection = null;
                 FileGrid.Columns[0].SortDirection = ListSortDirection.Ascending;
             }
             var nameDirection = FileGrid.Columns[0].SortDirection;
+            string previous = directory;
             directory = path; entries = response.Entries ?? [];
             FileGrid.ItemsSource = entries;
+            // 切换目录后回到列表顶部；同一目录刷新保留当前位置。
+            if (!string.Equals(previous, path, StringComparison.Ordinal)) ResetFileScroll();
             if (nameDirection is { } direction && CollectionViewSource.GetDefaultView(entries) is ListCollectionView view)
             {
                 view.CustomSort = new EntryComparer("Name", direction);
@@ -124,7 +131,8 @@ public partial class RemoteBrowser : UserControl
             }
             UpdatePath(response);
             ItemCountText.Text = $"{entries.Length} 项";
-            SetStatus(entries.Length == 0 ? "此文件夹为空" : "就绪", "MutedBrush");
+            SetStatus(response.Warning ?? (entries.Length == 0 ? EmptyTextFor(directory) : "就绪"),
+                response.Warning is null ? "MutedBrush" : "WarningBrush");
             UpdateEmptyState();
             if (rebuild || FolderTree.Items.Count == 0)
             {
@@ -138,7 +146,12 @@ public partial class RemoteBrowser : UserControl
                 }
                 finally { rebuilding = false; }
             }
-            else if (FindNode(FolderTree.Items, path) is TreeViewItem node) SetChildren(node, entries);
+            else if (FindNode(FolderTree.Items, path) is TreeViewItem node)
+            {
+                // 目录树始终展示未过滤的完整内容，过滤只作用于右侧列表。
+                var treeEntries = listFilter is null ? entries : (await Endpoint.CallAsync(new("list", path))).Entries ?? [];
+                SetChildren(node, treeEntries);
+            }
         }
         finally { if (ownedBusy) HideBusy(); }
     }
@@ -159,8 +172,39 @@ public partial class RemoteBrowser : UserControl
     {
         bool connected = client != null;
         EmptyState.Visibility = connected && entries.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
-        EmptyText.Text = connected ? "此文件夹为空" : "连接后可浏览共享目录";
+        EmptyText.Text = connected ? EmptyTextFor(directory) : "连接后可浏览共享目录";
         EmptyUploadButton.Visibility = connected ? Visibility.Visible : Visibility.Collapsed;
+    }
+    private string EmptyTextFor(string path) => localEmptyText?.Invoke(path) ?? "此文件夹为空";
+    private void ResetFileScroll()
+    {
+        fileScroll ??= FindVisualChild<ScrollViewer>(FileGrid);
+        if (fileScroll is null) return;
+        fileScroll.ScrollToTop();
+        // 等待新条目完成布局后再设置一次，避免虚拟化把偏移量恢复成旧位置。
+        Dispatcher.BeginInvoke(new Action(() => fileScroll?.ScrollToTop()), System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T match) return match;
+            if (FindVisualChild<T>(child) is { } nested) return nested;
+        }
+        return null;
+    }
+    // 由本地个性化扩展实现；未实现时界面不显示额外过滤控件。
+    partial void BuildLocalFilters(StackPanel host);
+    // 过滤值变化后重新加载右侧列表；目录树不受影响。
+    private async void SetLocalFilter(string? value)
+    {
+        if (string.Equals(listFilter, value, StringComparison.Ordinal)) return;
+        listFilter = value;
+        if (client is null) return;
+        await ExecuteAsync(() => NavigateAsync(directory));
+        // 过滤条件变化会改变列表内容，同样回到顶部。
+        ResetFileScroll();
     }
     private static TreeViewItem? FindNode(ItemCollection items, string path)
     {

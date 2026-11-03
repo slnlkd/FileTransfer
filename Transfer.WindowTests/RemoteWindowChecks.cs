@@ -118,6 +118,32 @@ internal static class RemoteWindowChecks
         if (!grid.Items.Cast<RemoteEntry>().Select(e => e.Name).SequenceEqual(new[] { "1", "2", "10" }))
             throw new Exception("重新加载目录后未保持名称自然升序");
         Console.WriteLine("通过：进入和重新加载文件夹时默认按名称自然升序");
+        string scrollRoot = Path.Combine(root, "滚动测试");
+        Directory.CreateDirectory(scrollRoot);
+        foreach (string name in Enumerable.Range(1, 60).Select(i => i.ToString("D2"))) Directory.CreateDirectory(Path.Combine(scrollRoot, name));
+        Directory.CreateDirectory(Path.Combine(scrollRoot, "大目录"));
+        foreach (string name in Enumerable.Range(1, 60).Select(i => i.ToString("D2"))) Directory.CreateDirectory(Path.Combine(scrollRoot, "大目录", name));
+        await browser.ConnectAsync(new RemoteFileClient("127.0.0.1", port));
+        await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "滚动测试"));
+        await FlushAsync(browser);
+        grid.UpdateLayout();
+        var scroll = FindScrollViewer(grid) ?? throw new Exception("未找到文件列表滚动条");
+        if (scroll.ScrollableHeight <= 0) throw new Exception("测试目录不足以产生滚动条");
+        scroll.ScrollToBottom();
+        await WaitAsync(() => scroll.VerticalOffset > 0);
+        await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "大目录"));
+        await FlushAsync(browser);
+        await WaitAsync(() => scroll.VerticalOffset == 0);
+        grid.UpdateLayout();
+        if (scroll.ScrollableHeight <= 0) throw new Exception("切换后的目录不足以产生滚动条");
+        scroll.ScrollToBottom();
+        await WaitAsync(() => scroll.VerticalOffset > 0);
+        var scrollNode = ((TreeViewItem)tree.Items[0]).Items.Cast<TreeViewItem>().Single(n => ((RemoteEntry)n.Tag).Name == "滚动测试");
+        scrollNode.IsSelected = true;
+        await WaitAsync(() => !browser.IsBusy && grid.Items.Count > 1);
+        await FlushAsync(browser);
+        await WaitAsync(() => scroll.VerticalOffset == 0);
+        Console.WriteLine("通过：切换目录和返回上一级后文件列表回到顶部");
         int rootCount = Directory.GetFileSystemEntries(root).Length;
         await CloseAsync(client);
         Click(server, "StopButton");
@@ -259,6 +285,20 @@ internal static class RemoteWindowChecks
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         while (!condition()) await Task.Delay(30, timeout.Token);
+    }
+    private static async Task FlushAsync(System.Windows.Threading.DispatcherObject target)
+    {
+        await target.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+    }
+    private static ScrollViewer? FindScrollViewer(DependencyObject parent)
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is ScrollViewer scroll) return scroll;
+            if (FindScrollViewer(child) is { } nested) return nested;
+        }
+        return null;
     }
     private static async Task CloseAsync(Window window)
     {
