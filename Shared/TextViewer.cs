@@ -12,6 +12,8 @@ public sealed class TextViewer : Window
     {
         AcceptsReturn = true,
         AcceptsTab = true,
+        SelectionBrush = new SolidColorBrush(Color.FromRgb(0xA9, 0xCB, 0xE3)),
+        SelectionOpacity = 0.9,
         FontFamily = new FontFamily("Consolas, Cascadia Mono, Microsoft YaHei UI"),
         FontSize = 13,
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -29,12 +31,20 @@ public sealed class TextViewer : Window
         Margin = new Thickness(8, 0, 10, 0),
         VerticalAlignment = VerticalAlignment.Center
     };
+    private readonly Border findBar;
+    private readonly TextBox findBox;
+    private readonly TextBlock findStatus;
+    private readonly Canvas highlightLayer;
     private readonly RemoteFileClient client;
     private readonly string path;
     private string? version;
     private readonly string? encoding;
     private bool dirty;
     private bool saving;
+    private bool suppressFind;
+    private int findVersion;
+    private ScrollViewer? editorScroll;
+    private DateTime lastFindScrollUtc;
     public TextViewer(RemoteFileClient client, string path, RemoteResponse response)
     {
         ThemeLoader.Apply(this);
@@ -121,13 +131,82 @@ public sealed class TextViewer : Window
         DockPanel.SetDock(headerBorder, Dock.Top);
         panel.Children.Add(headerBorder);
 
+        // 查找栏
+        findBox = new TextBox
+        {
+            Height = 26,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0)
+        };
+        findStatus = new TextBlock
+        {
+            FontSize = 11,
+            Foreground = muted,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0),
+            MinWidth = 48
+        };
+        var findLabel = new TextBlock
+        {
+            Text = "查找",
+            FontSize = 11,
+            Foreground = muted,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0)
+        };
+        var previousFind = new Button { Content = "上一个", Height = 26, Margin = new Thickness(0, 0, 4, 0) };
+        var nextFind = new Button { Content = "下一个", Height = 26, Margin = new Thickness(0, 0, 4, 0) };
+        var closeFind = new Button { Content = "关闭", Height = 26 };
+        var secondaryStyle = ThemeStyle("SecondaryButton");
+        if (secondaryStyle is not null) { previousFind.Style = secondaryStyle; nextFind.Style = secondaryStyle; }
+        var ghostStyle = ThemeStyle("GhostButton");
+        if (ghostStyle is not null) closeFind.Style = ghostStyle;
+        var findGrid = new Grid();
+        findGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        findGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        findGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        findGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        findGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        findGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(findLabel, 0); findGrid.Children.Add(findLabel);
+        Grid.SetColumn(findBox, 1); findGrid.Children.Add(findBox);
+        Grid.SetColumn(findStatus, 2); findGrid.Children.Add(findStatus);
+        Grid.SetColumn(previousFind, 3); findGrid.Children.Add(previousFind);
+        Grid.SetColumn(nextFind, 4); findGrid.Children.Add(nextFind);
+        Grid.SetColumn(closeFind, 5); findGrid.Children.Add(closeFind);
+        findBar = new Border
+        {
+            Height = 36,
+            Padding = new Thickness(8, 0, 8, 0),
+            Background = header,
+            BorderBrush = line,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Visibility = Visibility.Collapsed,
+            Child = findGrid
+        };
+        DockPanel.SetDock(findBar, Dock.Top);
+        panel.Children.Add(findBar);
+        findBox.TextChanged += (_, _) =>
+        {
+            if (suppressFind || findBar.Visibility != Visibility.Visible) return;
+            FindFromStart();
+        };
+        previousFind.Click += (_, _) => { FindNext(false); findBox.Focus(); };
+        nextFind.Click += (_, _) => { FindNext(true); findBox.Focus(); };
+        closeFind.Click += (_, _) => HideFind();
+
         // 底部状态
         DockPanel.SetDock(status, Dock.Bottom);
         panel.Children.Add(status);
 
-        // 编辑器
-        Editor.Margin = new Thickness(12, 10, 12, 10);
-        panel.Children.Add(Editor);
+        // 编辑器 + 查找高亮层（高亮在文字下方，文字保持清晰）
+        Editor.Margin = new Thickness(0);
+        Editor.Background = Brushes.Transparent;
+        highlightLayer = new Canvas { IsHitTestVisible = false, ClipToBounds = true };
+        var editorHost = new Grid { Background = surface, Margin = new Thickness(12, 10, 12, 10), ClipToBounds = true };
+        editorHost.Children.Add(highlightLayer);
+        editorHost.Children.Add(Editor);
+        panel.Children.Add(editorHost);
         Content = panel;
 
         Editor.Text = response.Text ?? "";
@@ -138,10 +217,40 @@ public sealed class TextViewer : Window
             Title = "* 文本 · " + path;
             status.Text = "有未保存修改";
             status.Foreground = ThemeBrush("WarningBrush", Color.FromRgb(0x8A, 0x5A, 0x00));
+            findVersion++;
+            highlightLayer.Children.Clear();
         };
         save.Click += async (_, _) => await SaveAsync();
         PreviewKeyDown += async (_, e) =>
         {
+            if (e.Key == Key.F && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+            {
+                e.Handled = true;
+                ShowFind();
+                return;
+            }
+            if (e.Key == Key.F3)
+            {
+                e.Handled = true;
+                if (findBar.Visibility != Visibility.Visible) ShowFind();
+                else FindNext(!Keyboard.Modifiers.HasFlag(ModifierKeys.Shift));
+                return;
+            }
+            if (findBar.Visibility == Visibility.Visible)
+            {
+                if (e.Key == Key.Escape)
+                {
+                    e.Handled = true;
+                    HideFind();
+                    return;
+                }
+                if (e.Key == Key.Enter && findBox.IsKeyboardFocusWithin)
+                {
+                    e.Handled = true;
+                    FindNext(!Keyboard.Modifiers.HasFlag(ModifierKeys.Shift));
+                    return;
+                }
+            }
             if (e.Key == Key.S && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
             {
                 e.Handled = true;
@@ -153,6 +262,122 @@ public sealed class TextViewer : Window
             if (saving) { e.Cancel = true; status.Text = "正在保存，请稍候再关闭。"; return; }
             if (dirty && MessageBox.Show(this, "有未保存的文本修改，是否放弃并关闭？", "未保存内容", MessageBoxButton.YesNo) != MessageBoxResult.Yes) e.Cancel = true;
         };
+        Loaded += TextViewer_Loaded;
+        Closed += TextViewer_Closed;
+    }
+    private void TextViewer_Loaded(object sender, RoutedEventArgs e)
+    {
+        Editor.ApplyTemplate();
+        if (Editor.Template.FindName("PART_ContentHost", Editor) is not ScrollViewer scroll) return;
+        if (ReferenceEquals(editorScroll, scroll)) return;
+        if (editorScroll is not null) editorScroll.ScrollChanged -= EditorScrollChanged;
+        editorScroll = scroll;
+        editorScroll.ScrollChanged += EditorScrollChanged;
+    }
+    private void TextViewer_Closed(object? sender, EventArgs e)
+    {
+        if (editorScroll is null) return;
+        editorScroll.ScrollChanged -= EditorScrollChanged;
+        editorScroll = null;
+    }
+    private void EditorScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (Math.Abs(e.VerticalChange) < 0.01 && Math.Abs(e.HorizontalChange) < 0.01) return;
+        // ScrollToLine 会触发一次滚动事件，短时间内不要清掉刚画好的高亮。
+        if ((DateTime.UtcNow - lastFindScrollUtc).TotalMilliseconds < 250) return;
+        findVersion++;
+        highlightLayer.Children.Clear();
+    }
+    private void ShowFind()
+    {
+        bool wasHidden = findBar.Visibility != Visibility.Visible;
+        findBar.Visibility = Visibility.Visible;
+        if (wasHidden)
+        {
+            suppressFind = true;
+            if (!string.IsNullOrEmpty(Editor.SelectedText)) findBox.Text = Editor.SelectedText;
+            suppressFind = false;
+        }
+        findBox.Focus();
+        findBox.SelectAll();
+        FindFromStart();
+    }
+    private void HideFind()
+    {
+        findBar.Visibility = Visibility.Collapsed;
+        findVersion++;
+        highlightLayer.Children.Clear();
+        Editor.Focus();
+    }
+    private void FindFromStart()
+    {
+        Editor.Select(0, 0);
+        FindNext(true);
+    }
+    private void FindNext(bool forward)
+    {
+        if (findBar.Visibility != Visibility.Visible) { ShowFind(); return; }
+        int version = ++findVersion;
+        string needle = findBox.Text;
+        if (needle.Length == 0) { highlightLayer.Children.Clear(); SetFindStatus("", false); return; }
+        string text = Editor.Text;
+        if (text.Length == 0) { highlightLayer.Children.Clear(); SetFindStatus("无匹配", true); return; }
+        int start = forward ? Editor.SelectionStart + Editor.SelectionLength : Editor.SelectionStart - 1;
+        if (start < 0) start = text.Length - 1;
+        if (start >= text.Length) start = 0;
+        int index = forward
+            ? text.IndexOf(needle, start, StringComparison.OrdinalIgnoreCase)
+            : text.LastIndexOf(needle, start, StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+        {
+            index = forward
+                ? text.IndexOf(needle, 0, StringComparison.OrdinalIgnoreCase)
+                : text.LastIndexOf(needle, text.Length - 1, StringComparison.OrdinalIgnoreCase);
+        }
+        if (index < 0) { highlightLayer.Children.Clear(); SetFindStatus("无匹配", true); return; }
+        Editor.CaretIndex = index;
+        Editor.Select(index, needle.Length);
+        int line = Editor.GetLineIndexFromCharacterIndex(index);
+        lastFindScrollUtc = DateTime.UtcNow;
+        if (line >= 0) Editor.ScrollToLine(line);
+        Editor.UpdateLayout();
+        ShowMatchHighlight(index, needle.Length);
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (version == findVersion) ShowMatchHighlight(index, needle.Length);
+        }), System.Windows.Threading.DispatcherPriority.Background);
+        SetFindStatus(line >= 0 ? $"第 {line + 1} 行" : "已找到", false);
+    }
+    private void ShowMatchHighlight(int index, int length)
+    {
+        highlightLayer.Children.Clear();
+        string text = Editor.Text;
+        if (index < 0 || length <= 0 || index >= text.Length) return;
+        Rect start = Editor.GetRectFromCharacterIndex(index, false);
+        if (start.IsEmpty) return;
+        var highlight = new System.Windows.Shapes.Rectangle
+        {
+            Fill = new SolidColorBrush(Color.FromRgb(0xA9, 0xCB, 0xE3)),
+            StrokeThickness = 0,
+            RadiusX = 0,
+            RadiusY = 0,
+            IsHitTestVisible = false
+        };
+        int end = Math.Min(index + length, text.Length);
+        Rect endRect = Editor.GetRectFromCharacterIndex(Math.Max(index, end - 1), true);
+        highlight.Width = !endRect.IsEmpty && Math.Abs(endRect.Top - start.Top) < 1
+            ? Math.Max(1, endRect.Right - start.Left)
+            : Math.Max(1, start.Width);
+        highlight.Height = Math.Max(1, start.Height);
+        Canvas.SetLeft(highlight, start.Left);
+        Canvas.SetTop(highlight, start.Top);
+        highlightLayer.Children.Add(highlight);
+    }
+    private void SetFindStatus(string text, bool error)
+    {
+        findStatus.Text = text;
+        findStatus.Foreground = ThemeBrush(error ? "DangerBrush" : "MutedBrush",
+            error ? Color.FromRgb(0xB4, 0x23, 0x18) : Color.FromRgb(0x61, 0x61, 0x61));
     }
     public async Task SaveAsync()
     {
