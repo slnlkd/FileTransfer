@@ -23,6 +23,9 @@ public partial class RemoteBrowser : UserControl
     private bool busy;
     private bool rebuilding;
     private RemoteEntry[] entries = [];
+    private Window? hostWindow;
+    private int pendingUp;
+    private bool navigatingUp;
     public bool IsBusy => busy;
     private void Grid_Sorting(object sender, DataGridSortingEventArgs e)
     {
@@ -70,6 +73,8 @@ public partial class RemoteBrowser : UserControl
         style.Setters.Add(new Setter(ContextMenuProperty, new ContextMenu()));
         FileGrid.RowStyle = style;
         UpdateEmptyState();
+        Loaded += Browser_Loaded;
+        Unloaded += Browser_Unloaded;
     }
     public async Task ConnectAsync(RemoteFileClient endpoint)
     {
@@ -258,6 +263,65 @@ public partial class RemoteBrowser : UserControl
     });
     private async void Parent_Click(object sender, RoutedEventArgs e) => await ExecuteAsync(() => NavigateAsync(ParentPath(directory)));
     private static string ParentPath(string path) { int index = path.LastIndexOf('/'); return index < 0 ? "" : path[..index]; }
+    private void Browser_Loaded(object sender, RoutedEventArgs e)
+    {
+        hostWindow = Window.GetWindow(this);
+        if (hostWindow is null) return;
+        hostWindow.PreviewKeyDown -= HostWindow_PreviewKeyDown;
+        hostWindow.PreviewKeyDown += HostWindow_PreviewKeyDown;
+    }
+    private void Browser_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (hostWindow is null) return;
+        hostWindow.PreviewKeyDown -= HostWindow_PreviewKeyDown;
+        hostWindow = null;
+    }
+    private async void HostWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Back) return;
+        // 连续退格导航期间焦点可能被禁用移走，此时仍然把退格当作“上一级”。
+        if (navigatingUp)
+        {
+            e.Handled = true;
+            await HandleBackspaceAsync();
+            return;
+        }
+        // 输入框里的退格仍然用于编辑文字，不触发目录返回。
+        if (Keyboard.FocusedElement is TextBox) return;
+        if (!FileGrid.IsKeyboardFocusWithin) return;
+        e.Handled = true;
+        await HandleBackspaceAsync();
+    }
+    private async void Grid_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Back) return;
+        e.Handled = true;
+        await HandleBackspaceAsync();
+    }
+    private async Task HandleBackspaceAsync()
+    {
+        if (client is null) return;
+        if (busy && !navigatingUp) return;
+        pendingUp++;
+        if (busy) return;
+        await DrainUpAsync();
+    }
+    private async Task DrainUpAsync()
+    {
+        if (navigatingUp) return;
+        navigatingUp = true;
+        try
+        {
+            while (pendingUp > 0 && !string.IsNullOrEmpty(directory))
+            {
+                pendingUp--;
+                await ExecuteAsync(() => NavigateAsync(ParentPath(directory)));
+                FileGrid.Focus();
+            }
+            pendingUp = 0;
+        }
+        finally { navigatingUp = false; }
+    }
     private async void Upload_Click(object sender, RoutedEventArgs e)
     {
         if (client == null) { SetStatus("请先连接服务端", "DangerBrush"); return; }

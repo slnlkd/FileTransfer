@@ -77,6 +77,9 @@ internal static class RemoteWindowChecks
         if (await File.ReadAllTextAsync(Path.Combine(root, "文本", "编辑.json")) != "{\"值\":2}") throw new Exception("文本界面保存内容未落盘：" + ((DockPanel)textWindow.Content).Children.OfType<TextBlock>().Single().Text);
         textWindow.Close();
         Console.WriteLine("通过：右侧文件双击打开 JSON 并编辑保存至服务端");
+        grid.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(client), 0, Key.Back) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+        await WaitAsync(() => grid.Items.Count == 4 && ((Button)client.FindName("ConnectButton")).IsEnabled);
+        Console.WriteLine("通过：文件列表退格键返回上一级");
         await browser.ConnectAsync(new RemoteFileClient("127.0.0.1", port));
         var images = (await new RemoteFileClient("127.0.0.1", port).CallAsync(new("list"))).Entries!;
         await browser.OpenAsync(images.Single(e => e.Name == "early.png"));

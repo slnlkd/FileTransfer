@@ -184,6 +184,7 @@
                           AutoGenerateColumns="False"
                           IsReadOnly="True"
                           MouseDoubleClick="Grid_DoubleClick"
+                          PreviewKeyDown="Grid_PreviewKeyDown"
                           SelectionMode="Single"
                           Sorting="Grid_Sorting">
                     <DataGrid.Columns>

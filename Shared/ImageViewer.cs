@@ -136,17 +136,8 @@ public sealed class ImageViewer : Window
         };
         nav.Children.Add(previous);
         nav.Children.Add(next);
-        var hint = new TextBlock
-        {
-            Text = "← → 切换",
-            FontSize = 11,
-            Foreground = muted,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(12, 0, 12, 0)
-        };
         var controls = new DockPanel { LastChildFill = true, Height = 40 };
         DockPanel.SetDock(nav, Dock.Left); controls.Children.Add(nav);
-        DockPanel.SetDock(hint, Dock.Right); controls.Children.Add(hint);
         controls.Children.Add(imageName);
         var controlsBar = new Border
         {
