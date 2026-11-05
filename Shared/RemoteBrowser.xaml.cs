@@ -421,7 +421,8 @@ public partial class RemoteBrowser : UserControl
         }
         // 输入框里的退格仍然用于编辑文字，不触发目录返回。
         if (Keyboard.FocusedElement is TextBox) return;
-        if (!FileGrid.IsKeyboardFocusWithin) return;
+        // 与资源管理器一致：只要鼠标在右侧文件区域，或列表获得焦点，退格就返回上一级。
+        if (!FileArea.IsMouseOver && !FileGrid.IsKeyboardFocusWithin) return;
         e.Handled = true;
         await HandleBackspaceAsync();
     }
