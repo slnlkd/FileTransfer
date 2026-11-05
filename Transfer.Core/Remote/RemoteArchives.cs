@@ -6,6 +6,12 @@ namespace Transfer.Core.Remote;
 
 internal static class RemoteArchives
 {
+    private static bool IsSharingViolation(IOException ex) => (ex.HResult & 0xFFFF) is 32 or 33;
+    private static void SetEntryTime(ZipArchiveEntry entry, DateTime modifiedUtc)
+    {
+        var date = new DateTimeOffset(modifiedUtc, TimeSpan.Zero);
+        if (date.Year is >= 1980 and <= 2107) entry.LastWriteTime = date;
+    }
     private sealed record Source(string Relative, string Entry, bool Directory, long Length, DateTime Modified);
 
     // 先快照清单，再创建临时 ZIP，避免压缩共享根目录时把输出文件压入自身。
@@ -66,28 +72,71 @@ internal static class RemoteArchives
                 {
                     byte[] buffer = new byte[131072];
                     await report("压缩", 0, 0, total);
+                    var skipped = new List<string>();
+                    int writtenFiles = 0;
                     foreach (var item in items)
                     {
                         ct.ThrowIfCancellationRequested();
                         string full = store.Resolve(item.Relative);
-                        var entry = archive.CreateEntry(item.Entry, CompressionLevel.Fastest);
-                        var date = new DateTimeOffset(item.Modified, TimeSpan.Zero);
-                        if (date.Year is >= 1980 and <= 2107) entry.LastWriteTime = date;
-                        if (item.Directory) continue;
-                        Log.Debug("压缩文件；路径 {RemotePath}，长度 {Length}", item.Relative, item.Length);
-                        await using var input = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.Read, 131072, true);
-                        if (input.Length != item.Length || File.GetLastWriteTimeUtc(full) != item.Modified) throw new IOException("压缩源文件已变化，请重试：" + item.Relative);
-                        await using var target = entry.Open();
-                        long copied = 0; int read;
-                        while ((read = await input.ReadAsync(buffer, ct)) > 0)
+                        if (item.Directory)
                         {
-                            if (copied + read > item.Length) throw new IOException("压缩期间文件长度变化：" + item.Relative);
-                            await target.WriteAsync(buffer.AsMemory(0, read), ct);
-                            copied += read; completed += read;
-                            if (timer.ElapsedMilliseconds >= 200) { timer.Restart(); await report("压缩", total == 0 ? 0 : 99d * completed / total, completed, total); }
+                            var directoryEntry = archive.CreateEntry(item.Entry, CompressionLevel.Fastest);
+                            SetEntryTime(directoryEntry, item.Modified);
+                            continue;
                         }
-                        if (copied != item.Length || File.GetLastWriteTimeUtc(full) != item.Modified) throw new IOException("压缩期间文件变化：" + item.Relative);
+                        Log.Debug("压缩文件；路径 {RemotePath}，长度 {Length}", item.Relative, item.Length);
+                        FileStream? input = null;
+                        bool volatileFile = false;
+                        for (int attempt = 1; ; attempt++)
+                        {
+                            try
+                            {
+                                input = new FileStream(full, FileMode.Open, FileAccess.Read,
+                                    attempt == 1 ? FileShare.Read : FileShare.ReadWrite | FileShare.Delete, 131072, true);
+                                volatileFile = attempt > 1;
+                                break;
+                            }
+                            catch (IOException ex) when (IsSharingViolation(ex) && attempt < 3)
+                            {
+                                // 文件可能正被日志进程写入，短暂等待后再试共享读取。
+                                await Task.Delay(300, ct);
+                            }
+                            catch (IOException ex) when (IsSharingViolation(ex))
+                            {
+                                Log.Warning("压缩跳过被占用的文件；路径 {RemotePath}，原因 {Reason}", item.Relative, ex.Message);
+                                skipped.Add(item.Entry);
+                                break;
+                            }
+                        }
+                        if (input is null) continue;
+                        await using (input)
+                        {
+                            long length = item.Length;
+                            if (volatileFile)
+                            {
+                                // 正在追加的文件按扫描时的长度截取快照，忽略后续写入。
+                                length = Math.Min(item.Length, input.Length);
+                            }
+                            else if (input.Length != item.Length || File.GetLastWriteTimeUtc(full) != item.Modified)
+                                throw new IOException("压缩源文件已变化，请重试：" + item.Relative);
+                            var entry = archive.CreateEntry(item.Entry, CompressionLevel.Fastest);
+                            SetEntryTime(entry, item.Modified);
+                            await using var target = entry.Open();
+                            long copied = 0; int read;
+                            while (copied < length && (read = await input.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, length - copied)), ct)) > 0)
+                            {
+                                await target.WriteAsync(buffer.AsMemory(0, read), ct);
+                                copied += read; completed += read;
+                                if (timer.ElapsedMilliseconds >= 200) { timer.Restart(); await report("压缩", total == 0 ? 0 : 99d * completed / total, completed, total); }
+                            }
+                            if (!volatileFile && (copied != length || File.GetLastWriteTimeUtc(full) != item.Modified))
+                                throw new IOException("压缩期间文件变化：" + item.Relative);
+                            writtenFiles++;
+                        }
                     }
+                    // 单文件或全部文件都无法读取时给出明确原因，避免生成空压缩包。
+                    if (writtenFiles == 0 && skipped.Count > 0)
+                        throw new IOException("文件正在被其他进程使用，请稍后重试：" + string.Join("、", skipped));
                 }
                 await outputStream.FlushAsync(ct); outputStream.Flush(true);
             }

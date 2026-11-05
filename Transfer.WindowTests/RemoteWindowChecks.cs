@@ -160,6 +160,11 @@ internal static class RemoteWindowChecks
         if (grid.Items.Count != 500) throw new Exception("首屏未按 500 条分页加载：" + grid.Items.Count);
         var countText = (TextBlock)browser.FindName("ItemCountText");
         if (countText.Text != "500 / 620 项") throw new Exception("分页计数显示错误：" + countText.Text);
+        var selectAll = typeof(ClientBrowser).GetMethod("SelectAllAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic) ?? throw new Exception("找不到全选方法");
+        await (Task)selectAll.Invoke(browser, null)!;
+        await WaitAsync(() => grid.SelectedItems.Count == 620 && grid.Items.Count == 620);
+        grid.SelectedItems.Clear();
+        Console.WriteLine("通过：Ctrl+A 会先加载全部条目再全选");
         var pageScroll = FindScrollViewer(grid) ?? throw new Exception("未找到文件列表滚动条");
         pageScroll.ScrollToBottom();
         await WaitAsync(() => grid.Items.Count == 620);
@@ -222,10 +227,21 @@ internal static class RemoteWindowChecks
         var folder = rootNode.Items.Cast<TreeViewItem>().Single(n => ((RemoteEntry)n.Tag).Name == "文本");
         if (folder.ContextMenu?.Items.Count != 1 || ((MenuItem)folder.ContextMenu.Items[0]).Header?.ToString() != "复制") throw new Exception("目录树右键菜单应为复制");
         await browser.CopyToClipboardAsync((RemoteEntry)folder.Tag);
+        var firstDrop = Clipboard.GetDataObject()?.GetData(DataFormats.FileDrop) as string[];
+        if (firstDrop is null || firstDrop.Length != 1) throw new Exception("剪贴板未包含复制内容");
+        string firstSession = Path.GetDirectoryName(firstDrop[0])!;
+        // 多选复制：两个条目应在剪贴板中各自成为独立项。
+        if (grid.SelectionMode != DataGridSelectionMode.Extended) throw new Exception("文件列表未启用多选");
+        var ignoredEntry = grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "ignored.dat");
+        await browser.CopyToClipboardAsync(new[] { (RemoteEntry)folder.Tag, ignoredEntry });
+        if (Directory.Exists(firstSession)) throw new Exception("再次复制时未清理上一次的剪贴板临时目录");
         if (!((TextBlock)browser.FindName("StatusText")).Text.Contains("已复制")) throw new Exception("复制后状态提示错误");
         var dropped = Clipboard.GetDataObject()?.GetData(DataFormats.FileDrop) as string[];
-        if (dropped is null || dropped.Length != 1 || !File.Exists(Path.Combine(dropped[0], "编辑.json"))) throw new Exception("剪贴板未包含复制后的文件夹内容");
+        if (dropped is null || dropped.Length != 2 || !dropped.Any(p => File.Exists(Path.Combine(p, "编辑.json"))) || !dropped.Any(p => Path.GetFileName(p) == "ignored.dat"))
+            throw new Exception("剪贴板未包含多选复制的内容");
         Clipboard.Clear();
+        // 测试结束后清理本次进程的剪贴板目录，避免留在本机 LocalAppData。
+        try { Directory.Delete(Path.GetDirectoryName(Path.GetDirectoryName(dropped[0])!)!, true); } catch (Exception ex) { Console.WriteLine("清理测试剪贴板目录失败：" + ex.Message); }
         if (File.Exists(Path.Combine(root, "文本.zip"))) throw new Exception("复制后未清理服务端临时 ZIP");
         Console.WriteLine("通过：右键复制文件夹，剪贴板可在资源管理器粘贴且清理服务端临时 ZIP");
         await browser.AddArchiveAsync((RemoteEntry)folder.Tag);

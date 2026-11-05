@@ -412,6 +412,23 @@ public partial class RemoteBrowser : UserControl
     }
     private async void HostWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && e.Key is Key.A or Key.C)
+        {
+            // 输入框里的 Ctrl+A/C 继续用于编辑文字。
+            if (Keyboard.FocusedElement is TextBox) return;
+            if (!FileArea.IsMouseOver && !FileGrid.IsKeyboardFocusWithin) return;
+            if (e.Key == Key.A)
+            {
+                e.Handled = true;
+                await SelectAllAsync();
+                return;
+            }
+            var selected = FileGrid.SelectedItems.Cast<RemoteEntry>().ToArray();
+            if (selected.Length == 0) return;
+            e.Handled = true;
+            await CopyToClipboardAsync(selected);
+            return;
+        }
         if (e.Key != Key.Back) return;
         // 连续退格导航期间焦点可能被禁用移走，此时仍然把退格当作“上一级”。
         if (navigatingUp)
@@ -429,18 +446,34 @@ public partial class RemoteBrowser : UserControl
     }
     private async void Grid_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.A && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            e.Handled = true;
+            await SelectAllAsync();
+            return;
+        }
         if (e.Key == Key.C && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
         {
-            if (FileGrid.SelectedItem is RemoteEntry selected)
-            {
-                e.Handled = true;
-                await CopyToClipboardAsync(selected);
-            }
+            var selected = FileGrid.SelectedItems.Cast<RemoteEntry>().ToArray();
+            if (selected.Length == 0) return;
+            e.Handled = true;
+            await CopyToClipboardAsync(selected);
             return;
         }
         if (e.Key != Key.Back) return;
         e.Handled = true;
         await HandleBackspaceAsync();
+    }
+    private async Task SelectAllAsync()
+    {
+        if (!allLoaded)
+        {
+            SetStatus("正在加载全部条目…", "MutedBrush");
+            await LoadAllPagesAsync();
+        }
+        FileGrid.Focus();
+        FileGrid.SelectAll();
+        SetStatus($"已选择 {FileGrid.SelectedItems.Count} 项", "MutedBrush");
     }
     private async Task HandleBackspaceAsync()
     {
@@ -510,7 +543,14 @@ public partial class RemoteBrowser : UserControl
     });
     private void Row_RightClick(object sender, MouseButtonEventArgs e)
     {
-        if (sender is DataGridRow row) { row.IsSelected = true; row.Focus(); }
+        if (sender is not DataGridRow row) return;
+        // 与资源管理器一致：右键已选中的行保留多选，右键未选中的行改为只选该行。
+        if (!row.IsSelected)
+        {
+            FileGrid.SelectedItems.Clear();
+            row.IsSelected = true;
+        }
+        row.Focus();
     }
     private void Row_ContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
@@ -522,7 +562,11 @@ public partial class RemoteBrowser : UserControl
     {
         var menu = new ContextMenu();
         var copy = new MenuItem { Header = "复制" };
-        copy.Click += async (_, _) => await CopyToClipboardAsync(entry);
+        copy.Click += async (_, _) =>
+        {
+            var selected = FileGrid.SelectedItems.Cast<RemoteEntry>().ToArray();
+            await CopyToClipboardAsync(selected.Contains(entry) ? selected : [entry]);
+        };
         menu.Items.Add(copy);
         if (!entry.IsDirectory)
         {
@@ -578,31 +622,152 @@ public partial class RemoteBrowser : UserControl
         SetProgress(100, "下载完成");
         SetStatus("下载完成，SHA-256 校验通过", "SuccessBrush");
     }, cancellable: true);
-    private static readonly string ClipboardTempRoot = Path.Combine(Path.GetTempPath(), "FileTransferClipboard");
+    // 按用户和进程隔离，避免多个客户端实例互相删除正在使用的剪贴板会话。
+    // 放在 LocalAppData\FileTransferDemo 下（日志和配置已验证可写），避免部分环境禁止写 %TEMP%。
+    private static readonly string ClipboardTempRoot = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "FileTransferDemo", "Clipboard", Environment.UserName, Environment.ProcessId.ToString());
+    private static readonly List<string> clipboardSessions = [];
     // 复制到 Windows 剪贴板：先取到本机临时目录，再以文件拖放格式写入，资源管理器可直接粘贴。
-    public Task CopyToClipboardAsync(RemoteEntry entry) => ExecuteAsync(async ct =>
+    public Task CopyToClipboardAsync(RemoteEntry entry) => CopyToClipboardAsync([entry]);
+    public Task CopyToClipboardAsync(IReadOnlyList<RemoteEntry> selected) => ExecuteAsync(async ct =>
     {
-        BusyText.Text = entry.IsDirectory ? "正在准备复制文件夹…" : "正在准备复制文件…";
-        SetProgress(0, "准备复制");
-        CleanClipboardTemp();
-        string tempRoot = Path.Combine(ClipboardTempRoot, Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempRoot);
-        var endpoint = Endpoint; var progress = ArchiveProgress();
-        string archive = await endpoint.CompressAsync(entry.Path, progress, ct);
-        string zipLocal = Path.Combine(tempRoot, "__copy.zip");
-        await endpoint.DownloadZipAsync(archive, zipLocal, progress, ct);
-        ct.ThrowIfCancellationRequested();
-        ZipFile.ExtractToDirectory(zipLocal, tempRoot, true);
-        File.Delete(zipLocal);
-        await DeleteServerArchiveAsync(archive, ct);
+        if (selected.Count == 0) return;
+        BusyText.Text = selected.Count == 1
+            ? (selected[0].IsDirectory ? "正在准备复制文件夹…" : "正在准备复制文件…")
+            : $"正在准备复制 {selected.Count} 项…";
+        SetBusyProgress(0, BusyText.Text);
+        string tempRoot = CreateClipboardSession();
+        clipboardSessions.Add(tempRoot);
+        var endpoint = Endpoint;
+        int completedItems = 0;
+        var progress = new Progress<RemoteTransferProgress>(value =>
+        {
+            double fraction = CopyStageFraction(value.Stage, value.Percent);
+            double overall = (completedItems + fraction) * 100d / selected.Count;
+            SetBusyProgress(overall, $"{value.Stage} {overall:F0}% · {completedItems + 1}/{selected.Count}：{Path.GetFileName(value.Path.TrimEnd('/'))}");
+        });
+        foreach (var item in selected)
+        {
+            ct.ThrowIfCancellationRequested();
+            string archive = await endpoint.CompressAsync(item.Path, progress, ct);
+            string zipLocal = Path.Combine(tempRoot, "__copy-" + Guid.NewGuid().ToString("N") + ".zip");
+            await endpoint.DownloadZipAsync(archive, zipLocal, progress, ct);
+            ct.ThrowIfCancellationRequested();
+            try { ZipFile.ExtractToDirectory(zipLocal, tempRoot, true); }
+            catch (Exception ex) { throw new IOException("解压复制内容失败：" + ex.Message, ex); }
+            File.Delete(zipLocal);
+            await DeleteServerArchiveAsync(archive, ct);
+            completedItems++;
+            SetBusyProgress(completedItems * 100d / selected.Count, $"已完成 {completedItems}/{selected.Count}（{completedItems * 100d / selected.Count:F0}%）");
+        }
         string[] paths = Directory.GetFileSystemEntries(tempRoot);
         if (paths.Length == 0) throw new IOException("复制内容为空");
         var data = new DataObject();
         data.SetData(DataFormats.FileDrop, paths);
         Clipboard.SetDataObject(data, true);
-        SetProgress(100, "复制完成");
-        SetStatus($"已复制 {entry.Name}，可在本地文件夹粘贴", "SuccessBrush");
+        SetBusyProgress(100, "复制完成");
+        SetStatus(selected.Count == 1 ? $"已复制 {selected[0].Name}，可在本地文件夹粘贴" : $"已复制 {selected.Count} 项，可在本地文件夹粘贴", "SuccessBrush");
     }, cancellable: true);
+    // 单个条目的压缩/下载阶段折算成整体进度，避免压缩完成后进度回退。
+    private static double CopyStageFraction(string? stage, double percent)
+    {
+        double p = Math.Clamp(percent, 0, 100) / 100d;
+        return stage switch
+        {
+            "扫描目录" => 0,
+            "压缩" => 0.35 * p,
+            "计算校验值" or "准备下载" or "接收数据" => 0.35,
+            "下载" => 0.35 + 0.63 * p,
+            "下载完成" => 0.99,
+            _ => 0.35 * p
+        };
+    }
+    private static string CreateClipboardSession()
+    {
+        try
+        {
+            Directory.CreateDirectory(ClipboardTempRoot);
+            CleanClipboardTemp();
+            CleanStaleClipboardRoots();
+            string session = Path.Combine(ClipboardTempRoot, Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(session);
+            return session;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            // 默认目录不可用时依次尝试 LocalAppData 独立目录和系统临时目录。
+            Log.Warning(ex, "默认剪贴板临时目录不可用，尝试备用目录");
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            foreach (string fallback in new[]
+            {
+                Path.Combine(local, "FileTransferDemo", "Clipboard-" + Guid.NewGuid().ToString("N")),
+                Path.Combine(Path.GetTempPath(), "FileTransferClipboard-" + Guid.NewGuid().ToString("N"))
+            })
+            {
+                try
+                {
+                    Directory.CreateDirectory(fallback);
+                    return fallback;
+                }
+                catch (Exception retry) when (retry is UnauthorizedAccessException or IOException)
+                {
+                    Log.Warning(retry, "剪贴板备用目录不可用；路径 {Path}", fallback);
+                }
+            }
+            throw new IOException("无法创建剪贴板临时目录，请检查 LocalAppData 和 TEMP 目录权限", ex);
+        }
+    }
+    private static void CleanClipboardTemp()
+    {
+        foreach (string session in clipboardSessions.ToArray())
+        {
+            try { DeleteDirectory(session); }
+            catch (Exception ex) { Log.Debug(ex, "清理剪贴板会话失败；路径 {Path}", session); }
+            clipboardSessions.Remove(session);
+        }
+        try
+        {
+            if (!Directory.Exists(ClipboardTempRoot)) return;
+            foreach (string directory in Directory.GetDirectories(ClipboardTempRoot))
+            {
+                if (clipboardSessions.Contains(directory)) continue;
+                try { DeleteDirectory(directory); }
+                catch (Exception ex) { Log.Debug(ex, "清理旧剪贴板临时目录失败；路径 {Path}", directory); }
+            }
+        }
+        catch (Exception ex) { Log.Debug(ex, "扫描剪贴板临时目录失败"); }
+    }
+    private static void CleanStaleClipboardRoots()
+    {
+        try
+        {
+            string userRoot = Path.GetDirectoryName(ClipboardTempRoot)!;
+            if (!Directory.Exists(userRoot)) return;
+            foreach (string directory in Directory.GetDirectories(userRoot))
+            {
+                if (string.Equals(directory, ClipboardTempRoot, StringComparison.OrdinalIgnoreCase)) continue;
+                try
+                {
+                    // 只清理长期未使用的其他进程目录，避免误删正在粘贴的数据。
+                    if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(directory) < TimeSpan.FromDays(7)) continue;
+                    DeleteDirectory(directory);
+                }
+                catch (Exception ex) { Log.Debug(ex, "清理过期剪贴板目录失败；路径 {Path}", directory); }
+            }
+        }
+        catch (Exception ex) { Log.Debug(ex, "扫描过期剪贴板目录失败"); }
+    }
+    private static void DeleteDirectory(string path)
+    {        if (!Directory.Exists(path)) return;
+        // 解压出来的文件可能带只读属性，先清除再删除。
+        foreach (string file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+        {
+            try { File.SetAttributes(file, FileAttributes.Normal); }
+            catch (Exception ex) { Log.Debug(ex, "清除只读属性失败；路径 {Path}", file); }
+        }
+        Directory.Delete(path, true);
+    }
     private async Task DeleteServerArchiveAsync(string archive, CancellationToken ct)
     {
         try
@@ -613,17 +778,6 @@ public partial class RemoteBrowser : UserControl
             if (zip is not null) await Endpoint.DeleteFileAsync(zip, ct);
         }
         catch (Exception ex) { Log.Warning(ex, "清理复制用的服务端 ZIP 失败；路径 {ArchivePath}", archive); }
-    }
-    private static void CleanClipboardTemp()
-    {
-        try
-        {
-            if (!Directory.Exists(ClipboardTempRoot)) return;
-            foreach (string directory in Directory.GetDirectories(ClipboardTempRoot))
-                try { Directory.Delete(directory, true); }
-                catch (Exception ex) { Log.Debug(ex, "清理剪贴板临时目录失败；路径 {Path}", directory); }
-        }
-        catch (Exception ex) { Log.Debug(ex, "扫描剪贴板临时目录失败"); }
     }
     private Task ExecuteAsync(Func<Task> action) => ExecuteAsync(_ => action(), false);
     private async Task ExecuteAsync(Func<CancellationToken, Task> action, bool cancellable = false)
@@ -669,10 +823,24 @@ public partial class RemoteBrowser : UserControl
     }
     private void ShowBusy(string text)
     {
+        BusyProgress.IsIndeterminate = true;
+        BusyProgress.Value = 0;
         BusyText.Text = text;
         BusyOverlay.Visibility = Visibility.Visible;
     }
-    private void HideBusy() => BusyOverlay.Visibility = Visibility.Collapsed;
+    private void SetBusyProgress(double percent, string text)
+    {
+        BusyProgress.IsIndeterminate = false;
+        BusyProgress.Value = Math.Clamp(percent, 0, 100);
+        BusyText.Text = text;
+        BusyOverlay.Visibility = Visibility.Visible;
+    }
+    private void HideBusy()
+    {
+        BusyOverlay.Visibility = Visibility.Collapsed;
+        BusyProgress.IsIndeterminate = true;
+        BusyProgress.Value = 0;
+    }
     private void ShowProgress(string text)
     {
         UploadText.Text = text;

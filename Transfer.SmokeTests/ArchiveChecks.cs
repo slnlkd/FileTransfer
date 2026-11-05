@@ -50,6 +50,18 @@ internal static class ArchiveChecks
             check(archive.Entries.Count == 1 && memory.ToArray().SequenceEqual(content), "任意类型单文件可生成 ZIP 且内容一致");
         }
         await RejectAsync(() => client.DownloadZipAsync("中文文件夹/数据.bin", Path.Combine(testRoot, "不能下载.bin")), check, "ZIP 下载端点拒绝其他文件类型");
+        string lockedFolder = Path.Combine(root, "占用测试");
+        Directory.CreateDirectory(lockedFolder);
+        await File.WriteAllTextAsync(Path.Combine(lockedFolder, "正常.txt"), "正常");
+        string lockedFile = Path.Combine(lockedFolder, "正在写入.log");
+        await File.WriteAllTextAsync(lockedFile, "日志内容");
+        using (new FileStream(lockedFile, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            string lockedZip = await client.CompressAsync("占用测试");
+            using var archive = ZipFile.OpenRead(Path.Combine(root, lockedZip));
+            check(archive.GetEntry("占用测试/正常.txt") != null && archive.GetEntry("占用测试/正在写入.log") == null, "压缩跳过被独占的文件并保留其余内容");
+            await RejectAsync(() => client.CompressAsync("占用测试/正在写入.log"), check, "直接压缩被独占文件时提示文件正在使用");
+        }
         using (var cancel = new CancellationTokenSource())
         {
             string partial = Path.Combine(testRoot, "取消.zip");
