@@ -6,8 +6,7 @@ obj/
 *.part.json
 *.part.lock
 .local/
-Local/
-Directory.Build.local.props
+Local/NgFilter/ngfilter.json
 artifacts/
 publish/
 release/

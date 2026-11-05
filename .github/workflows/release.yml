@@ -65,11 +65,15 @@ jobs:
           New-Item -ItemType Directory -Path .\release\FileTransfer -Force | Out-Null
           Copy-Item .\publish\FileTransfer\* .\release\FileTransfer -Recurse
           Copy-Item .\README.md .\release\FileTransfer\README.md
+          Copy-Item .\Local\NG部署说明.md .\release\FileTransfer\NG部署说明.md
+          Copy-Item .\Local\NgFilter\ngfilter.example.json .\release\FileTransfer\ngfilter.example.json
           Compress-Archive -Path .\release\FileTransfer -DestinationPath ".\FileTransfer-$env:GITHUB_REF_NAME-win-x64.zip" -Force
 
           New-Item -ItemType Directory -Path .\release-framework\FileTransfer -Force | Out-Null
           Copy-Item .\publish\framework\FileTransfer\* .\release-framework\FileTransfer -Recurse
           Copy-Item .\README.md .\release-framework\FileTransfer\README.md
+          Copy-Item .\Local\NG部署说明.md .\release-framework\FileTransfer\NG部署说明.md
+          Copy-Item .\Local\NgFilter\ngfilter.example.json .\release-framework\FileTransfer\ngfilter.example.json
           $notice = @(
             "此版本为框架依赖版，体积较小。",
             "运行前请先安装 .NET 10 Desktop Runtime（桌面运行时）：",

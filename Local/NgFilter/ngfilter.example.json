@@ -1,0 +1,4 @@
+{
+  "ConnectionString": "User Id=RCMDB;Password=REPLACE_ME;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=10.100.21.60)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=eapdb)))",
+  "CommandTimeoutSeconds": 10
+}

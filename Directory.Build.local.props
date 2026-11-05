@@ -1,0 +1,12 @@
+<Project>
+  <!-- 本机个性化配置：不纳入版本控制。删除本文件即恢复通用构建。 -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'RemoteFiles.Server'">
+    <PackageReference Include="Oracle.ManagedDataAccess.Core" Version="23.6.1" />
+    <Compile Include="$(MSBuildThisFileDirectory)Local/NgFilter/OracleNgFolderQuery.cs" Link="NgFilter/OracleNgFolderQuery.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Local/NgFilter/ServerHook.cs" Link="NgFilter/ServerHook.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Local/NgFilter/RemoteBrowser.NgFilter.cs" Link="NgFilter/RemoteBrowser.NgFilter.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'RemoteFiles.Client'">
+    <Compile Include="$(MSBuildThisFileDirectory)Local/NgFilter/RemoteBrowser.NgFilter.cs" Link="NgFilter/RemoteBrowser.NgFilter.cs" />
+  </ItemGroup>
+</Project>

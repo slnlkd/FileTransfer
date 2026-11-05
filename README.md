@@ -78,6 +78,20 @@ dotnet build .\FileTransfer.sln -c Release
 
 同一台电脑测试可使用 `127.0.0.1`；跨电脑连接请使用服务端局域网 IP，并按需放行对应防火墙端口。
 
+## 可选：NG 过滤（RCMDB）
+
+远程文件管理客户端支持按机台和日期只显示 NG 截图文件夹。该功能默认不生效，需要服务端配置 Oracle 连接：
+
+1. 复制 `Local/NgFilter/ngfilter.example.json` 为 `%LOCALAPPDATA%\FileTransferDemo\ngfilter.json`，填入实际密码。
+2. 重启服务端，在客户端勾选“NG 过滤”。
+3. 只对 `A6` 开头的机台目录和日期目录生效；未配置时状态栏会提示“服务端未启用目录过滤”。
+
+真实 `ngfilter.json` 已在 `.gitignore` 中排除，请勿提交。需要带该功能的自包含发布包时，运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Local\publish-ng.ps1
+```
+
 ## 自检
 
 ```powershell
