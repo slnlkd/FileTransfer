@@ -23,6 +23,53 @@ internal static class RemoteChecks
         var client = new RemoteFileClient("127.0.0.1", server.Port);
         var list = (await client.CallAsync(new("list"))).Entries!;
         check(list.Any(e => e.IsDirectory && e.Name == "子目录") && list.Any(e => e.Name == "hello.txt"), "远程文件管理返回文件和目录");
+        string pageRoot = Path.Combine(root, "分页");
+        Directory.CreateDirectory(pageRoot);
+        for (int i = 1; i <= 620; i++) await File.WriteAllTextAsync(Path.Combine(pageRoot, i + ".txt"), "");
+        var all = await client.CallAsync(new("list", "分页"));
+        check(all.Total == 620 && all.Entries!.Length == 620, "列表返回总数和全部条目");
+        check(all.Entries![0].Name == "1.txt" && all.Entries[1].Name == "2.txt" && all.Entries[9].Name == "10.txt", "列表按名称自然排序");
+        var firstPage = await client.CallAsync(new("list", "分页", Take: 200));
+        var secondPage = await client.CallAsync(new("list", "分页", Skip: 200, Take: 200));
+        check(firstPage.Entries!.Length == 200 && firstPage.Total == 620, "列表分页返回指定数量并报告总数");
+        check(secondPage.Entries![0].Name == "201.txt" && secondPage.Total == 620, "列表分页跳过偏移正确");
+        var foldersOnly = await client.CallAsync(new("list", "分页", FoldersOnly: true));
+        check(foldersOnly.Entries!.All(e => e.IsDirectory) && foldersOnly.Total == 0, "目录树请求只返回文件夹");
+        int expectedFiltered = Enumerable.Range(1, 620).Count(i => i.ToString().StartsWith('1'));
+        await using var filteredServer = new RemoteFileService(pageRoot)
+        {
+            ListFilter = (_, _, items) => Task.FromResult(new RemoteFilterResult(items.Where(e => e.Name.StartsWith('1')).ToArray()))
+        };
+        filteredServer.Start(0);
+        var filteredPage = await new RemoteFileClient("127.0.0.1", filteredServer.Port)
+            .CallAsync(new("list", "", Filter: "测试", Take: 5));
+        check(filteredPage.Total == expectedFiltered && filteredPage.Entries!.Length == 5, "过滤后分页总数正确");
+        var listener = new TcpListener(System.Net.IPAddress.Loopback, 0); listener.Start();
+        int attempts = 0;
+        var serve = Task.Run(async () =>
+        {
+            while (true)
+            {
+                TcpClient socket;
+                try { socket = await listener.AcceptTcpClientAsync(); }
+                catch (Exception) { return; }
+                _ = Task.Run(async () =>
+                {
+                    using (socket)
+                    {
+                        var stream = socket.GetStream();
+                        await Wire.ReadAsync<RemoteRequest>(stream);
+                        // 第一次连接直接断开，模拟网络抖动；第二次正常返回。
+                        if (Interlocked.Increment(ref attempts) == 1) return;
+                        await Wire.WriteAsync(stream, new RemoteResponse(true, Entries: [], Total: 0));
+                    }
+                });
+            }
+        });
+        var retryClient = new RemoteFileClient("127.0.0.1", ((System.Net.IPEndPoint)listener.LocalEndpoint).Port);
+        var retried = await retryClient.CallAsync(new("list"));
+        check(attempts == 2 && retried.Ok, "列表连接中断后自动重试一次");
+        listener.Stop(); await serve;
         var text = await client.CallAsync(new("text", "hello.txt"));
         check(text.Text == "第一行\r\n第二行" && text.EncodingName == "65001:bom", "读取中文 UTF8 BOM 文本");
         var saved = await client.CallAsync(new("save", "hello.txt", "修改后\r\n", text.Version, text.EncodingName));

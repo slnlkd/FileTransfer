@@ -53,7 +53,7 @@ public sealed class RemoteFileStore
                 var info = new FileInfo(p);
                 return new RemoteEntry(Path.GetFileName(p), Path.GetRelativePath(Root, p).Replace('\\', '/'), dir,
                     dir ? 0 : info.Length, File.GetCreationTimeUtc(p), File.GetLastWriteTimeUtc(p));
-            }).OrderByDescending(e => e.IsDirectory).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+            }).OrderByDescending(e => e.IsDirectory).ThenBy(e => e.Name, NaturalComparer.Instance).ToArray();
     }
     private static bool IsText(string path) => Path.GetExtension(path).ToLowerInvariant() is ".txt" or ".log" or ".json";
     private static Encoding DecodeEncoding(byte[] bytes)

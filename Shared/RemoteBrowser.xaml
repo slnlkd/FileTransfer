@@ -28,7 +28,9 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                <StackPanel Grid.Column="0"
+                            x:Name="NavHost"
+                            Orientation="Horizontal">
                     <Button Margin="0,0,4,0"
                             Click="Parent_Click"
                             Content="上一级"
@@ -291,6 +293,13 @@
                                    FontSize="11"
                                    Foreground="{StaticResource MutedBrush}"
                                    Text="正在处理…" />
+                        <Button x:Name="CancelButton"
+                                Margin="0,10,0,0"
+                                Padding="16,2"
+                                HorizontalAlignment="Center"
+                                Click="Cancel_Click"
+                                Content="取消"
+                                Visibility="Collapsed" />
                     </StackPanel>
                 </Border>
             </Grid>

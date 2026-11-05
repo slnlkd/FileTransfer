@@ -22,29 +22,41 @@ public partial class RemoteBrowser : UserControl
     private string directory = "";
     private bool busy;
     private bool rebuilding;
-    private RemoteEntry[] entries = [];
+    private System.Collections.ObjectModel.ObservableCollection<RemoteEntry> entries = [];
+    private const int PageSize = 500;
+    private int totalCount;
+    private bool allLoaded = true;
+    private bool loadingMore;
+    private readonly Dictionary<string, (DateTime At, RemoteEntry[] Entries)> unfilteredCache = [];
+    private int navigationVersion;
+    private CancellationTokenSource? operationCancel;
     private Window? hostWindow;
     private int pendingUp;
     private bool navigatingUp;
     private string? listFilter;
     private Func<string, string?>? localEmptyText = null;
     private ScrollViewer? fileScroll;
+    private bool scrollHooked;
     public bool IsBusy => busy;
-    private void Grid_Sorting(object sender, DataGridSortingEventArgs e)
+    private async void Grid_Sorting(object sender, DataGridSortingEventArgs e)
     {
         if (CollectionViewSource.GetDefaultView(FileGrid.ItemsSource) is not ListCollectionView view) return;
+        e.Handled = true;
         string member = e.Column.SortMemberPath;
         if (string.IsNullOrEmpty(member)) { view.CustomSort = null; return; }
+        // 分页状态下先取回全部条目，避免只对当前页排序造成顺序错乱。
+        if (!allLoaded)
+        {
+            SetStatus("正在加载全部条目…", "MutedBrush");
+            await LoadAllPagesAsync();
+        }
         var direction = e.Column.SortDirection == ListSortDirection.Ascending ? ListSortDirection.Descending : ListSortDirection.Ascending;
         foreach (var column in FileGrid.Columns) column.SortDirection = null;
         view.CustomSort = new EntryComparer(member, direction);
         e.Column.SortDirection = direction;
-        e.Handled = true;
     }
     private sealed class EntryComparer(string member, ListSortDirection direction) : IComparer
     {
-        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
-        private static extern int StrCmpLogicalW(string left, string right);
         public int Compare(object? x, object? y)
         {
             var left = (RemoteEntry)x!;
@@ -53,7 +65,7 @@ public partial class RemoteBrowser : UserControl
             if (left.IsDirectory != right.IsDirectory) return left.IsDirectory ? -1 : 1;
             int result = member switch
             {
-                "Name" => StrCmpLogicalW(left.Name, right.Name),
+                "Name" => NaturalComparer.Compare(left.Name, right.Name),
                 "Kind" => string.Compare(left.Kind, right.Kind, StringComparison.OrdinalIgnoreCase),
                 "Size" => left.Length.CompareTo(right.Length),
                 "CreatedLocal" => left.CreatedLocal.CompareTo(right.CreatedLocal),
@@ -84,14 +96,19 @@ public partial class RemoteBrowser : UserControl
     {
         if (busy) throw new IOException("当前操作尚未结束，请稍后重新连接");
         client = endpoint; directory = "";
+        unfilteredCache.Clear();
         foreach (var column in FileGrid.Columns) column.SortDirection = null;
         FileGrid.Columns[0].SortDirection = ListSortDirection.Ascending;
         await NavigateAsync("", true);
     }
     public void Disconnect()
     {
+        operationCancel?.Cancel();
         client = null;
         entries = [];
+        totalCount = 0; allLoaded = true;
+        navigationVersion++;
+        unfilteredCache.Clear();
         FolderTree.Items.Clear();
         FileGrid.ItemsSource = null;
         PathText.Inlines.Clear();
@@ -105,14 +122,14 @@ public partial class RemoteBrowser : UserControl
         UpdateEmptyState();
     }
     private RemoteFileClient Endpoint => client ?? throw new IOException("请先连接服务端");
-    private async Task NavigateAsync(string path, bool rebuild = false)
+    private async Task NavigateAsync(string path, bool rebuild = false, CancellationToken ct = default)
     {
         bool ownedBusy = !busy;
         if (ownedBusy) ShowBusy("正在读取目录…");
         else BusyText.Text = "正在读取目录…";
         try
         {
-            var response = await Endpoint.CallAsync(new("list", path, Filter: listFilter));
+            var response = await Endpoint.CallAsync(new("list", path, Filter: listFilter, Take: PageSize), ct);
             if (!string.Equals(directory, path, StringComparison.Ordinal))
             {
                 foreach (var column in FileGrid.Columns) column.SortDirection = null;
@@ -120,7 +137,12 @@ public partial class RemoteBrowser : UserControl
             }
             var nameDirection = FileGrid.Columns[0].SortDirection;
             string previous = directory;
-            directory = path; entries = response.Entries ?? [];
+            directory = path;
+            navigationVersion++;
+            var page = response.Entries ?? [];
+            entries = new(page);
+            totalCount = response.Total > 0 ? response.Total : page.Length;
+            allLoaded = page.Length >= totalCount;
             FileGrid.ItemsSource = entries;
             // 切换目录后回到列表顶部；同一目录刷新保留当前位置。
             if (!string.Equals(previous, path, StringComparison.Ordinal)) ResetFileScroll();
@@ -130,8 +152,8 @@ public partial class RemoteBrowser : UserControl
                 FileGrid.Columns[0].SortDirection = direction;
             }
             UpdatePath(response);
-            ItemCountText.Text = $"{entries.Length} 项";
-            SetStatus(response.Warning ?? (entries.Length == 0 ? EmptyTextFor(directory) : "就绪"),
+            UpdateCountText();
+            SetStatus(response.Warning ?? (entries.Count == 0 ? EmptyTextFor(directory) : "就绪"),
                 response.Warning is null ? "MutedBrush" : "WarningBrush");
             UpdateEmptyState();
             if (rebuild || FolderTree.Items.Count == 0)
@@ -141,19 +163,69 @@ public partial class RemoteBrowser : UserControl
                 {
                     FolderTree.Items.Clear();
                     var root = MakeNode(new(response.RootName ?? "共享根目录", "", true, 0, default, default));
-                    SetChildren(root, entries); root.IsExpanded = true;
+                    SetChildren(root, await UnfilteredEntriesAsync(path, ct));
+                    root.IsExpanded = true;
                     FolderTree.Items.Add(root);
                 }
                 finally { rebuilding = false; }
             }
-            else if (FindNode(FolderTree.Items, path) is TreeViewItem node)
+            else if (FindNode(FolderTree.Items, path) is TreeViewItem { IsExpanded: true } node)
             {
-                // 目录树始终展示未过滤的完整内容，过滤只作用于右侧列表。
-                var treeEntries = listFilter is null ? entries : (await Endpoint.CallAsync(new("list", path))).Entries ?? [];
-                SetChildren(node, treeEntries);
+                // 目录树始终展示未过滤的完整内容，过滤只作用于右侧列表；折叠的节点不预加载。
+                SetChildren(node, await UnfilteredEntriesAsync(path, ct));
             }
         }
         finally { if (ownedBusy) HideBusy(); }
+    }
+    private void UpdateCountText() => ItemCountText.Text = allLoaded ? $"{entries.Count} 项" : $"{entries.Count} / {totalCount} 项";
+    // 目录树始终使用未过滤结果，且不受分页影响；结果短时间缓存，避免来回切换时重复请求。
+    private async Task<RemoteEntry[]> UnfilteredEntriesAsync(string path, CancellationToken ct)
+    {
+        if (unfilteredCache.TryGetValue(path, out var cached) && DateTime.UtcNow - cached.At < TimeSpan.FromSeconds(10)) return cached.Entries;
+        var response = await Endpoint.CallAsync(new("list", path), ct);
+        var all = response.Entries ?? [];
+        unfilteredCache[path] = (DateTime.UtcNow, all);
+        return all;
+    }
+    private async Task LoadMoreAsync(CancellationToken ct = default)
+    {
+        if (loadingMore || allLoaded || client is null) return;
+        loadingMore = true;
+        int version = navigationVersion;
+        try
+        {
+            var response = await Endpoint.CallAsync(new("list", directory, Filter: listFilter, Skip: entries.Count, Take: PageSize), ct);
+            if (version != navigationVersion) return;
+            if (response.Total > 0) totalCount = response.Total;
+            var page = response.Entries ?? [];
+            foreach (var entry in page) entries.Add(entry);
+            allLoaded = page.Length == 0 || entries.Count >= totalCount;
+            UpdateCountText();
+            UpdateEmptyState();
+            if (CollectionViewSource.GetDefaultView(entries) is ListCollectionView view && view.CustomSort is not null) view.Refresh();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "加载更多条目失败；目录 {RemoteDirectory}", directory);
+            SetStatus("加载更多失败：" + ex.Message, "DangerBrush");
+        }
+        finally { loadingMore = false; }
+    }
+    private async Task LoadAllPagesAsync()
+    {
+        while (!allLoaded && client is not null)
+        {
+            int before = entries.Count;
+            await LoadMoreAsync();
+            if (entries.Count == before) break;
+        }
+    }
+    private void FileScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (busy || loadingMore || allLoaded) return;
+        if (e.VerticalOffset + e.ViewportHeight < e.ExtentHeight - 200) return;
+        _ = LoadMoreAsync();
     }
     private void UpdatePath(RemoteResponse response)
     {
@@ -171,7 +243,7 @@ public partial class RemoteBrowser : UserControl
     private void UpdateEmptyState()
     {
         bool connected = client != null;
-        EmptyState.Visibility = connected && entries.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
+        EmptyState.Visibility = connected && entries.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
         EmptyText.Text = connected ? EmptyTextFor(directory) : "连接后可浏览共享目录";
         EmptyUploadButton.Visibility = connected ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -231,7 +303,7 @@ public partial class RemoteBrowser : UserControl
             node.Expanded += async (sender, e) =>
             {
                 if (!ReferenceEquals(e.OriginalSource, node) || rebuilding) return;
-                await ExecuteAsync(async () => SetChildren(node, (await Endpoint.CallAsync(new("list", entry.Path))).Entries ?? []));
+                await ExecuteAsync(async () => SetChildren(node, await UnfilteredEntriesAsync(entry.Path, CancellationToken.None)));
             };
         }
         return node;
@@ -302,6 +374,8 @@ public partial class RemoteBrowser : UserControl
     }
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await ExecuteAsync(async () =>
     {
+        // 刷新会丢弃未过滤缓存，确保目录树看到服务端最新内容。
+        unfilteredCache.Clear();
         // 根目录重建可移除树中的过期节点；目录内刷新只更新当前节点。
         await NavigateAsync(directory, directory.Length == 0);
     });
@@ -310,12 +384,19 @@ public partial class RemoteBrowser : UserControl
     private void Browser_Loaded(object sender, RoutedEventArgs e)
     {
         hostWindow = Window.GetWindow(this);
+        if (!scrollHooked)
+        {
+            fileScroll ??= FindVisualChild<ScrollViewer>(FileGrid);
+            if (fileScroll is not null) { fileScroll.ScrollChanged += FileScroll_ScrollChanged; scrollHooked = true; }
+        }
         if (hostWindow is null) return;
         hostWindow.PreviewKeyDown -= HostWindow_PreviewKeyDown;
         hostWindow.PreviewKeyDown += HostWindow_PreviewKeyDown;
     }
     private void Browser_Unloaded(object sender, RoutedEventArgs e)
     {
+        if (fileScroll is not null) { fileScroll.ScrollChanged -= FileScroll_ScrollChanged; fileScroll = null; }
+        scrollHooked = false;
         if (hostWindow is null) return;
         hostWindow.PreviewKeyDown -= HostWindow_PreviewKeyDown;
         hostWindow = null;
@@ -368,11 +449,12 @@ public partial class RemoteBrowser : UserControl
     }
     private async void Upload_Click(object sender, RoutedEventArgs e)
     {
+        if (busy) return;
         if (client == null) { SetStatus("请先连接服务端", "DangerBrush"); return; }
         var dialog = new OpenFileDialog { Multiselect = true, Title = "上传文件到服务端当前目录" };
         if (dialog.ShowDialog() != true) return;
         var endpoint = Endpoint; string targetDirectory = directory;
-        await ExecuteAsync(async () =>
+        await ExecuteAsync(async ct =>
         {
             BusyText.Text = "正在上传…";
             ShowProgress("准备上传");
@@ -389,19 +471,21 @@ public partial class RemoteBrowser : UserControl
                     SetProgress(value, $"{name} {value:F1}%");
                     SetStatus("正在上传 " + name, "MutedBrush");
                 });
-                await endpoint.UploadAsync(local, target, exists, progress);
+                await endpoint.UploadAsync(local, target, exists, progress, ct);
                 uploaded++;
             }
-            await NavigateAsync(targetDirectory);
+            unfilteredCache.Clear();
+            await NavigateAsync(targetDirectory, false, ct);
             SetProgress(100, "上传完成");
             SetStatus(uploaded > 0 ? "上传完成" : "未上传文件", uploaded > 0 ? "SuccessBrush" : "MutedBrush");
-        });
+        }, cancellable: true);
     }
     private async void NewFolder_Click(object sender, RoutedEventArgs e) => await ExecuteAsync(async () =>
     {
         string name = NewFolderBox.Text.Trim();
         if (string.IsNullOrEmpty(name) || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name is "." or "..") throw new IOException("请输入有效的单级文件夹名称");
         await Endpoint.CallAsync(new("mkdir", directory.Length == 0 ? name : directory + "/" + name));
+        unfilteredCache.Clear();
         NewFolderBox.Clear(); await NavigateAsync(directory);
         SetStatus("已新建文件夹", "SuccessBrush");
     });
@@ -454,51 +538,74 @@ public partial class RemoteBrowser : UserControl
         SetProgress(value.Percent, $"{value.Stage} {value.Percent:F1}%", indeterminate);
         SetStatus($"{value.Stage}：{value.Path}", "MutedBrush");
     });
-    public Task AddArchiveAsync(RemoteEntry entry) => ExecuteAsync(async () =>
+    public Task AddArchiveAsync(RemoteEntry entry) => ExecuteAsync(async ct =>
     {
         BusyText.Text = "正在压缩…";
         SetProgress(0, "准备压缩");
-        string archive = await Endpoint.CompressAsync(entry.Path, ArchiveProgress());
+        string archive = await Endpoint.CompressAsync(entry.Path, ArchiveProgress(), ct);
         // 刷新 ZIP 所在目录，根目录压缩的结果放在根目录内。
         string parent = ParentPath(entry.Path);
-        await NavigateAsync(parent, parent.Length == 0);
+        unfilteredCache.Clear();
+        await NavigateAsync(parent, parent.Length == 0, ct);
         SetProgress(100, "压缩完成");
         SetStatus("压缩完成：" + archive, "SuccessBrush");
-    });
+    }, cancellable: true);
     // 界面菜单确认后调用；公开方法便于同一界面流程的自动化验证。
     public Task DeleteEntryAsync(RemoteEntry entry) => ExecuteAsync(async () =>
     {
         await Endpoint.DeleteFileAsync(entry);
         string parent = ParentPath(entry.Path);
+        unfilteredCache.Clear();
         await NavigateAsync(parent, parent.Length == 0);
         SetStatus("已删除：" + entry.Path, "SuccessBrush");
     });
-    public Task DownloadEntryAsync(RemoteEntry entry, string destination) => ExecuteAsync(async () =>
+    public Task DownloadEntryAsync(RemoteEntry entry, string destination) => ExecuteAsync(async ct =>
     {
         if (!entry.IsDirectory && !entry.IsZip) throw new IOException("请选择文件夹或 ZIP");
         if (File.Exists(destination) || Directory.Exists(destination)) throw new IOException("本地目标已存在，请更换保存名称");
         BusyText.Text = "正在下载…";
         var endpoint = Endpoint; var progress = ArchiveProgress(); SetProgress(0, "准备下载");
-        string archive = entry.IsDirectory ? await endpoint.CompressAsync(entry.Path, progress) : entry.Path;
-        await endpoint.DownloadZipAsync(archive, destination, progress);
-        if (entry.IsDirectory) await NavigateAsync(ParentPath(entry.Path), ParentPath(entry.Path).Length == 0);
+        string archive = entry.IsDirectory ? await endpoint.CompressAsync(entry.Path, progress, ct) : entry.Path;
+        await endpoint.DownloadZipAsync(archive, destination, progress, ct);
+        if (entry.IsDirectory) { unfilteredCache.Clear(); await NavigateAsync(ParentPath(entry.Path), ParentPath(entry.Path).Length == 0, ct); }
         SetProgress(100, "下载完成");
         SetStatus("下载完成，SHA-256 校验通过", "SuccessBrush");
-    });
-    private async Task ExecuteAsync(Func<Task> action)
+    }, cancellable: true);
+    private Task ExecuteAsync(Func<Task> action) => ExecuteAsync(_ => action(), false);
+    private async Task ExecuteAsync(Func<CancellationToken, Task> action, bool cancellable = false)
     {
         if (busy) return;
-        busy = true; IsEnabled = false;
+        busy = true;
+        FileGrid.IsEnabled = false; FolderTree.IsEnabled = false; FilterHost.IsEnabled = false; NavHost.IsEnabled = false;
         ShowBusy("正在处理…");
-        try { await action(); }
+        using var source = cancellable ? new CancellationTokenSource() : null;
+        operationCancel = source;
+        CancelButton.Visibility = cancellable ? Visibility.Visible : Visibility.Collapsed;
+        CancelButton.IsEnabled = true;
+        try { await action(source?.Token ?? CancellationToken.None); }
+        catch (OperationCanceledException) when (source?.IsCancellationRequested == true)
+        {
+            Log.Information("用户取消远程浏览器操作；当前目录 {RemoteDirectory}", directory);
+            SetStatus("已取消", "MutedBrush");
+        }
         catch (Exception ex) { Log.Error(ex, "远程浏览器操作失败；当前目录 {RemoteDirectory}", directory); SetStatus(ex.Message, "DangerBrush"); }
         finally
         {
             UploadProgress.IsIndeterminate = false;
             HideProgress();
             HideBusy();
-            busy = false; IsEnabled = true;
+            CancelButton.Visibility = Visibility.Collapsed;
+            operationCancel = null;
+            busy = false;
+            FileGrid.IsEnabled = true; FolderTree.IsEnabled = true; FilterHost.IsEnabled = true; NavHost.IsEnabled = true;
         }
+    }
+    private void Cancel_Click(object sender, RoutedEventArgs e)
+    {
+        if (operationCancel is null) return;
+        CancelButton.IsEnabled = false;
+        SetStatus("正在取消…", "WarningBrush");
+        operationCancel.Cancel();
     }
     private void SetStatus(string text, string brushKey = "MutedBrush")
     {

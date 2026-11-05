@@ -190,17 +190,24 @@ public sealed class RemoteFileService : IAsyncDisposable
     {
         var entries = Store.List(request.Path);
         string rootName = Path.GetFileName(Store.Root);
-        if (request.Filter is null || ListFilter is null) return new(true, Entries: entries, RootName: rootName);
-        try
+        string? warning = null;
+        if (request.Filter is not null && ListFilter is not null)
         {
-            var filtered = await ListFilter(request.Filter, request.Path, entries);
-            return new(true, Entries: filtered.Entries, RootName: rootName, Warning: filtered.Warning);
+            try
+            {
+                var filtered = await ListFilter(request.Filter, request.Path, entries);
+                entries = filtered.Entries; warning = filtered.Warning;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "目录过滤失败，回退显示全部；过滤器 {Filter}，路径 {RemotePath}", request.Filter, request.Path);
+                warning = "目录过滤失败，已显示全部：" + ex.Message;
+            }
         }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "目录过滤失败，回退显示全部；过滤器 {Filter}，路径 {RemotePath}", request.Filter, request.Path);
-            return new(true, Entries: entries, RootName: rootName, Warning: "目录过滤失败，已显示全部：" + ex.Message);
-        }
+        if (request.FoldersOnly) entries = entries.Where(e => e.IsDirectory).ToArray();
+        int total = entries.Length;
+        if (request.Take > 0) entries = entries.Skip(Math.Max(0, request.Skip)).Take(request.Take).ToArray();
+        return new(true, Entries: entries, RootName: rootName, Warning: warning, Total: total);
     }
     private RemoteResponse CreateFolder(string relative)
     {

@@ -1,4 +1,5 @@
-﻿using System.Security.Cryptography;
+﻿using System.Net.Sockets;
+using System.Security.Cryptography;
 using Serilog;
 
 namespace Transfer.Core.Remote;
@@ -10,19 +11,50 @@ public sealed class RemoteFileClient(string host, int port)
     {
         var log = Log.ForContext("RequestId", request.RequestId).ForContext("Command", request.Command)
             .ForContext("RemotePath", request.Path).ForContext("Host", host).ForContext("Port", port);
+        // 只对只读命令重试一次，避免写操作被重复执行。
+        int attempts = request.Command is "list" or "text" or "status" ? 2 : 1;
         try
         {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(request.Command is "text" or "save" ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(30));
-            using var socket = await Wire.ConnectAsync(host, port, timeout.Token);
-            var stream = socket.GetStream();
-            log.Information("开始远程文件操作");
-            await Wire.WriteAsync(stream, request, timeout.Token);
-            var response = await Wire.ReadAsync<RemoteResponse>(stream, timeout.Token);
-            Ensure(response); log.Information("远程文件操作成功");
-            return response;
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    timeout.CancelAfter(TimeoutFor(request.Command));
+                    using var socket = await Wire.ConnectAsync(host, port, timeout.Token);
+                    var stream = socket.GetStream();
+                    log.Information("开始远程文件操作；第 {Attempt} 次尝试", attempt);
+                    await Wire.WriteAsync(stream, request, timeout.Token);
+                    var response = await Wire.ReadAsync<RemoteResponse>(stream, timeout.Token);
+                    Ensure(response); log.Information("远程文件操作成功");
+                    return response;
+                }
+                catch (Exception ex) when (attempt < attempts && Retryable(ex, ct))
+                {
+                    log.Warning(ex, "远程文件操作失败，准备重试；第 {Attempt} 次", attempt);
+                    await Task.Delay(500, ct);
+                }
+            }
         }
-        catch (Exception ex) { log.Error(ex, "远程文件操作失败"); throw; }
+        catch (Exception ex)
+        {
+            log.Error(ex, "远程文件操作失败");
+            if (ex is SocketException)
+                throw new IOException($"无法连接服务端 {host}:{port}，请确认服务已启动并且网络可达", ex);
+            throw;
+        }
+    }
+    private static TimeSpan TimeoutFor(string command) => command switch
+    {
+        "text" or "save" => TimeSpan.FromMinutes(2),
+        "list" => TimeSpan.FromSeconds(20),
+        "status" or "start" or "stop" => TimeSpan.FromSeconds(15),
+        _ => TimeSpan.FromSeconds(30)
+    };
+    private static bool Retryable(Exception ex, CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested) return false;
+        return ex is IOException or SocketException or TimeoutException or OperationCanceledException;
     }
     public async Task<byte[]> ReadImageAsync(string path, CancellationToken ct = default)
     {
@@ -30,16 +62,27 @@ public sealed class RemoteFileClient(string host, int port)
         var log = Log.ForContext("RequestId", request.RequestId).ForContext("RemotePath", path);
         try
         {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(60));
-            using var socket = await Wire.ConnectAsync(host, port, timeout.Token);
-            var stream = socket.GetStream();
-            await Wire.WriteAsync(stream, request, timeout.Token);
-            var response = await Wire.ReadAsync<RemoteResponse>(stream, timeout.Token); Ensure(response);
-            if (response.Length < 0 || response.Length > RemoteFileStore.ImageLimit) throw new IOException("图片长度超过限制");
-            var bytes = new byte[(int)response.Length];
-            await stream.ReadExactlyAsync(bytes, timeout.Token);
-            log.Information("图片获取成功；长度 {Length}", bytes.Length);
-            return bytes;
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(60));
+                    using var socket = await Wire.ConnectAsync(host, port, timeout.Token);
+                    var stream = socket.GetStream();
+                    await Wire.WriteAsync(stream, request, timeout.Token);
+                    var response = await Wire.ReadAsync<RemoteResponse>(stream, timeout.Token); Ensure(response);
+                    if (response.Length < 0 || response.Length > RemoteFileStore.ImageLimit) throw new IOException("图片长度超过限制");
+                    var bytes = new byte[(int)response.Length];
+                    await stream.ReadExactlyAsync(bytes, timeout.Token);
+                    log.Information("图片获取成功；长度 {Length}", bytes.Length);
+                    return bytes;
+                }
+                catch (Exception ex) when (attempt == 1 && Retryable(ex, ct))
+                {
+                    log.Warning(ex, "图片获取失败，准备重试");
+                    await Task.Delay(500, ct);
+                }
+            }
         }
         catch (Exception ex) { log.Error(ex, "图片读取失败"); throw; }
     }

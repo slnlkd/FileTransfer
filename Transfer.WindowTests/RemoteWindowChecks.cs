@@ -144,6 +144,60 @@ internal static class RemoteWindowChecks
         await FlushAsync(browser);
         await WaitAsync(() => scroll.VerticalOffset == 0);
         Console.WriteLine("通过：切换目录和返回上一级后文件列表回到顶部");
+        string pageRoot = Path.Combine(root, "分页测试");
+        Directory.CreateDirectory(pageRoot);
+        for (int i = 1; i <= 620; i++) await File.WriteAllTextAsync(Path.Combine(pageRoot, i + ".txt"), "");
+        await browser.ConnectAsync(new RemoteFileClient("127.0.0.1", port));
+        await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "分页测试"));
+        await FlushAsync(browser);
+        if (grid.Items.Count != 500) throw new Exception("首屏未按 500 条分页加载：" + grid.Items.Count);
+        var countText = (TextBlock)browser.FindName("ItemCountText");
+        if (countText.Text != "500 / 620 项") throw new Exception("分页计数显示错误：" + countText.Text);
+        var pageScroll = FindScrollViewer(grid) ?? throw new Exception("未找到文件列表滚动条");
+        pageScroll.ScrollToBottom();
+        await WaitAsync(() => grid.Items.Count == 620);
+        if (countText.Text != "620 项") throw new Exception("滚动加载完成后计数错误：" + countText.Text);
+        Console.WriteLine("通过：大目录按 500 条分页并在滚动到底部时加载更多");
+        ((TreeViewItem)tree.Items[0]).IsSelected = true;
+        await WaitAsync(() => !browser.IsBusy && grid.Items.Count > 1);
+        await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "分页测试"));
+        await FlushAsync(browser);
+        if (grid.Items.Count != 500) throw new Exception("重新进入目录后未回到分页首屏");
+        var sizeHeader = FindHeader(grid, "大小") ?? throw new Exception("找不到大小列标题");
+        var sortClick = typeof(System.Windows.Controls.Primitives.DataGridColumnHeader).GetMethod("OnClick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        sortClick.Invoke(sizeHeader, null);
+        await WaitAsync(() => !browser.IsBusy && grid.Items.Count == 620);
+        Console.WriteLine("通过：分页状态下切换排序会先加载全部条目");
+        var execute = typeof(ClientBrowser).GetMethod("ExecuteAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+            null, new[] { typeof(Func<CancellationToken, Task>), typeof(bool) }, null) ?? throw new Exception("找不到可取消操作入口");
+        var slow = (Task)execute.Invoke(browser, new object[]
+        {
+            new Func<CancellationToken, Task>(async token => await Task.Delay(5000, token)), true
+        })!;
+        var cancelButton = (Button)browser.FindName("CancelButton");
+        await WaitAsync(() => cancelButton.Visibility == Visibility.Visible);
+        cancelButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await slow;
+        if (((TextBlock)browser.FindName("StatusText")).Text != "已取消" || browser.IsBusy || cancelButton.Visibility != Visibility.Collapsed)
+            throw new Exception("取消后状态或界面未恢复");
+        Console.WriteLine("通过：长操作可取消并恢复界面");
+        // 过滤只作用于右侧列表，目录树必须保持完整；重新加载根目录时同样如此。
+        var service = (RemoteFileService)typeof(ServerWindow).GetField("service", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(server)!;
+        service.ListFilter = (_, _, items) => Task.FromResult(new RemoteFilterResult(items.Where(e => e.Name != "文本").ToArray()));
+        var filterField = typeof(ClientBrowser).GetField("listFilter", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        filterField.SetValue(browser, "测试");
+        var navigate = typeof(ClientBrowser).GetMethod("NavigateAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+            null, new[] { typeof(string), typeof(bool), typeof(CancellationToken) }, null)!;
+        await (Task)navigate.Invoke(browser, ["", true, CancellationToken.None])!;
+        await WaitAsync(() => !browser.IsBusy && grid.Items.Count > 0);
+        if (grid.Items.Cast<RemoteEntry>().Any(e => e.Name == "文本")) throw new Exception("过滤未作用于右侧列表");
+        var treeRootNode = (TreeViewItem)tree.Items[0];
+        if (!treeRootNode.Items.Cast<TreeViewItem>().Any(n => ((RemoteEntry)n.Tag).Name == "文本"))
+            throw new Exception("过滤时目录树丢失了未过滤的文件夹");
+        Console.WriteLine("通过：过滤只影响右侧列表，目录树保持完整");
+        service.ListFilter = null; filterField.SetValue(browser, null);
+        await (Task)navigate.Invoke(browser, ["", true, CancellationToken.None])!;
+        await WaitAsync(() => !browser.IsBusy && grid.Items.Cast<RemoteEntry>().Any(e => e.Name == "文本"));
         int rootCount = Directory.GetFileSystemEntries(root).Length;
         await CloseAsync(client);
         Click(server, "StopButton");
