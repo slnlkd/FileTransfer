@@ -220,11 +220,18 @@ internal static class RemoteWindowChecks
         var grid = (DataGrid)browser.FindName("FileGrid");
         var rootNode = (TreeViewItem)tree.Items[0];
         var folder = rootNode.Items.Cast<TreeViewItem>().Single(n => ((RemoteEntry)n.Tag).Name == "文本");
-        if (folder.ContextMenu?.Items.Count != 2 || ((MenuItem)folder.ContextMenu.Items[0]).Header?.ToString() != "添加压缩包") throw new Exception("目录树缺少添加压缩包菜单");
-        ((MenuItem)folder.ContextMenu.Items[0]).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        if (folder.ContextMenu?.Items.Count != 1 || ((MenuItem)folder.ContextMenu.Items[0]).Header?.ToString() != "复制") throw new Exception("目录树右键菜单应为复制");
+        await browser.CopyToClipboardAsync((RemoteEntry)folder.Tag);
+        if (!((TextBlock)browser.FindName("StatusText")).Text.Contains("已复制")) throw new Exception("复制后状态提示错误");
+        var dropped = Clipboard.GetDataObject()?.GetData(DataFormats.FileDrop) as string[];
+        if (dropped is null || dropped.Length != 1 || !File.Exists(Path.Combine(dropped[0], "编辑.json"))) throw new Exception("剪贴板未包含复制后的文件夹内容");
+        Clipboard.Clear();
+        if (File.Exists(Path.Combine(root, "文本.zip"))) throw new Exception("复制后未清理服务端临时 ZIP");
+        Console.WriteLine("通过：右键复制文件夹，剪贴板可在资源管理器粘贴且清理服务端临时 ZIP");
+        await browser.AddArchiveAsync((RemoteEntry)folder.Tag);
         await WaitAsync(() => !browser.IsBusy && File.Exists(Path.Combine(root, "文本.zip")) && grid.Items.Cast<RemoteEntry>().Any(e => e.IsZip));
         if (((ProgressBar)browser.FindName("UploadProgress")).Value != 100) throw new Exception("压缩完成后客户端进度不是 100%");
-        Console.WriteLine("通过：目录树右键添加压缩包，在服务端生成 ZIP 并刷新列表和进度");
+        Console.WriteLine("通过：服务端压缩 ZIP 并刷新列表和进度");
         var zip = grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "文本.zip");
         var directory = grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "文本");
         grid.SelectedItem = zip; grid.UpdateLayout();
@@ -234,9 +241,9 @@ internal static class RemoteWindowChecks
         if (!ReferenceEquals(grid.SelectedItem, directory)) throw new Exception("列表右键未选中对应行");
         // 触发框架的 ContextMenuOpening 路由事件，使用用户点击时的处理器。
         OpenContext(row);
-        if (row.ContextMenu.Items.Count != 2 || ((MenuItem)row.ContextMenu.Items[0]).Header?.ToString() != "添加压缩包") throw new Exception("文件列表目录菜单错误");
+        if (row.ContextMenu.Items.Count != 1 || ((MenuItem)row.ContextMenu.Items[0]).Header?.ToString() != "复制") throw new Exception("文件列表目录菜单错误");
         var zipNode = ((TreeViewItem)tree.Items[0]).Items.Cast<TreeViewItem>().Single(n => ((RemoteEntry)n.Tag).Name == "文本.zip");
-        if (zipNode.ContextMenu.Items.Count != 4 || ((MenuItem)zipNode.ContextMenu.Items[1]).Header?.ToString() != "下载 ZIP…" || ((MenuItem)zipNode.ContextMenu.Items[3]).Header?.ToString() != "删除服务端文件…") throw new Exception("ZIP 下载或删除菜单错误");
+        if (zipNode.ContextMenu.Items.Count != 3 || ((MenuItem)zipNode.ContextMenu.Items[0]).Header?.ToString() != "复制" || ((MenuItem)zipNode.ContextMenu.Items[2]).Header?.ToString() != "删除服务端文件…") throw new Exception("ZIP 复制或删除菜单错误");
         string output = Path.Combine(temp, "ui-zip-download.zip");
         await browser.DownloadEntryAsync(zip, output);
         if (!File.Exists(output) || ((ProgressBar)browser.FindName("UploadProgress")).Value != 100) throw new Exception("界面 ZIP 下载未完成");
@@ -251,12 +258,12 @@ internal static class RemoteWindowChecks
         if (!File.Exists(localOutput)) throw new Exception("服务端本地浏览器文件夹打包下载失败");
         Console.WriteLine("通过：客户端和服务端浏览器均可指定文件夹打包下载");
         var ignored = ((TreeViewItem)tree.Items[0]).Items.Cast<TreeViewItem>().Single(n => ((RemoteEntry)n.Tag).Name == "ignored.dat");
-        ((MenuItem)ignored.ContextMenu.Items[0]).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        await browser.AddArchiveAsync((RemoteEntry)ignored.Tag);
         await WaitAsync(() => !browser.IsBusy && grid.Items.Cast<RemoteEntry>().Any(e => e.Name == "ignored.dat.zip"));
         var extra = grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "ignored.dat.zip");
         await browser.DeleteEntryAsync(extra);
         if (File.Exists(Path.Combine(root, extra.Path)) || grid.Items.Cast<RemoteEntry>().Any(e => e.Path == extra.Path) || !File.Exists(Path.Combine(root, "ignored.dat"))) throw new Exception("界面删除 ZIP 或刷新失败");
-        Console.WriteLine("通过：普通文件右键生成 ZIP，删除多余 ZIP 后刷新列表且保留源文件");
+        Console.WriteLine("通过：普通文件生成 ZIP，删除多余 ZIP 后刷新列表且保留源文件");
     }
     private static void OpenContext(DataGridRow row)
     {

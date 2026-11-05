@@ -1,4 +1,5 @@
 using System.IO;
+using System.IO.Compression;
 using System.Collections;
 using System.ComponentModel;
 using System.Globalization;
@@ -428,6 +429,15 @@ public partial class RemoteBrowser : UserControl
     }
     private async void Grid_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.C && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            if (FileGrid.SelectedItem is RemoteEntry selected)
+            {
+                e.Handled = true;
+                await CopyToClipboardAsync(selected);
+            }
+            return;
+        }
         if (e.Key != Key.Back) return;
         e.Handled = true;
         await HandleBackspaceAsync();
@@ -511,20 +521,9 @@ public partial class RemoteBrowser : UserControl
     private ContextMenu BuildMenu(RemoteEntry entry)
     {
         var menu = new ContextMenu();
-        var compress = new MenuItem { Header = "添加压缩包" };
-        compress.Click += async (_, _) => await AddArchiveAsync(entry);
-        menu.Items.Add(compress);
-        if (entry.IsDirectory || entry.IsZip)
-        {
-            var download = new MenuItem { Header = entry.IsDirectory ? "打包下载文件夹…" : "下载 ZIP…" };
-            download.Click += async (_, _) =>
-            {
-                if (busy || client == null) return;
-                var dialog = new SaveFileDialog { Title = "保存下载的 ZIP 压缩包", Filter = "ZIP 压缩包|*.zip", FileName = entry.IsDirectory ? entry.Name + ".zip" : entry.Name, DefaultExt = ".zip", AddExtension = true, OverwritePrompt = false };
-                if (dialog.ShowDialog(Window.GetWindow(this)) == true) await DownloadEntryAsync(entry, dialog.FileName);
-            };
-            menu.Items.Add(download);
-        }
+        var copy = new MenuItem { Header = "复制" };
+        copy.Click += async (_, _) => await CopyToClipboardAsync(entry);
+        menu.Items.Add(copy);
         if (!entry.IsDirectory)
         {
             menu.Items.Add(new Separator());
@@ -569,8 +568,7 @@ public partial class RemoteBrowser : UserControl
         SetStatus("已删除：" + entry.Path, "SuccessBrush");
     });
     public Task DownloadEntryAsync(RemoteEntry entry, string destination) => ExecuteAsync(async ct =>
-    {
-        if (!entry.IsDirectory && !entry.IsZip) throw new IOException("请选择文件夹或 ZIP");
+    {        if (!entry.IsDirectory && !entry.IsZip) throw new IOException("请选择文件夹或 ZIP");
         if (File.Exists(destination) || Directory.Exists(destination)) throw new IOException("本地目标已存在，请更换保存名称");
         BusyText.Text = "正在下载…";
         var endpoint = Endpoint; var progress = ArchiveProgress(); SetProgress(0, "准备下载");
@@ -580,6 +578,53 @@ public partial class RemoteBrowser : UserControl
         SetProgress(100, "下载完成");
         SetStatus("下载完成，SHA-256 校验通过", "SuccessBrush");
     }, cancellable: true);
+    private static readonly string ClipboardTempRoot = Path.Combine(Path.GetTempPath(), "FileTransferClipboard");
+    // 复制到 Windows 剪贴板：先取到本机临时目录，再以文件拖放格式写入，资源管理器可直接粘贴。
+    public Task CopyToClipboardAsync(RemoteEntry entry) => ExecuteAsync(async ct =>
+    {
+        BusyText.Text = entry.IsDirectory ? "正在准备复制文件夹…" : "正在准备复制文件…";
+        SetProgress(0, "准备复制");
+        CleanClipboardTemp();
+        string tempRoot = Path.Combine(ClipboardTempRoot, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var endpoint = Endpoint; var progress = ArchiveProgress();
+        string archive = await endpoint.CompressAsync(entry.Path, progress, ct);
+        string zipLocal = Path.Combine(tempRoot, "__copy.zip");
+        await endpoint.DownloadZipAsync(archive, zipLocal, progress, ct);
+        ct.ThrowIfCancellationRequested();
+        ZipFile.ExtractToDirectory(zipLocal, tempRoot, true);
+        File.Delete(zipLocal);
+        await DeleteServerArchiveAsync(archive, ct);
+        string[] paths = Directory.GetFileSystemEntries(tempRoot);
+        if (paths.Length == 0) throw new IOException("复制内容为空");
+        var data = new DataObject();
+        data.SetData(DataFormats.FileDrop, paths);
+        Clipboard.SetDataObject(data, true);
+        SetProgress(100, "复制完成");
+        SetStatus($"已复制 {entry.Name}，可在本地文件夹粘贴", "SuccessBrush");
+    }, cancellable: true);
+    private async Task DeleteServerArchiveAsync(string archive, CancellationToken ct)
+    {
+        try
+        {
+            string parent = ParentPath(archive);
+            var listing = await Endpoint.CallAsync(new("list", parent), ct);
+            var zip = (listing.Entries ?? []).FirstOrDefault(e => !e.IsDirectory && e.Path == archive);
+            if (zip is not null) await Endpoint.DeleteFileAsync(zip, ct);
+        }
+        catch (Exception ex) { Log.Warning(ex, "清理复制用的服务端 ZIP 失败；路径 {ArchivePath}", archive); }
+    }
+    private static void CleanClipboardTemp()
+    {
+        try
+        {
+            if (!Directory.Exists(ClipboardTempRoot)) return;
+            foreach (string directory in Directory.GetDirectories(ClipboardTempRoot))
+                try { Directory.Delete(directory, true); }
+                catch (Exception ex) { Log.Debug(ex, "清理剪贴板临时目录失败；路径 {Path}", directory); }
+        }
+        catch (Exception ex) { Log.Debug(ex, "扫描剪贴板临时目录失败"); }
+    }
     private Task ExecuteAsync(Func<Task> action) => ExecuteAsync(_ => action(), false);
     private async Task ExecuteAsync(Func<CancellationToken, Task> action, bool cancellable = false)
     {
