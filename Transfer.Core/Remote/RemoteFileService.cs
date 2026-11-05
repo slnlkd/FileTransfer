@@ -197,7 +197,7 @@ public sealed class RemoteFileService : IAsyncDisposable
             Log.Warning("客户端请求目录过滤，但服务端未启用过滤器；过滤器 {Filter}", request.Filter);
             warning = "服务端未启用目录过滤，已显示全部文件夹";
         }
-        else if (request.Filter is not null)
+        else if (request.Filter is not null && ListFilter is not null)
         {
             try
             {

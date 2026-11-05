@@ -37,6 +37,7 @@ public partial class RemoteBrowser : UserControl
     private Func<string, string?>? localEmptyText = null;
     private ScrollViewer? fileScroll;
     private bool scrollHooked;
+    private bool scrollResetPending;
     public bool IsBusy => busy;
     private async void Grid_Sorting(object sender, DataGridSortingEventArgs e)
     {
@@ -108,6 +109,7 @@ public partial class RemoteBrowser : UserControl
         entries = [];
         totalCount = 0; allLoaded = true;
         navigationVersion++;
+        scrollResetPending = false;
         unfilteredCache.Clear();
         FolderTree.Items.Clear();
         FileGrid.ItemsSource = null;
@@ -223,7 +225,8 @@ public partial class RemoteBrowser : UserControl
     }
     private void FileScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
-        if (busy || loadingMore || allLoaded) return;
+        // 切换目录后的第一次滚动事件来自旧位置，重置完成前不要触发加载更多。
+        if (scrollResetPending || busy || loadingMore || allLoaded) return;
         if (e.VerticalOffset + e.ViewportHeight < e.ExtentHeight - 200) return;
         _ = LoadMoreAsync();
     }
@@ -252,9 +255,14 @@ public partial class RemoteBrowser : UserControl
     {
         fileScroll ??= FindVisualChild<ScrollViewer>(FileGrid);
         if (fileScroll is null) return;
+        scrollResetPending = true;
         fileScroll.ScrollToTop();
         // 等待新条目完成布局后再设置一次，避免虚拟化把偏移量恢复成旧位置。
-        Dispatcher.BeginInvoke(new Action(() => fileScroll?.ScrollToTop()), System.Windows.Threading.DispatcherPriority.Loaded);
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            fileScroll?.ScrollToTop();
+            scrollResetPending = false;
+        }), System.Windows.Threading.DispatcherPriority.Loaded);
     }
     private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
     {
