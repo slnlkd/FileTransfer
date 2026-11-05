@@ -192,7 +192,12 @@ public sealed class RemoteFileService : IAsyncDisposable
         var entries = Store.List(request.Path);
         string rootName = Path.GetFileName(Store.Root);
         string? warning = null;
-        if (request.Filter is not null && ListFilter is not null)
+        if (request.Filter is not null && ListFilter is null)
+        {
+            Log.Warning("客户端请求目录过滤，但服务端未启用过滤器；过滤器 {Filter}", request.Filter);
+            warning = "服务端未启用目录过滤，已显示全部文件夹";
+        }
+        else if (request.Filter is not null)
         {
             try
             {

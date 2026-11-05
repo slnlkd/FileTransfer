@@ -44,6 +44,9 @@ internal static class RemoteChecks
         var filteredPage = await new RemoteFileClient("127.0.0.1", filteredServer.Port)
             .CallAsync(new("list", "", Filter: "测试", Take: 5));
         check(filteredPage.Total == expectedFiltered && filteredPage.Entries!.Length == 5, "过滤后分页总数正确");
+        var noFilterServer = await client.CallAsync(new("list", "", Filter: "测试"));
+        check(noFilterServer.Warning is not null && noFilterServer.Warning.Contains("未启用目录过滤")
+            && noFilterServer.Entries!.Length == noFilterServer.Total, "服务端未启用过滤时提示并显示全部");
         var listener = new TcpListener(System.Net.IPAddress.Loopback, 0); listener.Start();
         int attempts = 0;
         var serve = Task.Run(async () =>
