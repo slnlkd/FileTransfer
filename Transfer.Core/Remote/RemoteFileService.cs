@@ -89,6 +89,7 @@ public sealed class RemoteFileService : IAsyncDisposable
                             await input.CopyToAsync(stream, ct);
                         }
                         log.Information("图片发送完成");
+                        Activity?.Invoke("image  " + request.Path);
                         return;
                     case "status": response = new(true, Process: Store.Status(request.Path)); break;
                     case "compress":

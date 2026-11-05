@@ -52,6 +52,13 @@ public sealed class ImageViewer : Window
         Visibility = Visibility.Collapsed
     };
     private readonly CancellationTokenSource lifetime = new();
+    private readonly Dictionary<string, BitmapSource> imageCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly LinkedList<string> cacheOrder = new();
+    private const long CacheLimitBytes = 200L * 1024 * 1024;
+    private Task<BitmapSource?>? prefetchTask;
+    private string? prefetchPath;
+    private long cacheBytes;
+    private int loadVersion;
     private int index;
     private bool busy;
     public string CurrentPath => images[index].Path;
@@ -240,25 +247,23 @@ public sealed class ImageViewer : Window
     {
         if (busy) return;
         busy = true;
+        int version = ++loadVersion;
         previous.IsEnabled = next.IsEnabled = previousArrow.IsEnabled = nextArrow.IsEnabled = false;
-        image.Source = null;
         Title = $"图片 · {index + 1}/{images.Length} · {CurrentPath}";
         titleText.Text = Title;
         imageName.Text = images[index].Name;
-        status.Text = "正在读取图片……";
-        stageMessage.Text = "正在读取图片…";
-        stageMessage.Visibility = Visibility.Visible;
+        // 保留当前图片，避免加载下一张时出现黑屏；只有首次加载才显示占位文字。
+        if (image.Source is null)
+        {
+            status.Text = "正在读取图片……";
+            stageMessage.Text = "正在读取图片…";
+            stageMessage.Visibility = Visibility.Visible;
+        }
+        else status.Text = "正在加载下一张图片……";
         try
         {
-            byte[] bytes = await client.ReadImageAsync(CurrentPath, lifetime.Token);
-            using var stream = new MemoryStream(bytes);
-            var bitmap = new BitmapImage();
-            bitmap.BeginInit();
-            bitmap.CacheOption = BitmapCacheOption.OnLoad;
-            bitmap.DecodePixelWidth = 2400;
-            bitmap.StreamSource = stream;
-            bitmap.EndInit();
-            bitmap.Freeze();
+            var bitmap = await LoadImageAsync(CurrentPath, lifetime.Token);
+            if (version != loadVersion) return;
             image.Source = bitmap;
             stageMessage.Visibility = Visibility.Collapsed;
             status.Inlines.Clear();
@@ -266,8 +271,9 @@ public sealed class ImageViewer : Window
             status.Inlines.Add(new Run(CurrentPath[..(CurrentPath.Length - images[index].Name.Length)]) { FontWeight = FontWeights.Bold });
             status.Inlines.Add(new Run(images[index].Name) { FontWeight = FontWeights.Bold });
             status.Inlines.Add(new Run($"  创建：{images[index].CreatedLocal:yyyy.MM.dd HH:mm}"));
+            StartPrefetch();
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested || version != loadVersion) { }
         catch (Exception ex)
         {
             Log.Error(ex, "图片显示失败；路径 {RemotePath}", CurrentPath);
@@ -277,9 +283,86 @@ public sealed class ImageViewer : Window
         }
         finally
         {
-            busy = false;
-            previous.IsEnabled = previousArrow.IsEnabled = index > 0;
-            next.IsEnabled = nextArrow.IsEnabled = index < images.Length - 1;
+            if (version == loadVersion)
+            {
+                busy = false;
+                previous.IsEnabled = previousArrow.IsEnabled = index > 0;
+                next.IsEnabled = nextArrow.IsEnabled = index < images.Length - 1;
+            }
+        }
+    }
+    private static BitmapSource Decode(byte[] bytes)
+    {
+        using var stream = new MemoryStream(bytes, writable: false);
+        var bitmap = new BitmapImage();
+        bitmap.BeginInit();
+        bitmap.CacheOption = BitmapCacheOption.OnLoad;
+        bitmap.DecodePixelWidth = 2400;
+        bitmap.StreamSource = stream;
+        bitmap.EndInit();
+        bitmap.Freeze();
+        return bitmap;
+    }
+    private void CacheImage(string path, BitmapSource bitmap)
+    {
+        if (imageCache.Remove(path, out var old)) cacheBytes -= Estimate(old);
+        imageCache[path] = bitmap;
+        cacheOrder.Remove(path);
+        cacheOrder.AddFirst(path);
+        cacheBytes += Estimate(bitmap);
+        while (cacheBytes > CacheLimitBytes && cacheOrder.Last is { } oldest)
+        {
+            cacheOrder.RemoveLast();
+            if (imageCache.Remove(oldest.Value, out var evicted)) cacheBytes -= Estimate(evicted);
+        }
+    }
+    private void TouchCache(string path)
+    {
+        cacheOrder.Remove(path);
+        cacheOrder.AddFirst(path);
+    }
+    private static long Estimate(BitmapSource bitmap) => bitmap.PixelWidth * (long)bitmap.PixelHeight * 4;
+    // 命中缓存直接返回；正在预取的图片复用同一个请求，避免重复下载和取消日志。
+    private async Task<BitmapSource> LoadImageAsync(string path, CancellationToken ct)
+    {
+        if (imageCache.TryGetValue(path, out var cached)) { TouchCache(path); return cached; }
+        if (prefetchTask is { } task && prefetchPath == path)
+        {
+            if (await task is { } prefetched) return prefetched;
+        }
+        byte[] bytes = await client.ReadImageAsync(path, ct);
+        var bitmap = await Task.Run(() => Decode(bytes), ct);
+        CacheImage(path, bitmap);
+        return bitmap;
+    }
+    private void StartPrefetch()
+    {
+        if (prefetchTask is { IsCompleted: false }) return;
+        foreach (int offset in new[] { 1, -1 })
+        {
+            int target = index + offset;
+            if (target < 0 || target >= images.Length) continue;
+            string path = images[target].Path;
+            if (imageCache.ContainsKey(path)) continue;
+            prefetchPath = path;
+            prefetchTask = PrefetchOneAsync(path, lifetime.Token);
+            return;
+        }
+    }
+    private async Task<BitmapSource?> PrefetchOneAsync(string path, CancellationToken token)
+    {
+        try
+        {
+            byte[] bytes = await client.ReadImageAsync(path, token);
+            var bitmap = await Task.Run(() => Decode(bytes), token);
+            CacheImage(path, bitmap);
+            return bitmap;
+        }
+        catch (OperationCanceledException) { return null; }
+        catch (Exception ex) { Log.Debug(ex, "图片预取失败；路径 {RemotePath}", path); return null; }
+        finally
+        {
+            if (prefetchPath == path) { prefetchTask = null; prefetchPath = null; }
         }
     }
     private Brush ThemeBrush(string key, Color fallback) => TryFindResource(key) as Brush ?? new SolidColorBrush(fallback);

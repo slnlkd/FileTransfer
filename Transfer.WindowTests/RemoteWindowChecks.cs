@@ -82,6 +82,9 @@ internal static class RemoteWindowChecks
         Console.WriteLine("通过：文件列表退格键返回上一级");
         await browser.ConnectAsync(new RemoteFileClient("127.0.0.1", port));
         var images = (await new RemoteFileClient("127.0.0.1", port).CallAsync(new("list"))).Entries!;
+        var imageService = (RemoteFileService)typeof(ServerWindow).GetField("service", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(server)!;
+        int imageRequests = 0;
+        imageService.Activity += message => { if (message.StartsWith("image  ", StringComparison.Ordinal)) Interlocked.Increment(ref imageRequests); };
         await browser.OpenAsync(images.Single(e => e.Name == "early.png"));
         var imageWindow = client.OwnedWindows.OfType<ImageViewer>().Single();
         await WaitAsync(() => FindImage(imageWindow)?.Source != null);
@@ -89,16 +92,20 @@ internal static class RemoteWindowChecks
         var previousArrow = FindButton(imageWindow, "上一张图片") ?? throw new Exception("缺少左侧图片切换箭头");
         var nextArrow = FindButton(imageWindow, "下一张图片") ?? throw new Exception("缺少右侧图片切换箭头");
         if (previousArrow.IsEnabled || !nextArrow.IsEnabled) throw new Exception("首张图片时箭头状态错误");
+        // 相邻图片会在后台预取，切换时应命中缓存而不是重新请求服务端。
+        await WaitAsync(() => imageRequests >= 2);
+        int beforeSwitch = imageRequests;
         nextArrow.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await WaitAsync(() => imageWindow.CurrentPath == "late.png" && FindImage(imageWindow)?.Source != null && !nextArrow.IsEnabled);
+        await WaitAsync(() => imageWindow.CurrentPath == "late.png" && FindImage(imageWindow)?.Source != null && !nextArrow.IsEnabled && previousArrow.IsEnabled);
+        if (imageRequests != beforeSwitch) throw new Exception("下一张图片未命中预取缓存");
         if (!previousArrow.IsEnabled) throw new Exception("末张图片时左侧箭头未启用");
         previousArrow.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await WaitAsync(() => imageWindow.CurrentPath == "early.png" && FindImage(imageWindow)?.Source != null && !previousArrow.IsEnabled);
+        await WaitAsync(() => imageWindow.CurrentPath == "early.png" && FindImage(imageWindow)?.Source != null && !previousArrow.IsEnabled && nextArrow.IsEnabled);
         imageWindow.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(imageWindow), 0, Key.Right) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
-        await WaitAsync(() => imageWindow.CurrentPath == "late.png" && FindImage(imageWindow)?.Source != null);
+        await WaitAsync(() => imageWindow.CurrentPath == "late.png" && FindImage(imageWindow)?.Source != null && !nextArrow.IsEnabled && previousArrow.IsEnabled);
         CheckImageName(imageWindow, "late.png");
         imageWindow.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(imageWindow), 0, Key.Left) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
-        await WaitAsync(() => imageWindow.CurrentPath == "early.png" && FindImage(imageWindow)?.Source != null);
+        await WaitAsync(() => imageWindow.CurrentPath == "early.png" && FindImage(imageWindow)?.Source != null && !previousArrow.IsEnabled && nextArrow.IsEnabled);
         imageWindow.Close();
         Console.WriteLine("通过：图片真实解码，Right / Left 按创建时间前后切换");
         int owned = client.OwnedWindows.Count;
