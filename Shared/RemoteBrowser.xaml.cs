@@ -39,6 +39,8 @@ public partial class RemoteBrowser : UserControl
     private ScrollViewer? fileScroll;
     private bool scrollHooked;
     private bool scrollResetPending;
+    private Point dragOrigin;
+    private bool dragArmed;
     public bool IsBusy => busy;
     private async void Grid_Sorting(object sender, DataGridSortingEventArgs e)
     {
@@ -91,6 +93,9 @@ public partial class RemoteBrowser : UserControl
         FileGrid.RowStyle = style;
         UpdateEmptyState();
         BuildLocalFilters(FilterHost);
+        FileGrid.AddHandler(PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler(Grid_MouseLeftButtonDown), true);
+        FileGrid.AddHandler(PreviewMouseMoveEvent, new MouseEventHandler(Grid_MouseMove), true);
+        FileGrid.AddHandler(PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler(Grid_MouseLeftButtonUp), true);
         Loaded += Browser_Loaded;
         Unloaded += Browser_Unloaded;
     }
@@ -531,6 +536,144 @@ public partial class RemoteBrowser : UserControl
             SetProgress(100, "上传完成");
             SetStatus(uploaded > 0 ? "上传完成" : "未上传文件", uploaded > 0 ? "SuccessBrush" : "MutedBrush");
         }, cancellable: true);
+    }
+    private void Grid_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        var source = e.OriginalSource as DependencyObject;
+        bool blocked = FindAncestor<System.Windows.Controls.Primitives.ScrollBar>(source) is not null
+            || FindAncestor<System.Windows.Controls.Primitives.DataGridColumnHeader>(source) is not null;
+        bool onRow = ItemsControl.ContainerFromElement(FileGrid, source) is DataGridRow;
+        dragArmed = !busy && !blocked && (onRow || (FileGrid.SelectedItems.Count > 0 && FileGrid.IsMouseOver));
+        dragOrigin = e.GetPosition(FileGrid);
+        Log.Debug("拖拽准备；行内 {OnRow}，阻止 {Blocked}，选中 {Count}", onRow, blocked, FileGrid.SelectedItems.Count);
+    }
+    private void Grid_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) => dragArmed = false;
+    private void Grid_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (!dragArmed || busy || client is null || e.LeftButton != MouseButtonState.Pressed) return;
+        Point current = e.GetPosition(FileGrid);
+        if (Math.Abs(current.X - dragOrigin.X) < SystemParameters.MinimumHorizontalDragDistance
+            && Math.Abs(current.Y - dragOrigin.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        dragArmed = false;
+        var selected = FileGrid.SelectedItems.Cast<RemoteEntry>().ToArray();
+        if (selected.Length == 0) return;
+        // Windows 的 UIPI 会阻止管理员进程向普通资源管理器拖放，改用复制更稳妥。
+        if (IsElevated())
+        {
+            SetStatus("以管理员运行时 Windows 禁止拖出，已改为复制，请在本地按 Ctrl+V", "WarningBrush");
+            _ = CopyToClipboardAsync(selected);
+            return;
+        }
+        Log.Information("开始拖出远程文件；数量 {Count}", selected.Length);
+        try { RemoteFileDataObject.Start(Endpoint, selected); }
+        catch (Exception ex) { Log.Error(ex, "发起远程文件拖拽异常"); }
+    }
+    private static bool IsElevated()
+    {
+        try
+        {
+            using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+            return new System.Security.Principal.WindowsPrincipal(identity)
+                .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+        }
+        catch (Exception ex) { Log.Debug(ex, "检查管理员权限失败"); return false; }
+    }
+    private static T? FindAncestor<T>(DependencyObject? node) where T : DependencyObject
+    {
+        while (node is not null)
+        {
+            if (node is T match) return match;
+            node = node is Visual or System.Windows.Media.Media3D.Visual3D
+                ? VisualTreeHelper.GetParent(node)
+                : LogicalTreeHelper.GetParent(node);
+        }
+        return null;
+    }
+    private void Grid_DragOver(object sender, DragEventArgs e)
+    {
+        bool accept = client != null && !busy && e.Data.GetDataPresent(DataFormats.FileDrop);
+        e.Effects = accept ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+    private async void Grid_Drop(object sender, DragEventArgs e)
+    {
+        if (busy || client is null) return;
+        if (e.Data.GetData(DataFormats.FileDrop) is not string[] paths || paths.Length == 0) return;
+        e.Handled = true;
+        var endpoint = Endpoint;
+        string targetDirectory = directory;
+        long total = paths.Sum(PathSize);
+        long completedBytes = 0;
+        var remoteEntries = new Dictionary<string, Dictionary<string, bool>>(StringComparer.OrdinalIgnoreCase);
+        await ExecuteAsync(async ct =>
+        {
+            BusyText.Text = paths.Length == 1 ? "正在上传拖入的内容…" : $"正在上传 {paths.Length} 项…";
+            SetBusyProgress(0, "准备上传…");
+            async Task<Dictionary<string, bool>> NamesAsync(string remoteDir)
+            {
+                if (remoteEntries.TryGetValue(remoteDir, out var cached)) return cached;
+                var entries = (await endpoint.CallAsync(new("list", remoteDir), ct)).Entries ?? [];
+                var names = entries.ToDictionary(e => e.Name, e => e.IsDirectory, StringComparer.OrdinalIgnoreCase);
+                remoteEntries[remoteDir] = names;
+                return names;
+            }
+            async Task UploadPathAsync(string local, string remoteDir)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (Directory.Exists(local))
+                {
+                    string name = Path.GetFileName(local.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                    string target = JoinRemote(remoteDir, name);
+                    var names = await NamesAsync(remoteDir);
+                    if (names.TryGetValue(name, out bool isDirectory))
+                    {
+                        if (!isDirectory) throw new IOException("同名文件已存在，无法创建文件夹：" + name);
+                    }
+                    else
+                    {
+                        await endpoint.CallAsync(new("mkdir", target), ct);
+                        names[name] = true;
+                    }
+                    foreach (string child in Directory.EnumerateFileSystemEntries(local)) await UploadPathAsync(child, target);
+                    return;
+                }
+                string fileName = Path.GetFileName(local);
+                var listing = await NamesAsync(remoteDir);
+                bool exists = listing.TryGetValue(fileName, out bool targetIsDirectory);
+                if (exists && targetIsDirectory) throw new IOException("同名文件夹已存在，无法上传文件：" + fileName);
+                if (exists && MessageBox.Show(Window.GetWindow(this), $"服务端已存在 {fileName}，是否覆盖？", "拖入上传", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+                long length = new FileInfo(local).Length;
+                BusyText.Text = $"正在上传 {fileName}…";
+                var progress = new Progress<double>(value =>
+                {
+                    double overall = total == 0 ? 100 : (completedBytes + length * value / 100d) * 100d / total;
+                    SetBusyProgress(overall, $"上传 {fileName} {overall:F0}%");
+                });
+                await endpoint.UploadAsync(local, JoinRemote(remoteDir, fileName), exists, progress, ct);
+                completedBytes += length;
+                listing[fileName] = false;
+            }
+            foreach (string path in paths) await UploadPathAsync(path, targetDirectory);
+            unfilteredCache.Clear();
+            await NavigateAsync(targetDirectory, false, ct);
+            SetStatus($"已拖入 {paths.Length} 项", "SuccessBrush");
+        }, cancellable: true);
+    }
+    private static string JoinRemote(string directory, string name) => directory.Length == 0 ? name : directory + "/" + name;
+    private static long PathSize(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) return new FileInfo(path).Length;
+            if (!Directory.Exists(path)) return 0;
+            long total = 0;
+            foreach (string file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            {
+                try { total += new FileInfo(file).Length; } catch (Exception ex) { Log.Debug(ex, "统计拖入文件大小失败；路径 {Path}", file); }
+            }
+            return total;
+        }
+        catch (Exception ex) { Log.Debug(ex, "统计拖入路径大小失败；路径 {Path}", path); return 0; }
     }
     private async void NewFolder_Click(object sender, RoutedEventArgs e) => await ExecuteAsync(async () =>
     {

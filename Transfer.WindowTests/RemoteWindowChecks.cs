@@ -67,6 +67,49 @@ internal static class RemoteWindowChecks
         textFolder.IsSelected = true;
         await WaitAsync(() => !browser.IsBusy && grid.Items.Count == 1);
         Console.WriteLine("通过：客户端连接、左侧树展开与文件夹选择更新右侧列表");
+        var dragData = new RemoteClient::RemoteFiles.Desktop.RemoteFileDataObject(
+            new RemoteFileClient("127.0.0.1", port),
+            new[] { new RemoteEntry("文本", "文本", true, 0, DateTime.UtcNow, DateTime.UtcNow) });
+        if (!dragData.DescriptorNames().Contains("文本\\编辑.json")) throw new Exception("拖出数据未包含子文件描述");
+        var contents = new System.Runtime.InteropServices.ComTypes.FORMATETC
+        {
+            cfFormat = (short)RemoteClient::RemoteFiles.Desktop.RemoteFileDataObject.ContentsFormatId,
+            dwAspect = System.Runtime.InteropServices.ComTypes.DVASPECT.DVASPECT_CONTENT,
+            lindex = dragData.DescriptorNames().ToList().IndexOf("文本\\编辑.json"),
+            tymed = System.Runtime.InteropServices.ComTypes.TYMED.TYMED_ISTREAM
+        };
+        dragData.GetData(ref contents, out var medium);
+        if (medium.tymed != System.Runtime.InteropServices.ComTypes.TYMED.TYMED_ISTREAM) throw new Exception("拖出内容不是流格式");
+        var dragStream = (System.Runtime.InteropServices.ComTypes.IStream)System.Runtime.InteropServices.Marshal.GetObjectForIUnknown(medium.unionmember);
+        var dragBytes = new byte[256];
+        IntPtr dragRead = System.Runtime.InteropServices.Marshal.AllocHGlobal(4);
+        try
+        {
+            dragStream.Read(dragBytes, dragBytes.Length, dragRead);
+            int length = System.Runtime.InteropServices.Marshal.ReadInt32(dragRead);
+            if (!System.Text.Encoding.UTF8.GetString(dragBytes, 0, length).Contains("值")) throw new Exception("拖出流内容不正确");
+        }
+        finally
+        {
+            System.Runtime.InteropServices.Marshal.FreeHGlobal(dragRead);
+            System.Runtime.InteropServices.Marshal.Release(medium.unionmember);
+        }
+        Console.WriteLine("通过：拖出时按需读取远程文件内容");
+        IntPtr dragComPtr = System.Runtime.InteropServices.Marshal.GetComInterfaceForObject(
+            dragData, typeof(System.Runtime.InteropServices.ComTypes.IDataObject));
+        if (dragComPtr == IntPtr.Zero) throw new Exception("拖出数据对象无法提供 COM 接口");
+        var dragCom = (System.Runtime.InteropServices.ComTypes.IDataObject)System.Runtime.InteropServices.Marshal.GetObjectForIUnknown(dragComPtr);
+        var descriptorQuery = new System.Runtime.InteropServices.ComTypes.FORMATETC
+        {
+            cfFormat = (short)RemoteClient::RemoteFiles.Desktop.RemoteFileDataObject.DescriptorFormatId,
+            dwAspect = System.Runtime.InteropServices.ComTypes.DVASPECT.DVASPECT_CONTENT,
+            lindex = -1,
+            tymed = System.Runtime.InteropServices.ComTypes.TYMED.TYMED_HGLOBAL
+        };
+        if (dragCom.QueryGetData(ref descriptorQuery) != 0) throw new Exception("COM 数据对象不支持文件描述格式");
+        System.Runtime.InteropServices.Marshal.Release(dragComPtr);
+        Console.WriteLine("通过：拖出数据对象可跨 COM 边界访问");
+        Console.WriteLine("通过：拖出时生成远程文件描述");
         grid.UpdateLayout(); grid.SelectedIndex = 0;
         var row = (DataGridRow)grid.ItemContainerGenerator.ContainerFromIndex(0);
         grid.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = Control.MouseDoubleClickEvent, Source = row });
@@ -210,6 +253,29 @@ internal static class RemoteWindowChecks
         service.ListFilter = null; filterField.SetValue(browser, null);
         await (Task)navigate.Invoke(browser, ["", true, CancellationToken.None])!;
         await WaitAsync(() => !browser.IsBusy && grid.Items.Cast<RemoteEntry>().Any(e => e.Name == "文本"));
+        string draggedLocal = Path.Combine(temp, "拖入测试.txt");
+        await File.WriteAllTextAsync(draggedLocal, "拖入内容");
+        var dropData = new DataObject(DataFormats.FileDrop, new[] { draggedLocal });
+        var dropArgs = (DragEventArgs)Activator.CreateInstance(typeof(DragEventArgs),
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic, null,
+            new object[] { dropData, DragDropKeyStates.None, DragDropEffects.Copy, browser, new Point(10, 10) }, null)!;
+        dropArgs.RoutedEvent = DragDrop.DropEvent;
+        ((FrameworkElement)browser.FindName("FileArea")).RaiseEvent(dropArgs);
+        await WaitAsync(() => !browser.IsBusy && grid.Items.Cast<RemoteEntry>().Any(e => e.Name == "拖入测试.txt"));
+        if (await File.ReadAllTextAsync(Path.Combine(root, "拖入测试.txt")) != "拖入内容") throw new Exception("拖入文件未上传到当前目录");
+        Console.WriteLine("通过：从本地拖入文件上传到当前目录");
+        string dragFolder = Path.Combine(temp, "拖入文件夹");
+        Directory.CreateDirectory(dragFolder);
+        await File.WriteAllTextAsync(Path.Combine(dragFolder, "子文件.txt"), "子内容");
+        var folderDropData = new DataObject(DataFormats.FileDrop, new[] { dragFolder });
+        var folderDropArgs = (DragEventArgs)Activator.CreateInstance(typeof(DragEventArgs),
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic, null,
+            new object[] { folderDropData, DragDropKeyStates.None, DragDropEffects.Copy, browser, new Point(10, 10) }, null)!;
+        folderDropArgs.RoutedEvent = DragDrop.DropEvent;
+        ((FrameworkElement)browser.FindName("FileArea")).RaiseEvent(folderDropArgs);
+        await WaitAsync(() => !browser.IsBusy && grid.Items.Cast<RemoteEntry>().Any(e => e.Name == "拖入文件夹"));
+        if (await File.ReadAllTextAsync(Path.Combine(root, "拖入文件夹", "子文件.txt")) != "子内容") throw new Exception("拖入文件夹未保留子文件");
+        Console.WriteLine("通过：从本地拖入文件夹并保留子文件");
         int rootCount = Directory.GetFileSystemEntries(root).Length;
         await CloseAsync(client);
         Click(server, "StopButton");

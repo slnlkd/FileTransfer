@@ -78,6 +78,9 @@ internal static class RemoteChecks
         var saved = await client.CallAsync(new("save", "hello.txt", "修改后\r\n", text.Version, text.EncodingName));
         check((await File.ReadAllTextAsync(Path.Combine(root, "hello.txt"))) == "修改后\r\n" && saved.Version != text.Version, "远程修改文本并提交新版本");
         check((await File.ReadAllBytesAsync(Path.Combine(root, "hello.txt"))).AsSpan().StartsWith(Encoding.UTF8.GetPreamble()), "保存保留 UTF8 BOM 编码");
+        string singleDownload = Path.Combine(testRoot, "单文件下载.txt");
+        await client.DownloadFileAsync("hello.txt", singleDownload);
+        check(await File.ReadAllTextAsync(singleDownload) == "修改后\r\n", "单文件流式下载内容一致");
         await ExpectRejected(() => client.CallAsync(new("save", "hello.txt", "旧版本覆盖", text.Version, text.EncodingName)), check, "拒绝使用过期文本版本覆盖");
         check((await client.CallAsync(new("text", "data.json"))).Text!.Contains("正常"), "JSON 可以查看内容");
         var gbk = await client.CallAsync(new("text", "trace.log"));

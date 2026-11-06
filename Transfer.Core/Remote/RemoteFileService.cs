@@ -68,7 +68,7 @@ public sealed class RemoteFileService : IAsyncDisposable
             {
                 var request = await Wire.ReadAsync<RemoteRequest>(stream, ct);
                 active = request;
-                if (request.Command is "compress" or "download") timeout.CancelAfter(TimeSpan.FromHours(24));
+                if (request.Command is "compress" or "download" or "file") timeout.CancelAfter(TimeSpan.FromHours(24));
                 using var requestContext = LogContext.PushProperty("RequestId", request.RequestId);
                 using var pathContext = LogContext.PushProperty("RemotePath", request.Path);
                 log = log.ForContext("RequestId", request.RequestId).ForContext("Command", request.Command).ForContext("RemotePath", request.Path);
@@ -78,6 +78,18 @@ public sealed class RemoteFileService : IAsyncDisposable
                 {
                     case "list": response = await ListAsync(request); break;
                     case "text": response = await Store.ReadTextAsync(request.Path, ct); break;
+                    case "file":
+                        string filePath = Store.Resolve(request.Path);
+                        if (Directory.Exists(filePath)) throw new IOException("文件夹请通过压缩下载");
+                        await using (var fileInput = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 131072, true))
+                        {
+                            await Wire.WriteAsync(stream, new RemoteResponse(true, Length: fileInput.Length), ct);
+                            sendingBinary = true;
+                            await fileInput.CopyToAsync(stream, ct);
+                        }
+                        log.Information("文件发送完成；路径 {RemotePath}", request.Path);
+                        Activity?.Invoke("file  " + request.Path);
+                        return;
                     case "image":
                         string imagePath = Store.Resolve(request.Path);
                         if (Path.GetExtension(imagePath).ToLowerInvariant() is not (".jpg" or ".png")) throw new IOException("仅支持 jpg、png 图片查看");

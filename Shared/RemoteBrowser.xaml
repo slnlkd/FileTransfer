@@ -183,7 +183,10 @@
                           HorizontalAlignment="Stretch"
                           Background="{StaticResource CanvasBrush}" />
 
-            <Grid Grid.Column="2" x:Name="FileArea">
+            <Grid Grid.Column="2" x:Name="FileArea"
+                  AllowDrop="True"
+                  DragOver="Grid_DragOver"
+                  Drop="Grid_Drop">
                 <DataGrid x:Name="FileGrid"
                           AutoGenerateColumns="False"
                           IsReadOnly="True"

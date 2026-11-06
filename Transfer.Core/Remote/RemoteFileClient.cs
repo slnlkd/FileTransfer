@@ -86,11 +86,50 @@ public sealed class RemoteFileClient(string host, int port)
         }
         catch (Exception ex) { log.Error(ex, "图片读取失败"); throw; }
     }
+    public async Task DownloadFileAsync(string path, string destination, IProgress<double>? progress = null, CancellationToken ct = default)
+    {
+        var request = new RemoteRequest("file", path);
+        var log = Log.ForContext("RequestId", request.RequestId).ForContext("RemotePath", path).ForContext("LocalPath", destination);
+        destination = Path.GetFullPath(destination);
+        string temp = destination + "." + Guid.NewGuid().ToString("N") + ".part";
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromHours(24));
+            using var socket = await Wire.ConnectAsync(host, port, timeout.Token);
+            var stream = socket.GetStream();
+            await Wire.WriteAsync(stream, request, timeout.Token);
+            var header = await Wire.ReadAsync<RemoteResponse>(stream, timeout.Token); Ensure(header);
+            if (header.Length < 0) throw new IOException("服务端返回的文件长度无效");
+            await using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 131072, true))
+            {
+                var buffer = new byte[131072]; long received = 0;
+                var timer = System.Diagnostics.Stopwatch.StartNew();
+                progress?.Report(0);
+                while (received < header.Length)
+                {
+                    int read = await stream.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, header.Length - received)), timeout.Token);
+                    if (read == 0) throw new EndOfStreamException("文件下载连接中断");
+                    await output.WriteAsync(buffer.AsMemory(0, read), timeout.Token); received += read;
+                    if (timer.ElapsedMilliseconds >= 100)
+                    {
+                        timer.Restart();
+                        progress?.Report(header.Length == 0 ? 100 : 100d * received / header.Length);
+                    }
+                }
+                await output.FlushAsync(timeout.Token); output.Flush(true);
+            }
+            File.Move(temp, destination);
+            progress?.Report(100);
+            log.Information("文件下载完成；长度 {Length}", header.Length);
+        }
+        catch (Exception ex) { log.Error(ex, "文件下载失败"); throw; }
+        finally { if (File.Exists(temp)) File.Delete(temp); }
+    }
     public async Task UploadAsync(string local, string destination, bool overwrite, IProgress<double>? progress = null, CancellationToken ct = default)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromMinutes(10));
         var token = timeout.Token;
-        await using var input = new FileStream(local, FileMode.Open, FileAccess.Read, FileShare.Read, 131072, true);
+        await using var input = new FileStream(local, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 131072, true);
         var hash = Convert.ToHexString(await SHA256.HashDataAsync(input, token)); input.Position = 0;
         var request = new RemoteRequest("upload", destination, Length: input.Length, Sha256: hash, Overwrite: overwrite);
         var log = Log.ForContext("RequestId", request.RequestId).ForContext("RemotePath", destination).ForContext("LocalPath", local);
