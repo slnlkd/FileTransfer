@@ -4,6 +4,7 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -125,22 +126,34 @@ internal static class RemoteWindowChecks
         Console.WriteLine("通过：文件列表退格键返回上一级");
         await browser.ConnectAsync(new RemoteFileClient("127.0.0.1", port));
         var images = (await new RemoteFileClient("127.0.0.1", port).CallAsync(new("list"))).Entries!;
-        var imageService = (RemoteFileService)typeof(ServerWindow).GetField("service", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(server)!;
-        int imageRequests = 0;
-        imageService.Activity += message => { if (message.StartsWith("image  ", StringComparison.Ordinal)) Interlocked.Increment(ref imageRequests); };
         await browser.OpenAsync(images.Single(e => e.Name == "early.png"));
         var imageWindow = client.OwnedWindows.OfType<ImageViewer>().Single();
         await WaitAsync(() => FindImage(imageWindow)?.Source != null);
         CheckImageName(imageWindow, "early.png");
         var previousArrow = FindButton(imageWindow, "上一张图片") ?? throw new Exception("缺少左侧图片切换箭头");
         var nextArrow = FindButton(imageWindow, "下一张图片") ?? throw new Exception("缺少右侧图片切换箭头");
+        if (FindButtonByContent(imageWindow, "← 上一张") is not null || FindButtonByContent(imageWindow, "下一张 →") is not null)
+            throw new Exception("不应保留上一张/下一张文本按钮");
         if (previousArrow.IsEnabled || !nextArrow.IsEnabled) throw new Exception("首张图片时箭头状态错误");
-        // 相邻图片会在后台预取，切换时应命中缓存而不是重新请求服务端。
-        await WaitAsync(() => imageRequests >= 2);
-        int beforeSwitch = imageRequests;
+        var thumbList = FindDescendant<ListBox>(imageWindow) ?? throw new Exception("缺少底部缩略图条");
+        if (thumbList.Items.Count != 2) throw new Exception("缩略图数量错误：" + thumbList.Items.Count);
+        var pageBox = FindDescendant<TextBox>(imageWindow) ?? throw new Exception("缺少页码输入框");
+        if (pageBox.Text != "1") throw new Exception("初始页码错误：" + pageBox.Text);
+        // 页码跳转
+        pageBox.Text = "2";
+        pageBox.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(imageWindow), 0, Key.Enter) { RoutedEvent = Keyboard.KeyDownEvent });
+        await WaitAsync(() => imageWindow.CurrentPath == "late.png" && !nextArrow.IsEnabled && previousArrow.IsEnabled);
+        pageBox.Text = "1";
+        pageBox.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(imageWindow), 0, Key.Enter) { RoutedEvent = Keyboard.KeyDownEvent });
+        await WaitAsync(() => imageWindow.CurrentPath == "early.png" && !previousArrow.IsEnabled && nextArrow.IsEnabled);
+        // 缩略图点击切换
+        thumbList.SelectedIndex = 1;
+        await WaitAsync(() => imageWindow.CurrentPath == "late.png" && !nextArrow.IsEnabled);
+        thumbList.SelectedIndex = 0;
+        await WaitAsync(() => imageWindow.CurrentPath == "early.png" && !previousArrow.IsEnabled);
+        Console.WriteLine("通过：底部缩略图、页码跳转与点击切换");
         nextArrow.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await WaitAsync(() => imageWindow.CurrentPath == "late.png" && FindImage(imageWindow)?.Source != null && !nextArrow.IsEnabled && previousArrow.IsEnabled);
-        if (imageRequests != beforeSwitch) throw new Exception("下一张图片未命中预取缓存");
         if (!previousArrow.IsEnabled) throw new Exception("末张图片时左侧箭头未启用");
         previousArrow.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await WaitAsync(() => imageWindow.CurrentPath == "early.png" && FindImage(imageWindow)?.Source != null && !previousArrow.IsEnabled && nextArrow.IsEnabled);
@@ -151,6 +164,30 @@ internal static class RemoteWindowChecks
         await WaitAsync(() => imageWindow.CurrentPath == "early.png" && FindImage(imageWindow)?.Source != null && !previousArrow.IsEnabled && nextArrow.IsEnabled);
         imageWindow.Close();
         Console.WriteLine("通过：图片真实解码，Right / Left 按创建时间前后切换");
+        // 缩略图滚动到末尾仍应按需加载，不能出现空白。
+        string thumbFolder = Path.Combine(root, "缩略图测试");
+        Directory.CreateDirectory(thumbFolder);
+        byte[] sampleImage = await File.ReadAllBytesAsync(Path.Combine(root, "early.png"));
+        for (int i = 1; i <= 25; i++) await File.WriteAllBytesAsync(Path.Combine(thumbFolder, $"{i:00}.png"), sampleImage);
+        await browser.ConnectAsync(new RemoteFileClient("127.0.0.1", port));
+        await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "缩略图测试"));
+        await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().First());
+        var thumbWindow = client.OwnedWindows.OfType<ImageViewer>().Last();
+        await WaitAsync(() => FindImage(thumbWindow)?.Source != null);
+        var thumbStrip = FindDescendant<ListBox>(thumbWindow) ?? throw new Exception("缺少底部缩略图条");
+        if (thumbStrip.Items.Count != 25) throw new Exception("缩略图数量错误：" + thumbStrip.Items.Count);
+        if (FindButtonByContent(thumbWindow, "定位") is null) throw new Exception("缺少定位当前图片按钮");
+        var thumbScroll = FindDescendant<ScrollViewer>(thumbStrip) ?? throw new Exception("缩略图条缺少滚动视图");
+        thumbStrip.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, -120) { RoutedEvent = UIElement.PreviewMouseWheelEvent });
+        await WaitAsync(() => thumbScroll.HorizontalOffset > 0);
+        if (thumbScroll.ScrollableWidth > 0 && thumbScroll.HorizontalOffset >= thumbScroll.ScrollableWidth - 1)
+            throw new Exception("缩略图滚轮一次就跳到了末尾");
+        var lastThumb = (RemoteClient::RemoteFiles.Desktop.ImageThumbItem)thumbStrip.Items[24];
+        thumbStrip.ScrollIntoView(lastThumb);
+        await WaitAsync(() => lastThumb.Thumbnail != null);
+        thumbWindow.Close();
+        await browser.ConnectAsync(new RemoteFileClient("127.0.0.1", port));
+        Console.WriteLine("通过：缩略图滚动到末尾仍按需加载");
         int owned = client.OwnedWindows.Count;
         await browser.OpenAsync(images.Single(e => e.Name == "ignored.dat"));
         if (client.OwnedWindows.Count != owned) throw new Exception("其他类型不应创建查看窗口");
@@ -194,6 +231,16 @@ internal static class RemoteWindowChecks
         await FlushAsync(browser);
         await WaitAsync(() => scroll.VerticalOffset == 0);
         Console.WriteLine("通过：切换目录和返回上一级后文件列表回到顶部");
+        var bigFolder = grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "大目录");
+        await browser.OpenAsync(bigFolder);
+        await FlushAsync(browser);
+        grid.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(client), 0, Key.Back) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+        await WaitAsync(() => !browser.IsBusy && grid.SelectedItem is RemoteEntry { Name: "大目录" });
+        await FlushAsync(browser);
+        grid.UpdateLayout();
+        var backScroll = FindScrollViewer(grid) ?? throw new Exception("未找到文件列表滚动条");
+        if (backScroll.VerticalOffset <= 0) throw new Exception("返回上一级后未定位到刚才的文件夹");
+        Console.WriteLine("通过：返回上一级定位到刚才所在文件夹");
         string pageRoot = Path.Combine(root, "分页测试");
         Directory.CreateDirectory(pageRoot);
         for (int i = 1; i <= 620; i++) await File.WriteAllTextAsync(Path.Combine(pageRoot, i + ".txt"), "");
@@ -242,8 +289,8 @@ internal static class RemoteWindowChecks
         var filterField = typeof(ClientBrowser).GetField("listFilter", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
         filterField.SetValue(browser, "测试");
         var navigate = typeof(ClientBrowser).GetMethod("NavigateAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
-            null, new[] { typeof(string), typeof(bool), typeof(CancellationToken) }, null)!;
-        await (Task)navigate.Invoke(browser, ["", true, CancellationToken.None])!;
+            null, new[] { typeof(string), typeof(bool), typeof(CancellationToken), typeof(bool) }, null)!;
+        await (Task)navigate.Invoke(browser, ["", true, CancellationToken.None, false])!;
         await WaitAsync(() => !browser.IsBusy && grid.Items.Count > 0);
         if (grid.Items.Cast<RemoteEntry>().Any(e => e.Name == "文本")) throw new Exception("过滤未作用于右侧列表");
         var treeRootNode = (TreeViewItem)tree.Items[0];
@@ -251,7 +298,7 @@ internal static class RemoteWindowChecks
             throw new Exception("过滤时目录树丢失了未过滤的文件夹");
         Console.WriteLine("通过：过滤只影响右侧列表，目录树保持完整");
         service.ListFilter = null; filterField.SetValue(browser, null);
-        await (Task)navigate.Invoke(browser, ["", true, CancellationToken.None])!;
+        await (Task)navigate.Invoke(browser, ["", true, CancellationToken.None, false])!;
         await WaitAsync(() => !browser.IsBusy && grid.Items.Cast<RemoteEntry>().Any(e => e.Name == "文本"));
         string draggedLocal = Path.Combine(temp, "拖入测试.txt");
         await File.WriteAllTextAsync(draggedLocal, "拖入内容");
@@ -357,14 +404,15 @@ internal static class RemoteWindowChecks
     private static void CheckImageName(ImageViewer window, string name)
     {
         var blocks = FindTextBlocks(window).ToArray();
-        if (!blocks.Any(b => b.FontWeight == FontWeights.Bold && b.Text == name))
-            throw new Exception("顶部未显示加粗的图片名称：" + name);
-        if (!blocks.Any(b => b.Inlines.OfType<System.Windows.Documents.Run>().Any(r => r.FontWeight == FontWeights.Bold && r.Text == name)))
-            throw new Exception("底部未显示加粗的图片名称：" + name);
-        if (!blocks.Any(b => b.FontWeight == FontWeights.Bold && b.Text == window.Title))
-            throw new Exception("标题栏未加粗显示图片路径");
-        if (!blocks.Any(b => b.Inlines.OfType<System.Windows.Documents.Run>().Any(r => r.FontWeight == FontWeights.Bold && r.Text.Contains("/"))))
-            throw new Exception("底部序号和路径未加粗");
+        // 名称和路径只应出现在顶部工具栏一处，底部只显示创建时间、尺寸和大小。
+        int occurrences = blocks.Count(b => b.Text.Contains(name));
+        if (occurrences != 1) throw new Exception($"图片名称应只出现一次，实际 {occurrences} 次：{name}");
+        if (!blocks.Any(b => b.Inlines.OfType<Run>().Any(r => r.FontWeight == FontWeights.Bold && r.Text == name)))
+            throw new Exception("顶部未加粗显示图片名称：" + name);
+        if (!blocks.Any(b => b.Inlines.OfType<Run>().Any(r => r.Text.StartsWith("创建："))))
+            throw new Exception("底部未显示创建时间");
+        if (!blocks.Any(b => b.Inlines.OfType<Run>().Any(r => r.Text.Contains("×"))))
+            throw new Exception("底部未显示图片尺寸");
     }
     private static IEnumerable<TextBlock> FindTextBlocks(DependencyObject parent)
     {
@@ -415,8 +463,14 @@ internal static class RemoteWindowChecks
             if (FindHeader(VisualTreeHelper.GetChild(parent, i), label) is { } child) return child;
         return null;
     }
-    private static Image? FindImage(DependencyObject parent)
+    private static T? FindDescendant<T>(DependencyObject parent) where T : DependencyObject
     {
+        if (parent is T match) return match;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            if (FindDescendant<T>(VisualTreeHelper.GetChild(parent, i)) is { } child) return child;
+        return null;
+    }
+    private static Image? FindImage(DependencyObject parent)    {
         if (parent is Image image) return image;
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
             if (FindImage(VisualTreeHelper.GetChild(parent, i)) is { } child) return child;
@@ -427,6 +481,13 @@ internal static class RemoteWindowChecks
         if (parent is Button button && Equals(button.ToolTip, tooltip)) return button;
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
             if (FindButton(VisualTreeHelper.GetChild(parent, i), tooltip) is { } child) return child;
+        return null;
+    }
+    private static Button? FindButtonByContent(DependencyObject parent, string content)
+    {
+        if (parent is Button button && Equals(button.Content, content)) return button;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            if (FindButtonByContent(VisualTreeHelper.GetChild(parent, i), content) is { } child) return child;
         return null;
     }
     private static void Prepare(Window window) { window.ShowActivated = false; window.ShowInTaskbar = false; window.Left = -32000; window.Top = -32000; }

@@ -130,7 +130,7 @@ public partial class RemoteBrowser : UserControl
         UpdateEmptyState();
     }
     private RemoteFileClient Endpoint => client ?? throw new IOException("请先连接服务端");
-    private async Task NavigateAsync(string path, bool rebuild = false, CancellationToken ct = default)
+    private async Task NavigateAsync(string path, bool rebuild = false, CancellationToken ct = default, bool revealReturnedFolder = false)
     {
         bool ownedBusy = !busy;
         if (ownedBusy) ShowBusy("正在读取目录…");
@@ -152,13 +152,27 @@ public partial class RemoteBrowser : UserControl
             totalCount = response.Total > 0 ? response.Total : page.Length;
             allLoaded = page.Length >= totalCount;
             FileGrid.ItemsSource = entries;
-            // 切换目录后回到列表顶部；同一目录刷新保留当前位置。
-            if (!string.Equals(previous, path, StringComparison.Ordinal)) ResetFileScroll();
             if (nameDirection is { } direction && CollectionViewSource.GetDefaultView(entries) is ListCollectionView view)
             {
                 view.CustomSort = new EntryComparer("Name", direction);
                 FileGrid.Columns[0].SortDirection = direction;
             }
+            // 返回上一级时定位到刚才所在的文件夹；其他目录切换回到顶部，同目录刷新保留位置。
+            bool movedUp = revealReturnedFolder && !string.IsNullOrEmpty(previous) && string.Equals(ParentPath(previous), path, StringComparison.Ordinal);
+            if (movedUp)
+            {
+                var anchor = entries.FirstOrDefault(e => e.Path == previous && e.IsDirectory);
+                while (anchor is null && !allLoaded)
+                {
+                    int before = entries.Count;
+                    await LoadMoreAsync(ct);
+                    if (entries.Count == before) break;
+                    anchor = entries.FirstOrDefault(e => e.Path == previous && e.IsDirectory);
+                }
+                if (anchor is not null) SelectAndReveal(anchor);
+                else ResetFileScroll();
+            }
+            else if (!string.Equals(previous, path, StringComparison.Ordinal)) ResetFileScroll();
             UpdatePath(response);
             UpdateCountText();
             SetStatus(response.Warning ?? (entries.Count == 0 ? EmptyTextFor(directory) : "就绪"),
@@ -257,6 +271,17 @@ public partial class RemoteBrowser : UserControl
         EmptyUploadButton.Visibility = connected ? Visibility.Visible : Visibility.Collapsed;
     }
     private string EmptyTextFor(string path) => localEmptyText?.Invoke(path) ?? "此文件夹为空";
+    private void SelectAndReveal(RemoteEntry entry)
+    {
+        FileGrid.SelectedItem = entry;
+        FileGrid.ScrollIntoView(entry);
+        // 等新列表完成布局后再定位一次，避免虚拟化把位置恢复成顶部。
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            FileGrid.SelectedItem = entry;
+            FileGrid.ScrollIntoView(entry);
+        }), System.Windows.Threading.DispatcherPriority.Loaded);
+    }
     private void ResetFileScroll()
     {
         fileScroll ??= FindVisualChild<ScrollViewer>(FileGrid);
@@ -393,7 +418,7 @@ public partial class RemoteBrowser : UserControl
         // 根目录重建可移除树中的过期节点；目录内刷新只更新当前节点。
         await NavigateAsync(directory, directory.Length == 0);
     });
-    private async void Parent_Click(object sender, RoutedEventArgs e) => await ExecuteAsync(() => NavigateAsync(ParentPath(directory)));
+    private async void Parent_Click(object sender, RoutedEventArgs e) => await ExecuteAsync(() => NavigateAsync(ParentPath(directory), revealReturnedFolder: true));
     private static string ParentPath(string path) { int index = path.LastIndexOf('/'); return index < 0 ? "" : path[..index]; }
     private void Browser_Loaded(object sender, RoutedEventArgs e)
     {
@@ -497,7 +522,7 @@ public partial class RemoteBrowser : UserControl
             while (pendingUp > 0 && !string.IsNullOrEmpty(directory))
             {
                 pendingUp--;
-                await ExecuteAsync(() => NavigateAsync(ParentPath(directory)));
+                await ExecuteAsync(() => NavigateAsync(ParentPath(directory), revealReturnedFolder: true));
                 FileGrid.Focus();
             }
             pendingUp = 0;
