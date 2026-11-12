@@ -10,5 +10,7 @@
 	<ItemGroup>
 		<Compile Include="../Shared/LoggedApplication.cs" Link="LoggedApplication.cs"/>
 		<Content Include="../Shared/logging.json" Link="logging.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+		<Page Include="../Shared/Theme/Tokens.xaml" Link="Theme/Tokens.xaml"/>
+		<Page Include="../Shared/Theme/Controls.xaml" Link="Theme/Controls.xaml"/>
 	</ItemGroup>
 </Project>

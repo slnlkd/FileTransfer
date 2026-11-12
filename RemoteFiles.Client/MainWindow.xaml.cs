@@ -17,6 +17,8 @@ public partial class MainWindow : Window
     public MainWindow(string settingsPath)
     {
         settings = settingsPath; InitializeComponent();
+        Browser.StatusChanged += (text, key) => SetStatus(text, ThemeBrush(key));
+        Browser.ProgressChanged += UpdateBrowserProgress;
         SetConnectionState("未连接", ThemeBrush("MutedBrush"));
         SetStatus("就绪", ThemeBrush("MutedBrush"));
         try
@@ -55,10 +57,10 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             Log.Error(ex, "远程文件客户端连接失败");
+            Browser.Disconnect();
             ConnectButton.Content = "连接";
             SetConnectionState("未连接", ThemeBrush("MutedBrush"));
             SetStatus("连接失败：" + ex.Message, ThemeBrush("DangerBrush"));
-            Browser.Disconnect();
         }
         finally { connecting = false; ConnectButton.IsEnabled = true; Browser.IsEnabled = true; }
     }
@@ -76,7 +78,17 @@ public partial class MainWindow : Window
     private void SetStatus(string text, Brush dot)
     {
         StatusText.Text = text;
+        StatusText.ToolTip = text;
         StatusDot.Fill = dot;
+    }
+    private void UpdateBrowserProgress(string text, double percent, bool indeterminate, bool visible)
+    {
+        BrowserProgressPanel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        if (!visible) return;
+        BrowserProgressText.Text = text;
+        BrowserProgressText.ToolTip = text;
+        BrowserProgress.IsIndeterminate = indeterminate;
+        if (!indeterminate) BrowserProgress.Value = Math.Clamp(percent, 0, 100);
     }
     private Brush ThemeBrush(string key) => (Brush)FindResource(key);
 }

@@ -6,6 +6,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Net;
 using System.Windows;
+using System.Windows.Media;
 using Microsoft.Win32;
 using Transfer.Core;
 
@@ -109,29 +110,29 @@ public partial class MainWindow : Window
             SLog.Information("用户点击启动服务；端口输入 {PortInput}", PortBox.Text);
             if (!int.TryParse(PortBox.Text, out int port) || port is < 1 or > 65535) throw new IOException("请输入 1～65535 的端口");
             server.Start(port); StartButton.IsEnabled = false; StopButton.IsEnabled = true; PortBox.IsEnabled = false;
-            StatusText.Text = $"正在监听 0.0.0.0:{port}；本机地址：" + string.Join("、", Dns.GetHostAddresses(Dns.GetHostName()).Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork));
+            SetStatus($"正在监听 0.0.0.0:{port}；本机地址：" + string.Join("、", Dns.GetHostAddresses(Dns.GetHostName()).Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)), "SuccessBrush");
         }
-        catch (Exception ex) { SLog.Error(ex, "启动服务失败；端口输入 {PortInput}", PortBox.Text); MessageBox.Show(ex.Message, "启动失败"); }
+        catch (Exception ex) { SLog.Error(ex, "启动服务失败；端口输入 {PortInput}", PortBox.Text); SetStatus("启动服务失败：" + ex.Message, "DangerBrush"); MessageBox.Show(ex.Message, "启动失败"); }
     }
     private async void Stop_Click(object sender, RoutedEventArgs e)
     {
         if (!StopButton.IsEnabled || closing) return;
         StopButton.IsEnabled = false;
         StartButton.IsEnabled = false;
-        StatusText.Text = "正在停止服务，等待传输连接释放……";
+        SetStatus("正在停止服务，等待传输连接释放……", "WarningBrush");
         SLog.Information("用户点击停止服务；当前端口 {Port}", server.Port);
         try
         {
             await server.StopAsync();
             foreach (var row in Transfers.Where(r => r.Status == "下载中" || r.Status == "校验中" || r.Status == "连接中断，可续传"))
                 row.Status = "服务已停止，可续传";
-            StatusText.Text = "服务已停止；共享文件保留，点击启动服务可重新监听。客户端可保留断点继续下载。";
+            SetStatus("服务已停止；共享文件保留，点击启动服务可重新监听。客户端可保留断点继续下载。", "MutedBrush");
             Log("服务已停止，监听与传输连接已释放，共享文件列表保留。");
         }
         catch (Exception ex)
         {
             SLog.Error(ex, "停止服务失败");
-            StatusText.Text = "停止服务时发生错误：" + ex.Message;
+            SetStatus("停止服务时发生错误：" + ex.Message, "DangerBrush");
         }
         finally
         {
@@ -249,5 +250,13 @@ public partial class MainWindow : Window
         finally { adding.Release(); }
     }
     private void Log(string text) { SLog.Debug("服务端界面消息：{UiMessage}", text); LogBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {text}\n"); LogBox.ScrollToEnd(); }
+    private void SetStatus(string text, string brushKey = "MutedBrush")
+    {
+        StatusText.Text = text;
+        StatusText.ToolTip = text;
+        var brush = (Brush)FindResource(brushKey);
+        StatusText.Foreground = brush;
+        StatusDot.Fill = brush;
+    }
 }
 

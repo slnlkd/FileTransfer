@@ -3,6 +3,7 @@ using System.IO;
 using System.Net;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Media;
 using Microsoft.Win32;
 using Serilog;
 using Transfer.Core;
@@ -22,6 +23,8 @@ public partial class MainWindow : Window
     public MainWindow(string settingsPath)
     {
         settings = settingsPath; InitializeComponent(); TransferGrid.ItemsSource = transfers;
+        Browser.StatusChanged += (text, key) => SetStatus(text, key);
+        Browser.ProgressChanged += UpdateBrowserProgress;
         try
         {
             if (File.Exists(settings) && JsonSerializer.Deserialize<Settings>(File.ReadAllText(settings)) is { } saved)
@@ -75,13 +78,13 @@ public partial class MainWindow : Window
             try { Directory.CreateDirectory(Path.GetDirectoryName(settings)!); await File.WriteAllTextAsync(settings, JsonSerializer.Serialize(new Settings(service.Store.Root, port))); }
             catch (Exception ex) { settingsSaved = false; Log.Warning(ex, "保存服务端配置失败；路径 {SettingsPath}", settings); }
             StopButton.IsEnabled = true;
-            StatusText.Text = $"正在监听 TCP {port}；地址：" + string.Join("、", Dns.GetHostAddresses(Dns.GetHostName()).Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)) + (settingsSaved ? "" : "；配置保存失败，下次需重新设置。");
             await Browser.ConnectAsync(new RemoteFileClient("127.0.0.1", port));
+            SetStatus($"正在监听 TCP {port}；地址：" + string.Join("、", Dns.GetHostAddresses(Dns.GetHostName()).Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)) + (settingsSaved ? "" : "；配置保存失败，下次需重新设置。"), "SuccessBrush");
         }
         catch (Exception ex)
         {
             Log.Error(ex, "启动远程文件服务失败；根目录 {Root}，端口输入 {PortInput}", RootBox.Text, PortBox.Text);
-            StatusText.Text = ex.Message;
+            SetStatus(ex.Message, "DangerBrush");
             if (service != null) { await service.DisposeAsync(); service = null; }
             Browser.Disconnect(); StopButton.IsEnabled = false; StartButton.IsEnabled = true; ChooseButton.IsEnabled = true; PortBox.IsEnabled = true;
         }
@@ -94,16 +97,33 @@ public partial class MainWindow : Window
         try
         {
             await service.StopAsync(); Browser.Disconnect();
-            StatusText.Text = "服务已停止；选定根目录保留。已启动的被管理程序继续运行。";
+            SetStatus("服务已停止；选定根目录保留。已启动的被管理程序继续运行。", "MutedBrush");
             StartButton.IsEnabled = true; ChooseButton.IsEnabled = true; PortBox.IsEnabled = true;
         }
-        catch (Exception ex) { Log.Error(ex, "停止远程文件管理服务失败"); StatusText.Text = ex.Message; }
+        catch (Exception ex) { Log.Error(ex, "停止远程文件管理服务失败"); SetStatus(ex.Message, "DangerBrush"); }
         finally { changing = false; }
     }
     private void Logs_Click(object sender, RoutedEventArgs e)
     {
         try { Process.Start(new ProcessStartInfo(AppLogging.LogDirectory) { UseShellExecute = true }); }
-        catch (Exception ex) { Log.Error(ex, "打开日志目录失败"); StatusText.Text = ex.Message; }
+        catch (Exception ex) { Log.Error(ex, "打开日志目录失败"); SetStatus(ex.Message, "DangerBrush"); }
+    }
+    private void SetStatus(string text, string brushKey = "MutedBrush")
+    {
+        StatusText.Text = text;
+        StatusText.ToolTip = text;
+        var brush = (Brush)FindResource(brushKey);
+        StatusText.Foreground = brush;
+        StatusDot.Fill = brush;
+    }
+    private void UpdateBrowserProgress(string text, double percent, bool indeterminate, bool visible)
+    {
+        BrowserProgressPanel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        if (!visible) return;
+        BrowserProgressText.Text = text;
+        BrowserProgressText.ToolTip = text;
+        BrowserProgress.IsIndeterminate = indeterminate;
+        if (!indeterminate) BrowserProgress.Value = Math.Clamp(percent, 0, 100);
     }
     // 由本地个性化扩展实现；未实现时不附加目录过滤。
     partial void ConfigureService(RemoteFileService service);

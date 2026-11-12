@@ -5,7 +5,6 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows.Data;
-using System.Windows.Documents;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -41,6 +40,8 @@ public partial class RemoteBrowser : UserControl
     private bool scrollResetPending;
     private Point dragOrigin;
     private bool dragArmed;
+    public event Action<string, string>? StatusChanged;
+    public event Action<string, double, bool, bool>? ProgressChanged;
     public bool IsBusy => busy;
     private async void Grid_Sorting(object sender, DataGridSortingEventArgs e)
     {
@@ -93,6 +94,7 @@ public partial class RemoteBrowser : UserControl
         FileGrid.RowStyle = style;
         UpdateEmptyState();
         BuildLocalFilters(FilterHost);
+        ShowDisconnectedPath();
         FileGrid.AddHandler(PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler(Grid_MouseLeftButtonDown), true);
         FileGrid.AddHandler(PreviewMouseMoveEvent, new MouseEventHandler(Grid_MouseMove), true);
         FileGrid.AddHandler(PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler(Grid_MouseLeftButtonUp), true);
@@ -119,10 +121,7 @@ public partial class RemoteBrowser : UserControl
         unfilteredCache.Clear();
         FolderTree.Items.Clear();
         FileGrid.ItemsSource = null;
-        PathText.Inlines.Clear();
-        PathText.Text = "尚未连接";
-        PathText.ToolTip = null;
-        EndpointText.Text = "";
+        ShowDisconnectedPath();
         ItemCountText.Text = "";
         HideBusy();
         HideProgress();
@@ -250,18 +249,61 @@ public partial class RemoteBrowser : UserControl
         if (e.VerticalOffset + e.ViewportHeight < e.ExtentHeight - 200) return;
         _ = LoadMoreAsync();
     }
+    private void ShowDisconnectedPath()
+    {
+        Breadcrumb.Children.Clear();
+        Breadcrumb.Children.Add(new TextBlock
+        {
+            Text = "尚未连接",
+            FontSize = 12,
+            Foreground = ThemeBrush("MutedBrush"),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        Breadcrumb.ToolTip = null;
+        EndpointText.Text = "";
+    }
     private void UpdatePath(RemoteResponse response)
     {
         string rootName = response.RootName ?? "共享根目录";
-        PathText.Inlines.Clear();
-        PathText.Inlines.Add(new Run(rootName) { FontWeight = FontWeights.SemiBold });
-        if (!string.IsNullOrEmpty(directory))
+        Breadcrumb.Children.Clear();
+        AddBreadcrumb(rootName, "", true);
+        if (directory.Length > 0)
         {
-            PathText.Inlines.Add(new Run("  /  ") { Foreground = ThemeBrush("SubtleBrush") });
-            PathText.Inlines.Add(new Run(directory.Replace("/", "  /  ")));
+            string path = "";
+            string[] parts = directory.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < parts.Length; i++)
+            {
+                path = path.Length == 0 ? parts[i] : path + "/" + parts[i];
+                AddBreadcrumb(parts[i], path, i == parts.Length - 1);
+            }
         }
-        PathText.ToolTip = $"{Endpoint.Host}:{Endpoint.Port} / {rootName}" + (directory.Length == 0 ? "" : " / " + directory);
+        Breadcrumb.ToolTip = $"{Endpoint.Host}:{Endpoint.Port} / {rootName}" + (directory.Length == 0 ? "" : " / " + directory);
         EndpointText.Text = $"{Endpoint.Host}:{Endpoint.Port}";
+    }
+    private void AddBreadcrumb(string label, string path, bool current)
+    {
+        if (Breadcrumb.Children.Count > 0)
+        {
+            Breadcrumb.Children.Add(new TextBlock
+            {
+                Text = "/",
+                Margin = new Thickness(3, 0, 3, 0),
+                Foreground = ThemeBrush("SubtleBrush"),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+        }
+        var button = new Button
+        {
+            Content = new TextBlock { Text = label, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 240 },
+            Style = TryFindResource("GhostButton") as Style,
+            Padding = new Thickness(3, 0, 3, 0),
+            MinHeight = 20,
+            FontSize = 12,
+            FontWeight = current ? FontWeights.SemiBold : FontWeights.Normal,
+            ToolTip = path.Length == 0 ? "共享根目录" : path
+        };
+        button.Click += async (_, _) => await ExecuteAsync(() => NavigateAsync(path, path.Length == 0));
+        Breadcrumb.Children.Add(button);
     }
     private void UpdateEmptyState()
     {
@@ -988,6 +1030,7 @@ public partial class RemoteBrowser : UserControl
         StatusText.Text = text;
         StatusText.ToolTip = text;
         BrowserStatusDot.Fill = ThemeBrush(brushKey);
+        StatusChanged?.Invoke(text, brushKey);
     }
     private void ShowBusy(string text)
     {
@@ -1014,6 +1057,7 @@ public partial class RemoteBrowser : UserControl
         UploadText.Text = text;
         UploadText.ToolTip = text;
         ProgressPanel.Visibility = Visibility.Visible;
+        ProgressChanged?.Invoke(text, 0, false, true);
     }
     private void SetProgress(double value, string text, bool indeterminate = false)
     {
@@ -1022,11 +1066,13 @@ public partial class RemoteBrowser : UserControl
         UploadText.Text = text;
         UploadText.ToolTip = text;
         ProgressPanel.Visibility = Visibility.Visible;
+        ProgressChanged?.Invoke(text, value, indeterminate, true);
     }
     private void HideProgress()
     {
         ProgressPanel.Visibility = Visibility.Collapsed;
         UploadText.Text = "";
+        ProgressChanged?.Invoke("", 0, false, false);
     }
     private Brush ThemeBrush(string key) => (Brush)FindResource(key);
 }

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows;
+using System.Windows.Media;
 using Microsoft.Win32;
 using Transfer.Core;
 namespace Transfer.Client;
@@ -45,7 +46,7 @@ public partial class MainWindow : Window
                 foreach (var item in downloads) item.Cancellation.Cancel();
                 await Task.WhenAll(downloads.Select(v => v.Task));
             }
-            catch (Exception ex) { SLog.Error(ex, "关闭客户端时等待下载结束失败"); StatusText.Text = "关闭时保存下载进度失败：" + ex.Message; }
+            catch (Exception ex) { SLog.Error(ex, "关闭客户端时等待下载结束失败"); SetStatus("关闭时保存下载进度失败：" + ex.Message, "DangerBrush"); }
             finally { SLog.Information("关闭前资源清理结束，准备关闭主窗口"); closed = true; Close(); }
         };
     }
@@ -65,15 +66,16 @@ public partial class MainWindow : Window
         SLog.Information("用户点击连接或刷新；地址输入 {HostInput}，端口输入 {PortInput}", HostBox.Text, PortBox.Text);
         if (active.Count > 0) { SLog.Warning("活动下载存在，拒绝刷新；任务数 {ActiveDownloads}", active.Count); MessageBox.Show("请先暂停所有下载，再刷新列表"); return; }
         ConnectButton.IsEnabled = false;
+        SetStatus("正在连接服务端…", "WarningBrush");
         try
         {
             if (!int.TryParse(PortBox.Text, out int port) || port is < 1 or > 65535) throw new IOException("端口无效");
             var list = await Downloader.ListAsync(HostBox.Text.Trim(), port);
             connectedHost = HostBox.Text.Trim(); connectedPort = port;
             Files.Clear(); foreach (var file in list) Files.Add(new() { File = file });
-            StatusText.Text = $"已连接 {connectedHost}:{port}，共 {list.Length} 个文件";
+            SetStatus($"已连接 {connectedHost}:{port}，共 {list.Length} 个文件", "SuccessBrush");
         }
-        catch (Exception ex) { SLog.Error(ex, "客户端连接或刷新失败；地址 {Host}，端口输入 {PortInput}", HostBox.Text, PortBox.Text); StatusText.Text = "连接失败：" + ex.Message; }
+        catch (Exception ex) { SLog.Error(ex, "客户端连接或刷新失败；地址 {Host}，端口输入 {PortInput}", HostBox.Text, PortBox.Text); SetStatus("连接失败：" + ex.Message, "DangerBrush"); }
         finally { ConnectButton.IsEnabled = true; }
     }
     private void Folder_Click(object sender, RoutedEventArgs e)
@@ -109,7 +111,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            SLog.Error(ex, "创建共享文件夹的下载目录失败"); StatusText.Text = ex.Message; return;
+            SLog.Error(ex, "创建共享文件夹的下载目录失败"); SetStatus(ex.Message, "DangerBrush"); return;
         }
         foreach (var row in downloads)
         {
@@ -139,7 +141,7 @@ public partial class MainWindow : Window
             if (cancellation.IsCancellationRequested) SLog.Information("客户端文件任务已暂停；文件编号 {FileId}", row.File.Id);
             else SLog.Error(ex, "客户端文件任务发生超时或内部取消；文件编号 {FileId}", row.File.Id);
         }
-        catch (Exception ex) { SLog.Error(ex, "客户端文件下载失败；文件 {FileName}，编号 {FileId}，目录 {DownloadFolder}", row.Name, row.File.Id, folder); row.Status = "已中断"; StatusText.Text = $"{row.Name}：{ex.Message}"; }
+        catch (Exception ex) { SLog.Error(ex, "客户端文件下载失败；文件 {FileName}，编号 {FileId}，目录 {DownloadFolder}", row.Name, row.File.Id, folder); row.Status = "已中断"; SetStatus($"{row.Name}：{ex.Message}", "DangerBrush"); }
         finally
         {
             if (entered) fileSlots.Release();
@@ -161,6 +163,14 @@ public partial class MainWindow : Window
     {
         SLog.Information("用户请求暂停所有下载；活动任务数量 {ActiveDownloads}", active.Count);
         foreach (var item in active.Values) item.Cancellation.Cancel();
+    }
+    private void SetStatus(string text, string brushKey = "MutedBrush")
+    {
+        StatusText.Text = text;
+        StatusText.ToolTip = text;
+        var brush = (Brush)FindResource(brushKey);
+        StatusText.Foreground = brush;
+        StatusDot.Fill = brush;
     }
 }
 

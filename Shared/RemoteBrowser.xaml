@@ -33,11 +33,21 @@
                             Orientation="Horizontal">
                     <Button Margin="0,0,4,0"
                             Click="Parent_Click"
-                            Content="上一级"
-                            ToolTip="返回上一级目录" />
+                            ToolTip="返回上一级目录">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE72B;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                       FontSize="12" Margin="0,0,5,0" VerticalAlignment="Center" />
+                            <TextBlock Text="上一级" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
                     <Button Click="Refresh_Click"
-                            Content="刷新"
-                            ToolTip="刷新当前目录" />
+                            ToolTip="刷新当前目录">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE72C;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                       FontSize="12" Margin="0,0,5,0" VerticalAlignment="Center" />
+                            <TextBlock Text="刷新" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
 
                 <Border Grid.Column="1"
@@ -51,12 +61,23 @@
                             Orientation="Horizontal">
                     <Button Margin="0,0,4,0"
                             Click="Upload_Click"
-                            Content="上传"
                             Style="{StaticResource PrimaryButton}"
-                            ToolTip="上传文件到当前目录" />
+                            ToolTip="上传文件到当前目录">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE898;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                       FontSize="12" Margin="0,0,5,0" VerticalAlignment="Center" />
+                            <TextBlock Text="上传" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
                     <Button Margin="0,0,6,0"
                             Click="NewFolder_Click"
-                            Content="新建文件夹" />
+                            ToolTip="在当前目录新建文件夹">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE8F4;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                       FontSize="12" Margin="0,0,5,0" VerticalAlignment="Center" />
+                            <TextBlock Text="新建文件夹" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
                     <TextBox x:Name="NewFolderBox"
                              Width="150"
                              ToolTip="新建文件夹名称" />
@@ -71,23 +92,27 @@
             </Grid>
         </Border>
 
-        <!-- 路径 -->
+        <!-- 路径面包屑 -->
         <Border DockPanel.Dock="Top"
-                Padding="8,4"
-                Background="{StaticResource HeaderBrush}"
+                Margin="8,8,8,0"
+                Padding="8,3"
+                Background="{StaticResource SurfaceBrush}"
                 BorderBrush="{StaticResource LineBrush}"
-                BorderThickness="0,0,0,1">
+                BorderThickness="1"
+                CornerRadius="{StaticResource PanelCornerRadius}">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="PathText"
-                           Grid.Column="0"
-                           VerticalAlignment="Center"
-                           FontSize="12"
-                           Text="尚未连接"
-                           TextTrimming="CharacterEllipsis" />
+                <ScrollViewer Grid.Column="0"
+                              HorizontalScrollBarVisibility="Hidden"
+                              VerticalScrollBarVisibility="Disabled"
+                              VerticalAlignment="Center">
+                    <StackPanel x:Name="Breadcrumb"
+                                Orientation="Horizontal"
+                                VerticalAlignment="Center" />
+                </ScrollViewer>
                 <TextBlock x:Name="EndpointText"
                            Grid.Column="1"
                            Margin="12,0,0,0"
@@ -99,11 +124,13 @@
         </Border>
 
         <!-- 浏览器状态 / 传输进度 -->
-        <Border DockPanel.Dock="Bottom"
+        <Border x:Name="StatusBar"
+                DockPanel.Dock="Bottom"
                 Height="24"
                 Margin="0,4,0,0"
                 Padding="2,0"
-                Background="Transparent">
+                Background="Transparent"
+                Visibility="Collapsed">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -218,7 +245,7 @@
                         </DataGridTemplateColumn>
 
                         <DataGridTextColumn Header="类型"
-                                            Width="80"
+                                            Width="72"
                                             Binding="{Binding Converter={StaticResource FileKind}}"
                                             SortMemberPath="Kind">
                             <DataGridTextColumn.ElementStyle>
@@ -229,7 +256,7 @@
                         </DataGridTextColumn>
 
                         <DataGridTextColumn Header="大小"
-                                            Width="90"
+                                            Width="84"
                                             Binding="{Binding Converter={StaticResource FileSize}}"
                                             SortMemberPath="Size">
                             <DataGridTextColumn.ElementStyle>
@@ -241,7 +268,7 @@
                         </DataGridTextColumn>
 
                         <DataGridTextColumn Header="创建时间"
-                                            Width="140"
+                                            Width="128"
                                             Binding="{Binding CreatedLocal, StringFormat={}{0:yyyy.MM.dd HH:mm}}"
                                             SortMemberPath="CreatedLocal">
                             <DataGridTextColumn.ElementStyle>
@@ -252,7 +279,7 @@
                         </DataGridTextColumn>
 
                         <DataGridTextColumn Header="修改时间"
-                                            Width="140"
+                                            Width="128"
                                             Binding="{Binding ModifiedLocal, StringFormat={}{0:yyyy.MM.dd HH:mm}}"
                                             SortMemberPath="ModifiedLocal">
                             <DataGridTextColumn.ElementStyle>
