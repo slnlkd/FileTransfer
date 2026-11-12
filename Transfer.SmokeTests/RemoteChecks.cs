@@ -23,6 +23,7 @@ internal static class RemoteChecks
         var client = new RemoteFileClient("127.0.0.1", server.Port);
         var list = (await client.CallAsync(new("list"))).Entries!;
         check(list.Any(e => e.IsDirectory && e.Name == "子目录") && list.Any(e => e.Name == "hello.txt"), "远程文件管理返回文件和目录");
+        check((await client.CallAsync(new("hello"))).Protocol == RemoteProtocol.Version, "客户端与服务端协议版本握手一致");
         string pageRoot = Path.Combine(root, "分页");
         Directory.CreateDirectory(pageRoot);
         for (int i = 1; i <= 620; i++) await File.WriteAllTextAsync(Path.Combine(pageRoot, i + ".txt"), "");

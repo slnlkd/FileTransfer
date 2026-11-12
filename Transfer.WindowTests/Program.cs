@@ -15,6 +15,7 @@ internal static class Program
     {
         string logs = Path.Combine(Path.GetTempPath(), "FileTransfer-window-logs-" + Guid.NewGuid().ToString("N"));
         Environment.SetEnvironmentVariable("FILETRANSFER_LOG_DIRECTORY", logs);
+        Environment.SetEnvironmentVariable("FILETRANSFER_DISABLE_LAYOUT", "1");
         Application app = args.Contains("client") ? new Transfer.Client.App() : new Transfer.Server.App();
         app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
         int result = 0;

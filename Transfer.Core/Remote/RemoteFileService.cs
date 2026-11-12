@@ -76,6 +76,7 @@ public sealed class RemoteFileService : IAsyncDisposable
                 RemoteResponse response;
                 switch (request.Command)
                 {
+                    case "hello": response = new(true, Protocol: RemoteProtocol.Version); break;
                     case "list": response = await ListAsync(request); break;
                     case "text": response = await Store.ReadTextAsync(request.Path, ct); break;
                     case "file":
@@ -178,6 +179,9 @@ public sealed class RemoteFileService : IAsyncDisposable
                         break;
                     default: throw new IOException("未知的文件管理命令");
                 }
+                if (response.Protocol == 0) response = response with { Protocol = RemoteProtocol.Version };
+                if (request.Protocol != RemoteProtocol.Version && response.Warning is null)
+                    response = response with { Warning = $"客户端协议 v{request.Protocol} 与服务端 v{RemoteProtocol.Version} 不一致，请更新两端" };
                 await Wire.WriteAsync(stream, response, ct);
                 log.Information("远程文件请求完成");
                 Activity?.Invoke($"{request.Command}  {request.Path}");

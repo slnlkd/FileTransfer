@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Media;
 using Microsoft.Win32;
 using Transfer.Core;
+using Transfer.Desktop;
 namespace Transfer.Client;
 public partial class MainWindow : Window
 {
@@ -23,6 +24,8 @@ public partial class MainWindow : Window
         settings = settingsPath;
         SLog.Information("准备创建Client主窗口");
         InitializeComponent(); DataContext = this;
+        WindowLayout.Attach(this, "transfer-client", FileGrid);
+        UpdateEmptyState();
         SLog.Information("主窗口初始化完成；配置路径 {SettingsPath}", settings);
         try
         {
@@ -73,9 +76,10 @@ public partial class MainWindow : Window
             var list = await Downloader.ListAsync(HostBox.Text.Trim(), port);
             connectedHost = HostBox.Text.Trim(); connectedPort = port;
             Files.Clear(); foreach (var file in list) Files.Add(new() { File = file });
+            UpdateEmptyState();
             SetStatus($"已连接 {connectedHost}:{port}，共 {list.Length} 个文件", "SuccessBrush");
         }
-        catch (Exception ex) { SLog.Error(ex, "客户端连接或刷新失败；地址 {Host}，端口输入 {PortInput}", HostBox.Text, PortBox.Text); SetStatus("连接失败：" + ex.Message, "DangerBrush"); }
+        catch (Exception ex) { SLog.Error(ex, "客户端连接或刷新失败；地址 {Host}，端口输入 {PortInput}", HostBox.Text, PortBox.Text); SetStatus("连接失败：" + ex.Message, "DangerBrush"); UpdateEmptyState(); }
         finally { ConnectButton.IsEnabled = true; }
     }
     private void Folder_Click(object sender, RoutedEventArgs e)
@@ -171,6 +175,12 @@ public partial class MainWindow : Window
         var brush = (Brush)FindResource(brushKey);
         StatusText.Foreground = brush;
         StatusDot.Fill = brush;
+    }
+    private void UpdateEmptyState()
+    {
+        EmptyState.Visibility = Files.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        EmptyText.Text = connectedPort == 0 ? "连接服务端后选择要下载的文件" : "当前服务端没有可下载文件";
+        EmptyAction.Content = connectedPort == 0 ? "连接 / 刷新" : "重新连接 / 刷新";
     }
 }
 

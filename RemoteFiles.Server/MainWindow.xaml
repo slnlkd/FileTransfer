@@ -37,6 +37,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <Ellipse x:Name="StatusDot" Width="5" Height="5" Fill="{StaticResource MutedBrush}" Margin="0,0,6,0" />
                 <TextBlock x:Name="StatusText"
@@ -46,7 +47,13 @@
                            FontSize="11"
                            Foreground="{StaticResource MutedBrush}"
                            TextTrimming="CharacterEllipsis" />
-                <StackPanel Grid.Column="2"
+                <TextBlock Grid.Column="2"
+                           x:Name="SelectionText"
+                           VerticalAlignment="Center"
+                           FontSize="11"
+                           Margin="12,0,0,0"
+                           Foreground="{StaticResource MutedBrush}" />
+                <StackPanel Grid.Column="3"
                             x:Name="BrowserProgressPanel"
                             Orientation="Horizontal"
                             VerticalAlignment="Center"
@@ -124,16 +131,34 @@
                     </DataGridTemplateColumn>
                 </DataGrid.Columns>
             </DataGrid>
-            <TextBox x:Name="ActivityBox"
-                     Height="65"
-                     Margin="0,8,0,0"
-                     IsReadOnly="True"
-                     TextWrapping="Wrap"
-                     VerticalScrollBarVisibility="Auto"
-                     VerticalContentAlignment="Top"
-                     Padding="8"
-                     FontFamily="{StaticResource MonoFontFamily}"
-                     FontSize="11" />
+            <Border Background="{StaticResource SurfaceBrush}"
+                    BorderBrush="{StaticResource LineBrush}"
+                    BorderThickness="1"
+                    CornerRadius="{StaticResource PanelCornerRadius}"
+                    Margin="0,8,0,0">
+                <DockPanel>
+                    <Grid DockPanel.Dock="Top" Height="28" Background="{StaticResource HeaderBrush}">
+                        <TextBlock Text="活动日志"
+                                   Style="{StaticResource SectionLabel}"
+                                   Margin="8,0,0,0"
+                                   VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,4,0">
+                            <Button Content="复制" Click="ActivityCopy_Click" Padding="6,1" MinHeight="22" FontSize="11" Style="{StaticResource GhostButton}" />
+                            <Button Content="清空" Click="ActivityClear_Click" Padding="6,1" MinHeight="22" FontSize="11" Style="{StaticResource GhostButton}" />
+                            <Button x:Name="ActivityToggle" Content="收起" Click="ActivityToggle_Click" Padding="6,1" MinHeight="22" FontSize="11" Style="{StaticResource GhostButton}" />
+                        </StackPanel>
+                    </Grid>
+                    <RichTextBox x:Name="ActivityBox"
+                                 Height="110"
+                                 IsReadOnly="True"
+                                 BorderThickness="0"
+                                 Background="{StaticResource SurfaceBrush}"
+                                 VerticalScrollBarVisibility="Auto"
+                                 Padding="6"
+                                 FontFamily="{StaticResource MonoFontFamily}"
+                                 FontSize="11" />
+                </DockPanel>
+            </Border>
         </StackPanel>
 
         <local:RemoteBrowser x:Name="Browser" />

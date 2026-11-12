@@ -1,4 +1,4 @@
-ï»¿using System.Net.Sockets;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using Serilog;
 
@@ -7,11 +7,15 @@ public sealed class RemoteFileClient(string host, int port)
 {
     public string Host => host;
     public int Port => port;
+    public int ServerProtocolVersion { get; private set; }
+    public string? ProtocolWarning { get; private set; }
+    public void ClearProtocolWarning() => ProtocolWarning = null;
     public async Task<RemoteResponse> CallAsync(RemoteRequest request, CancellationToken ct = default)
     {
+        request = request with { Protocol = RemoteProtocol.Version };
         var log = Log.ForContext("RequestId", request.RequestId).ForContext("Command", request.Command)
             .ForContext("RemotePath", request.Path).ForContext("Host", host).ForContext("Port", port);
-        // åªå¯¹åªè¯»å‘½ä»¤é‡è¯•ä¸€æ¬¡ï¼Œé¿å…å†™æ“ä½œè¢«é‡å¤æ‰§è¡Œã€‚
+        // Ö»¶ÔÖ»¶ÁÃüÁîÖØÊÔÒ»´Î£¬±ÜÃâĞ´²Ù×÷±»ÖØ¸´Ö´ĞĞ¡£
         int attempts = request.Command is "list" or "text" or "status" ? 2 : 1;
         try
         {
@@ -23,24 +27,28 @@ public sealed class RemoteFileClient(string host, int port)
                     timeout.CancelAfter(TimeoutFor(request.Command));
                     using var socket = await Wire.ConnectAsync(host, port, timeout.Token);
                     var stream = socket.GetStream();
-                    log.Information("å¼€å§‹è¿œç¨‹æ–‡ä»¶æ“ä½œï¼›ç¬¬ {Attempt} æ¬¡å°è¯•", attempt);
+                    log.Information("¿ªÊ¼Ô¶³ÌÎÄ¼ş²Ù×÷£»µÚ {Attempt} ´Î³¢ÊÔ", attempt);
                     await Wire.WriteAsync(stream, request, timeout.Token);
                     var response = await Wire.ReadAsync<RemoteResponse>(stream, timeout.Token);
-                    Ensure(response); log.Information("è¿œç¨‹æ–‡ä»¶æ“ä½œæˆåŠŸ");
+                    Ensure(response);
+                    ServerProtocolVersion = response.Protocol;
+                    if (response.Protocol > 0 && response.Protocol != RemoteProtocol.Version)
+                        ProtocolWarning = $"¿Í»§¶ËĞ­Òé v{RemoteProtocol.Version}£¬·şÎñ¶ËĞ­Òé v{response.Protocol}£¬Çë¸üĞÂÁ½¶Ë";
+                    log.Information("Ô¶³ÌÎÄ¼ş²Ù×÷³É¹¦");
                     return response;
                 }
                 catch (Exception ex) when (attempt < attempts && Retryable(ex, ct))
                 {
-                    log.Warning(ex, "è¿œç¨‹æ–‡ä»¶æ“ä½œå¤±è´¥ï¼Œå‡†å¤‡é‡è¯•ï¼›ç¬¬ {Attempt} æ¬¡", attempt);
+                    log.Warning(ex, "Ô¶³ÌÎÄ¼ş²Ù×÷Ê§°Ü£¬×¼±¸ÖØÊÔ£»µÚ {Attempt} ´Î", attempt);
                     await Task.Delay(500, ct);
                 }
             }
         }
         catch (Exception ex)
         {
-            log.Error(ex, "è¿œç¨‹æ–‡ä»¶æ“ä½œå¤±è´¥");
+            log.Error(ex, "Ô¶³ÌÎÄ¼ş²Ù×÷Ê§°Ü");
             if (ex is SocketException)
-                throw new IOException($"æ— æ³•è¿æ¥æœåŠ¡ç«¯ {host}:{port}ï¼Œè¯·ç¡®è®¤æœåŠ¡å·²å¯åŠ¨å¹¶ä¸”ç½‘ç»œå¯è¾¾", ex);
+                throw new IOException($"ÎŞ·¨Á¬½Ó·şÎñ¶Ë {host}:{port}£¬ÇëÈ·ÈÏ·şÎñÒÑÆô¶¯²¢ÇÒÍøÂç¿É´ï", ex);
             throw;
         }
     }
@@ -58,7 +66,7 @@ public sealed class RemoteFileClient(string host, int port)
     }
     public async Task<byte[]> ReadImageAsync(string path, CancellationToken ct = default)
     {
-        var request = new RemoteRequest("image", path);
+        var request = new RemoteRequest("image", path, Protocol: RemoteProtocol.Version);
         var log = Log.ForContext("RequestId", request.RequestId).ForContext("RemotePath", path);
         try
         {
@@ -71,24 +79,24 @@ public sealed class RemoteFileClient(string host, int port)
                     var stream = socket.GetStream();
                     await Wire.WriteAsync(stream, request, timeout.Token);
                     var response = await Wire.ReadAsync<RemoteResponse>(stream, timeout.Token); Ensure(response);
-                    if (response.Length < 0 || response.Length > RemoteFileStore.ImageLimit) throw new IOException("å›¾ç‰‡é•¿åº¦è¶…è¿‡é™åˆ¶");
+                    if (response.Length < 0 || response.Length > RemoteFileStore.ImageLimit) throw new IOException("Í¼Æ¬³¤¶È³¬¹ıÏŞÖÆ");
                     var bytes = new byte[(int)response.Length];
                     await stream.ReadExactlyAsync(bytes, timeout.Token);
-                    log.Information("å›¾ç‰‡è·å–æˆåŠŸï¼›é•¿åº¦ {Length}", bytes.Length);
+                    log.Information("Í¼Æ¬»ñÈ¡³É¹¦£»³¤¶È {Length}", bytes.Length);
                     return bytes;
                 }
                 catch (Exception ex) when (attempt == 1 && Retryable(ex, ct))
                 {
-                    log.Warning(ex, "å›¾ç‰‡è·å–å¤±è´¥ï¼Œå‡†å¤‡é‡è¯•");
+                    log.Warning(ex, "Í¼Æ¬»ñÈ¡Ê§°Ü£¬×¼±¸ÖØÊÔ");
                     await Task.Delay(500, ct);
                 }
             }
         }
-        catch (Exception ex) { log.Error(ex, "å›¾ç‰‡è¯»å–å¤±è´¥"); throw; }
+        catch (Exception ex) { log.Error(ex, "Í¼Æ¬¶ÁÈ¡Ê§°Ü"); throw; }
     }
     public async Task DownloadFileAsync(string path, string destination, IProgress<double>? progress = null, CancellationToken ct = default)
     {
-        var request = new RemoteRequest("file", path);
+        var request = new RemoteRequest("file", path, Protocol: RemoteProtocol.Version);
         var log = Log.ForContext("RequestId", request.RequestId).ForContext("RemotePath", path).ForContext("LocalPath", destination);
         destination = Path.GetFullPath(destination);
         string temp = destination + "." + Guid.NewGuid().ToString("N") + ".part";
@@ -99,7 +107,7 @@ public sealed class RemoteFileClient(string host, int port)
             var stream = socket.GetStream();
             await Wire.WriteAsync(stream, request, timeout.Token);
             var header = await Wire.ReadAsync<RemoteResponse>(stream, timeout.Token); Ensure(header);
-            if (header.Length < 0) throw new IOException("æœåŠ¡ç«¯è¿”å›çš„æ–‡ä»¶é•¿åº¦æ— æ•ˆ");
+            if (header.Length < 0) throw new IOException("·şÎñ¶Ë·µ»ØµÄÎÄ¼ş³¤¶ÈÎŞĞ§");
             await using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 131072, true))
             {
                 var buffer = new byte[131072]; long received = 0;
@@ -108,7 +116,7 @@ public sealed class RemoteFileClient(string host, int port)
                 while (received < header.Length)
                 {
                     int read = await stream.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, header.Length - received)), timeout.Token);
-                    if (read == 0) throw new EndOfStreamException("æ–‡ä»¶ä¸‹è½½è¿æ¥ä¸­æ–­");
+                    if (read == 0) throw new EndOfStreamException("ÎÄ¼şÏÂÔØÁ¬½ÓÖĞ¶Ï");
                     await output.WriteAsync(buffer.AsMemory(0, read), timeout.Token); received += read;
                     if (timer.ElapsedMilliseconds >= 100)
                     {
@@ -120,9 +128,9 @@ public sealed class RemoteFileClient(string host, int port)
             }
             File.Move(temp, destination);
             progress?.Report(100);
-            log.Information("æ–‡ä»¶ä¸‹è½½å®Œæˆï¼›é•¿åº¦ {Length}", header.Length);
+            log.Information("ÎÄ¼şÏÂÔØÍê³É£»³¤¶È {Length}", header.Length);
         }
-        catch (Exception ex) { log.Error(ex, "æ–‡ä»¶ä¸‹è½½å¤±è´¥"); throw; }
+        catch (Exception ex) { log.Error(ex, "ÎÄ¼şÏÂÔØÊ§°Ü"); throw; }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
     public async Task UploadAsync(string local, string destination, bool overwrite, IProgress<double>? progress = null, CancellationToken ct = default)
@@ -131,11 +139,11 @@ public sealed class RemoteFileClient(string host, int port)
         var token = timeout.Token;
         await using var input = new FileStream(local, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 131072, true);
         var hash = Convert.ToHexString(await SHA256.HashDataAsync(input, token)); input.Position = 0;
-        var request = new RemoteRequest("upload", destination, Length: input.Length, Sha256: hash, Overwrite: overwrite);
+        var request = new RemoteRequest("upload", destination, Length: input.Length, Sha256: hash, Overwrite: overwrite, Protocol: RemoteProtocol.Version);
         var log = Log.ForContext("RequestId", request.RequestId).ForContext("RemotePath", destination).ForContext("LocalPath", local);
         try
         {
-            log.Information("ä¸Šä¼ å¼€å§‹ï¼›é•¿åº¦ {Length}ï¼Œè¦†ç›– {Overwrite}", input.Length, overwrite);
+            log.Information("ÉÏ´«¿ªÊ¼£»³¤¶È {Length}£¬¸²¸Ç {Overwrite}", input.Length, overwrite);
             using var socket = await Wire.ConnectAsync(host, port, token);
             var stream = socket.GetStream();
             await Wire.WriteAsync(stream, request, token);
@@ -147,97 +155,97 @@ public sealed class RemoteFileClient(string host, int port)
                 progress?.Report(input.Length == 0 ? 100 : 100d * sent / input.Length);
             }
             var final = await Wire.ReadAsync<RemoteResponse>(stream, token); Ensure(final);
-            if (final.Version != hash) throw new IOException("æœåŠ¡ç«¯è¿”å›çš„ä¸Šä¼ æ ¡éªŒå€¼ä¸ä¸€è‡´");
-            progress?.Report(100); log.Information("ä¸Šä¼ å®Œæˆä¸”æœåŠ¡ç«¯æ ¡éªŒä¸€è‡´");
+            if (final.Version != hash) throw new IOException("·şÎñ¶Ë·µ»ØµÄÉÏ´«Ğ£ÑéÖµ²»Ò»ÖÂ");
+            progress?.Report(100); log.Information("ÉÏ´«Íê³ÉÇÒ·şÎñ¶ËĞ£ÑéÒ»ÖÂ");
         }
-        catch (Exception ex) { log.Error(ex, "ä¸Šä¼ å¤±è´¥"); throw; }
+        catch (Exception ex) { log.Error(ex, "ÉÏ´«Ê§°Ü"); throw; }
     }
     public async Task<string> CompressAsync(string path, IProgress<RemoteTransferProgress>? progress = null, CancellationToken ct = default)
     {
-        var request = new RemoteRequest("compress", path);
+        var request = new RemoteRequest("compress", path, Protocol: RemoteProtocol.Version);
         var log = Log.ForContext("RequestId", request.RequestId).ForContext("RemotePath", path);
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromHours(24));
             using var socket = await Wire.ConnectAsync(host, port, timeout.Token);
             var stream = socket.GetStream();
-            log.Information("è¯·æ±‚æœåŠ¡ç«¯å‹ç¼©æ–‡ä»¶æˆ–æ–‡ä»¶å¤¹");
+            log.Information("ÇëÇó·şÎñ¶ËÑ¹ËõÎÄ¼ş»òÎÄ¼ş¼Ğ");
             await Wire.WriteAsync(stream, request, timeout.Token);
             while (true)
             {
                 var response = await Wire.ReadAsync<RemoteResponse>(stream, timeout.Token); Ensure(response);
-                log.Debug("æœåŠ¡ç«¯å‹ç¼©è¿›åº¦ï¼›é˜¶æ®µ {Stage}ï¼Œè¿›åº¦ {Percent:F1}ï¼Œå­—èŠ‚ {Completed}/{Total}", response.Stage, response.Percent, response.CompletedBytes, response.TotalBytes);
-                progress?.Report(new(request.RequestId, path, response.Stage ?? "å‹ç¼©", response.Percent, response.CompletedBytes, response.TotalBytes));
-                if (response.Stage == "å®Œæˆ")
+                log.Debug("·şÎñ¶ËÑ¹Ëõ½ø¶È£»½×¶Î {Stage}£¬½ø¶È {Percent:F1}£¬×Ö½Ú {Completed}/{Total}", response.Stage, response.Percent, response.CompletedBytes, response.TotalBytes);
+                progress?.Report(new(request.RequestId, path, response.Stage ?? "Ñ¹Ëõ", response.Percent, response.CompletedBytes, response.TotalBytes));
+                if (response.Stage == "Íê³É")
                 {
-                    string result = response.ArchivePath ?? throw new IOException("æœåŠ¡ç«¯æœªè¿”å› ZIP è·¯å¾„");
-                    log.Information("æœåŠ¡ç«¯å‹ç¼©å®Œæˆï¼›ZIP {ArchivePath}", result); return result;
+                    string result = response.ArchivePath ?? throw new IOException("·şÎñ¶ËÎ´·µ»Ø ZIP Â·¾¶");
+                    log.Information("·şÎñ¶ËÑ¹ËõÍê³É£»ZIP {ArchivePath}", result); return result;
                 }
             }
         }
-        catch (Exception ex) { log.Error(ex, "æœåŠ¡ç«¯å‹ç¼©å¤±è´¥æˆ–ä¸­æ–­"); throw; }
+        catch (Exception ex) { log.Error(ex, "·şÎñ¶ËÑ¹ËõÊ§°Ü»òÖĞ¶Ï"); throw; }
     }
     public Task<RemoteResponse> DeleteFileAsync(RemoteEntry entry, CancellationToken ct = default)
     {
-        if (entry.IsDirectory) throw new IOException("ä»…æ”¯æŒåˆ é™¤æ–‡ä»¶");
+        if (entry.IsDirectory) throw new IOException("½öÖ§³ÖÉ¾³ıÎÄ¼ş");
         return CallAsync(new("delete", entry.Path, Version: entry.ModifiedUtc.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture), Length: entry.Length), ct);
     }
     public async Task DownloadZipAsync(string path, string destination, IProgress<RemoteTransferProgress>? progress = null, CancellationToken ct = default)
     {
-        var request = new RemoteRequest("download", path);
+        var request = new RemoteRequest("download", path, Protocol: RemoteProtocol.Version);
         destination = Path.GetFullPath(destination);
         string temp = destination + "." + Guid.NewGuid().ToString("N") + ".part";
         var log = Log.ForContext("RequestId", request.RequestId).ForContext("RemotePath", path).ForContext("LocalPath", destination);
         try
         {
-            if (File.Exists(destination) || Directory.Exists(destination)) throw new IOException("æœ¬åœ°ç›®æ ‡å·²å­˜åœ¨ï¼Œè¯·æ›´æ¢ä¿å­˜åç§°");
+            if (File.Exists(destination) || Directory.Exists(destination)) throw new IOException("±¾µØÄ¿±êÒÑ´æÔÚ£¬Çë¸ü»»±£´æÃû³Æ");
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromHours(24));
             var token = timeout.Token;
             using var socket = await Wire.ConnectAsync(host, port, token);
             var stream = socket.GetStream();
-            log.Information("å¼€å§‹ä¸‹è½½ ZIPï¼›ä¸´æ—¶æ–‡ä»¶ {TemporaryPath}", temp);
+            log.Information("¿ªÊ¼ÏÂÔØ ZIP£»ÁÙÊ±ÎÄ¼ş {TemporaryPath}", temp);
             await Wire.WriteAsync(stream, request, token);
             RemoteResponse header;
             do
             {
                 header = await Wire.ReadAsync<RemoteResponse>(stream, token); Ensure(header);
-                log.Debug("ZIP ä¸‹è½½å‡†å¤‡ï¼›é˜¶æ®µ {Stage}ï¼Œè¿›åº¦ {Percent:F1}", header.Stage, header.Percent);
-                progress?.Report(new(request.RequestId, path, header.Stage ?? "å‡†å¤‡ä¸‹è½½", header.Percent, header.CompletedBytes, header.TotalBytes));
-            } while (header.Stage != "æ¥æ”¶æ•°æ®");
-            if (header.Length < 0 || header.Version is not { Length: 64 }) throw new IOException("æœåŠ¡ç«¯è¿”å›çš„ ZIP é•¿åº¦æˆ–æ ¡éªŒå€¼æ— æ•ˆ");
+                log.Debug("ZIP ÏÂÔØ×¼±¸£»½×¶Î {Stage}£¬½ø¶È {Percent:F1}", header.Stage, header.Percent);
+                progress?.Report(new(request.RequestId, path, header.Stage ?? "×¼±¸ÏÂÔØ", header.Percent, header.CompletedBytes, header.TotalBytes));
+            } while (header.Stage != "½ÓÊÕÊı¾İ");
+            if (header.Length < 0 || header.Version is not { Length: 64 }) throw new IOException("·şÎñ¶Ë·µ»ØµÄ ZIP ³¤¶È»òĞ£ÑéÖµÎŞĞ§");
             string actual;
             await using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 131072, true))
             using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
             {
                 long received = 0; byte[] buffer = new byte[131072];
                 var timer = System.Diagnostics.Stopwatch.StartNew();
-                progress?.Report(new(request.RequestId, path, "ä¸‹è½½", 0, 0, header.Length));
+                progress?.Report(new(request.RequestId, path, "ÏÂÔØ", 0, 0, header.Length));
                 while (received < header.Length)
                 {
                     int n = await stream.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, header.Length - received)), token);
-                    if (n == 0) throw new EndOfStreamException("ZIP ä¸‹è½½è¿æ¥ä¸­æ–­");
+                    if (n == 0) throw new EndOfStreamException("ZIP ÏÂÔØÁ¬½ÓÖĞ¶Ï");
                     await output.WriteAsync(buffer.AsMemory(0, n), token); hash.AppendData(buffer, 0, n); received += n;
                     if (timer.ElapsedMilliseconds >= 100)
                     {
                         timer.Restart(); double percent = header.Length == 0 ? 99 : 99d * received / header.Length;
-                        progress?.Report(new(request.RequestId, path, "ä¸‹è½½", percent, received, header.Length));
-                        log.Debug("ZIP ä¸‹è½½è¿›åº¦ï¼›å·²æ¥æ”¶ {Received}/{Length}", received, header.Length);
+                        progress?.Report(new(request.RequestId, path, "ÏÂÔØ", percent, received, header.Length));
+                        log.Debug("ZIP ÏÂÔØ½ø¶È£»ÒÑ½ÓÊÕ {Received}/{Length}", received, header.Length);
                     }
                 }
                 await output.FlushAsync(token); output.Flush(true);
                 actual = Convert.ToHexString(hash.GetHashAndReset());
             }
-            if (!actual.Equals(header.Version, StringComparison.OrdinalIgnoreCase)) throw new IOException("ZIP SHA-256 æ ¡éªŒå¤±è´¥ï¼Œæœªæäº¤æœ¬åœ°æ–‡ä»¶");
+            if (!actual.Equals(header.Version, StringComparison.OrdinalIgnoreCase)) throw new IOException("ZIP SHA-256 Ğ£ÑéÊ§°Ü£¬Î´Ìá½»±¾µØÎÄ¼ş");
             token.ThrowIfCancellationRequested();
             File.Move(temp, destination);
-            // æœ¬åœ°æ–‡ä»¶å·²æäº¤ï¼Œå›æ‰§å¤±è´¥å•ç‹¬è®°å½•ï¼Œé¿å…ç”¨æˆ·è¯¯ä»¥ä¸ºå·²ç»è½ç›˜çš„æ–‡ä»¶éœ€è¦é‡ä¸‹ã€‚
+            // ±¾µØÎÄ¼şÒÑÌá½»£¬»ØÖ´Ê§°Üµ¥¶À¼ÇÂ¼£¬±ÜÃâÓÃ»§ÎóÒÔÎªÒÑ¾­ÂäÅÌµÄÎÄ¼şĞèÒªÖØÏÂ¡£
             try { await Wire.WriteAsync(stream, new RemoteResponse(true, Version: actual), token); }
-            catch (Exception ex) { log.Warning(ex, "ZIP å·²ä¿å­˜æˆåŠŸï¼Œä½†æœåŠ¡ç«¯æœªæ”¶åˆ°å›æ‰§"); }
-            progress?.Report(new(request.RequestId, path, "ä¸‹è½½å®Œæˆ", 100, header.Length, header.Length));
-            log.Information("ZIP ä¸‹è½½ã€æ ¡éªŒå’Œè½ç›˜å®Œæˆï¼›é•¿åº¦ {Length}ï¼ŒSHA256 {Sha256}", header.Length, actual);
+            catch (Exception ex) { log.Warning(ex, "ZIP ÒÑ±£´æ³É¹¦£¬µ«·şÎñ¶ËÎ´ÊÕµ½»ØÖ´"); }
+            progress?.Report(new(request.RequestId, path, "ÏÂÔØÍê³É", 100, header.Length, header.Length));
+            log.Information("ZIP ÏÂÔØ¡¢Ğ£ÑéºÍÂäÅÌÍê³É£»³¤¶È {Length}£¬SHA256 {Sha256}", header.Length, actual);
         }
-        catch (Exception ex) { log.Error(ex, "ZIP ä¸‹è½½å¤±è´¥æˆ–ä¸­æ–­"); throw; }
-        finally { if (File.Exists(temp)) { File.Delete(temp); log.Debug("æ¸…ç† ZIP ä¸‹è½½ä¸´æ—¶æ–‡ä»¶ï¼›è·¯å¾„ {TemporaryPath}", temp); } }
+        catch (Exception ex) { log.Error(ex, "ZIP ÏÂÔØÊ§°Ü»òÖĞ¶Ï"); throw; }
+        finally { if (File.Exists(temp)) { File.Delete(temp); log.Debug("ÇåÀí ZIP ÏÂÔØÁÙÊ±ÎÄ¼ş£»Â·¾¶ {TemporaryPath}", temp); } }
     }
-    private static void Ensure(RemoteResponse response) { if (!response.Ok) throw new IOException(response.Error ?? "è¿œç¨‹æ“ä½œå¤±è´¥"); }
+    private static void Ensure(RemoteResponse response) { if (!response.Ok) throw new IOException(response.Error ?? "Ô¶³Ì²Ù×÷Ê§°Ü"); }
 }

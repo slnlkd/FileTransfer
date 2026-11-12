@@ -60,6 +60,13 @@ internal static class RemoteWindowChecks
         if (grid.Columns[0].SortDirection != System.ComponentModel.ListSortDirection.Ascending)
             throw new Exception("初次连接未默认按名称升序排序");
         CheckNamePresentation(grid);
+        var selectionText = (TextBlock)client.FindName("SelectionText");
+        grid.SelectedItems.Add(grid.Items[0]);
+        grid.SelectedItems.Add(grid.Items[1]);
+        await WaitAsync(() => selectionText.Text.Contains("已选择 2 项"));
+        grid.SelectedItems.Clear();
+        await WaitAsync(() => selectionText.Text == "");
+        Console.WriteLine("通过：状态栏显示已选择数量");
         await browser.ConnectAsync(new RemoteFileClient("127.0.0.1", port));
         var treeRoot = (TreeViewItem)tree.Items[0];
         var textFolder = treeRoot.Items.Cast<TreeViewItem>().Single(n => ((RemoteEntry)n.Tag).Name == "文本");

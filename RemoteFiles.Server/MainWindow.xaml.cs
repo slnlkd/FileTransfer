@@ -3,11 +3,14 @@ using System.IO;
 using System.Net;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Media;
 using Microsoft.Win32;
 using Serilog;
 using Transfer.Core;
 using Transfer.Core.Remote;
+using Transfer.Desktop;
 
 namespace RemoteFiles.Server;
 public partial class MainWindow : Window
@@ -23,8 +26,10 @@ public partial class MainWindow : Window
     public MainWindow(string settingsPath)
     {
         settings = settingsPath; InitializeComponent(); TransferGrid.ItemsSource = transfers;
+        WindowLayout.Attach(this, "remote-server", (DataGrid)Browser.FindName("FileGrid"), TransferGrid);
         Browser.StatusChanged += (text, key) => SetStatus(text, key);
         Browser.ProgressChanged += UpdateBrowserProgress;
+        Browser.SelectionCountChanged += UpdateSelection;
         try
         {
             if (File.Exists(settings) && JsonSerializer.Deserialize<Settings>(File.ReadAllText(settings)) is { } saved)
@@ -72,14 +77,17 @@ public partial class MainWindow : Window
                 if (index >= 0) transfers[index] = progress;
                 else { if (transfers.Count >= 200) transfers.RemoveAt(0); transfers.Add(progress); }
             });
-            service.Activity += message => Dispatcher.BeginInvoke(() => { ActivityBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}\n"); ActivityBox.ScrollToEnd(); });
+            service.Activity += message => Dispatcher.BeginInvoke(() => AppendActivity(message));
             service.Start(port);
             bool settingsSaved = true;
             try { Directory.CreateDirectory(Path.GetDirectoryName(settings)!); await File.WriteAllTextAsync(settings, JsonSerializer.Serialize(new Settings(service.Store.Root, port))); }
             catch (Exception ex) { settingsSaved = false; Log.Warning(ex, "保存服务端配置失败；路径 {SettingsPath}", settings); }
             StopButton.IsEnabled = true;
             await Browser.ConnectAsync(new RemoteFileClient("127.0.0.1", port));
-            SetStatus($"正在监听 TCP {port}；地址：" + string.Join("、", Dns.GetHostAddresses(Dns.GetHostName()).Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)) + (settingsSaved ? "" : "；配置保存失败，下次需重新设置。"), "SuccessBrush");
+            if (Browser.ProtocolWarning is { } protocolWarning)
+                SetStatus(protocolWarning, "WarningBrush");
+            else
+                SetStatus($"正在监听 TCP {port}；地址：" + string.Join("、", Dns.GetHostAddresses(Dns.GetHostName()).Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)) + (settingsSaved ? "" : "；配置保存失败，下次需重新设置。"), "SuccessBrush");
         }
         catch (Exception ex)
         {
@@ -124,6 +132,37 @@ public partial class MainWindow : Window
         BrowserProgressText.ToolTip = text;
         BrowserProgress.IsIndeterminate = indeterminate;
         if (!indeterminate) BrowserProgress.Value = Math.Clamp(percent, 0, 100);
+    }
+    private void UpdateSelection(int selected, int total)
+    {
+        SelectionText.Text = selected > 0 ? $"已选择 {selected} 项 / 共 {total} 项" : "";
+        SelectionText.ToolTip = SelectionText.Text;
+    }
+    private void AppendActivity(string message)
+    {
+        string text = $"[{DateTime.Now:HH:mm:ss}] {message}";
+        Brush brush = message.Contains("失败") || message.Contains("错误")
+            ? (Brush)FindResource("DangerBrush")
+            : message.Contains("警告") ? (Brush)FindResource("WarningBrush") : (Brush)FindResource("MutedBrush");
+        ActivityBox.Document.Blocks.Add(new Paragraph(new Run(text)) { Margin = new Thickness(0), Foreground = brush });
+        while (ActivityBox.Document.Blocks.Count > 400) ActivityBox.Document.Blocks.Remove(ActivityBox.Document.Blocks.FirstBlock);
+        ActivityBox.ScrollToEnd();
+    }
+    private void ActivityCopy_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var text = new TextRange(ActivityBox.Document.ContentStart, ActivityBox.Document.ContentEnd).Text.Trim();
+            if (text.Length > 0) Clipboard.SetText(text);
+        }
+        catch (Exception ex) { Log.Warning(ex, "复制活动日志失败"); }
+    }
+    private void ActivityClear_Click(object sender, RoutedEventArgs e) => ActivityBox.Document.Blocks.Clear();
+    private void ActivityToggle_Click(object sender, RoutedEventArgs e)
+    {
+        bool collapse = ActivityBox.Visibility == Visibility.Visible;
+        ActivityBox.Visibility = collapse ? Visibility.Collapsed : Visibility.Visible;
+        ActivityToggle.Content = collapse ? "展开" : "收起";
     }
     // 由本地个性化扩展实现；未实现时不附加目录过滤。
     partial void ConfigureService(RemoteFileService service);

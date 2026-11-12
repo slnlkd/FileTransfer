@@ -9,6 +9,7 @@ using System.Windows;
 using System.Windows.Media;
 using Microsoft.Win32;
 using Transfer.Core;
+using Transfer.Desktop;
 
 namespace Transfer.Server;
 public partial class MainWindow : Window
@@ -31,6 +32,7 @@ public partial class MainWindow : Window
         settings = Path.GetFullPath(settingsPath);
         SLog.Information("准备创建Server主窗口");
         InitializeComponent(); DataContext = this;
+        WindowLayout.Attach(this, "transfer-server", SharedFilesGrid, TransferGrid);
         SLog.Information("主窗口初始化完成；配置路径 {SettingsPath}", settings);
         monitor.Tick += (_, _) =>
         {

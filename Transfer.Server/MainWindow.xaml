@@ -102,6 +102,7 @@
 
             <TabControl Margin="0,0,0,0">
                 <TabItem Header="共享文件">
+                    <Grid>
                     <DataGrid x:Name="SharedFilesGrid"
                               ItemsSource="{Binding Files}"
                               AutoGenerateColumns="False"
@@ -125,9 +126,27 @@
                             <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="130" />
                         </DataGrid.Columns>
                     </DataGrid>
+                    <Border Margin="1,27,1,1" Background="{StaticResource SurfaceBrush}">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Items.Count, ElementName=SharedFilesGrid}" Value="0">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,36,0,0">
+                            <TextBlock Text="尚未添加共享文件" FontSize="12" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" />
+                            <TextBlock Text="把文件拖到窗口，或点击上方“添加共享文件”" FontSize="11" Foreground="{StaticResource SubtleBrush}" Margin="0,6,0,0" HorizontalAlignment="Center" />
+                        </StackPanel>
+                    </Border>
+                    </Grid>
                 </TabItem>
                 <TabItem Header="客户端下载进度">
-                    <DataGrid ItemsSource="{Binding Transfers}" AutoGenerateColumns="False" IsReadOnly="True">
+                    <Grid>
+                    <DataGrid x:Name="TransferGrid" ItemsSource="{Binding Transfers}" AutoGenerateColumns="False" IsReadOnly="True">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="文件名" Binding="{Binding Name}" Width="*" />
                             <DataGridTemplateColumn Header="进度" Width="180">
@@ -142,10 +161,29 @@
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="速度" Binding="{Binding Speed}" Width="90" />
+                            <DataGridTextColumn Header="剩余" Binding="{Binding Remaining}" Width="90" />
                             <DataGridTextColumn Header="已下载 / 总量 / 客户端" Binding="{Binding Detail}" Width="300" />
                             <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="100" />
                         </DataGrid.Columns>
                     </DataGrid>
+                    <Border Margin="1,27,1,1" Background="{StaticResource SurfaceBrush}">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Items.Count, ElementName=TransferGrid}" Value="0">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,36,0,0">
+                            <TextBlock Text="暂无客户端下载任务" FontSize="12" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" />
+                            <TextBlock Text="客户端开始下载后会在这里显示进度" FontSize="11" Foreground="{StaticResource SubtleBrush}" Margin="0,6,0,0" HorizontalAlignment="Center" />
+                        </StackPanel>
+                    </Border>
+                    </Grid>
                 </TabItem>
             </TabControl>
         </StackPanel>

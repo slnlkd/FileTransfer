@@ -2,10 +2,12 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using Serilog;
 using Transfer.Core;
 using Transfer.Core.Remote;
+using Transfer.Desktop;
 
 namespace RemoteFiles.Client;
 public partial class MainWindow : Window
@@ -17,8 +19,10 @@ public partial class MainWindow : Window
     public MainWindow(string settingsPath)
     {
         settings = settingsPath; InitializeComponent();
+        if (Browser.FindName("FileGrid") is DataGrid fileGrid) WindowLayout.Attach(this, "remote-client", fileGrid);
         Browser.StatusChanged += (text, key) => SetStatus(text, ThemeBrush(key));
         Browser.ProgressChanged += UpdateBrowserProgress;
+        Browser.SelectionCountChanged += UpdateSelection;
         SetConnectionState("未连接", ThemeBrush("MutedBrush"));
         SetStatus("就绪", ThemeBrush("MutedBrush"));
         try
@@ -50,8 +54,11 @@ public partial class MainWindow : Window
             catch (Exception ex) { settingsSaved = false; Log.Warning(ex, "保存客户端配置失败；路径 {SettingsPath}", settings); }
             ConnectButton.Content = "重新连接";
             SetConnectionState("已连接", ThemeBrush("SuccessBrush"));
-            SetStatus($"已连接 {host}:{port}。" + (settingsSaved ? "" : " 配置保存失败，下次需重新输入地址。"),
-                settingsSaved ? ThemeBrush("SuccessBrush") : ThemeBrush("WarningBrush"));
+            if (Browser.ProtocolWarning is { } protocolWarning)
+                SetStatus(protocolWarning, ThemeBrush("WarningBrush"));
+            else
+                SetStatus($"已连接 {host}:{port}。" + (settingsSaved ? "" : " 配置保存失败，下次需重新输入地址。"),
+                    settingsSaved ? ThemeBrush("SuccessBrush") : ThemeBrush("WarningBrush"));
             Log.Information("远程文件客户端连接成功；Host {Host}，Port {Port}", host, port);
         }
         catch (Exception ex)
@@ -89,6 +96,11 @@ public partial class MainWindow : Window
         BrowserProgressText.ToolTip = text;
         BrowserProgress.IsIndeterminate = indeterminate;
         if (!indeterminate) BrowserProgress.Value = Math.Clamp(percent, 0, 100);
+    }
+    private void UpdateSelection(int selected, int total)
+    {
+        SelectionText.Text = selected > 0 ? $"已选择 {selected} 项 / 共 {total} 项" : "";
+        SelectionText.ToolTip = SelectionText.Text;
     }
     private Brush ThemeBrush(string key) => (Brush)FindResource(key);
 }

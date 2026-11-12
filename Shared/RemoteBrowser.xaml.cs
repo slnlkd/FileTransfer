@@ -5,8 +5,12 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
 using System.Windows;
 using System.Windows.Controls;
@@ -42,7 +46,9 @@ public partial class RemoteBrowser : UserControl
     private bool dragArmed;
     public event Action<string, string>? StatusChanged;
     public event Action<string, double, bool, bool>? ProgressChanged;
+    public event Action<int, int>? SelectionCountChanged;
     public bool IsBusy => busy;
+    public string? ProtocolWarning { get; private set; }
     private async void Grid_Sorting(object sender, DataGridSortingEventArgs e)
     {
         if (CollectionViewSource.GetDefaultView(FileGrid.ItemsSource) is not ListCollectionView view) return;
@@ -98,6 +104,7 @@ public partial class RemoteBrowser : UserControl
         FileGrid.AddHandler(PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler(Grid_MouseLeftButtonDown), true);
         FileGrid.AddHandler(PreviewMouseMoveEvent, new MouseEventHandler(Grid_MouseMove), true);
         FileGrid.AddHandler(PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler(Grid_MouseLeftButtonUp), true);
+        FileGrid.SelectionChanged += (_, _) => SelectionCountChanged?.Invoke(FileGrid.SelectedItems.Count, totalCount > 0 ? totalCount : entries.Count);
         Loaded += Browser_Loaded;
         Unloaded += Browser_Unloaded;
     }
@@ -105,15 +112,28 @@ public partial class RemoteBrowser : UserControl
     {
         if (busy) throw new IOException("当前操作尚未结束，请稍后重新连接");
         client = endpoint; directory = "";
+        ProtocolWarning = null;
         unfilteredCache.Clear();
         foreach (var column in FileGrid.Columns) column.SortDirection = null;
         FileGrid.Columns[0].SortDirection = ListSortDirection.Ascending;
+        try
+        {
+            var hello = await endpoint.CallAsync(new("hello"));
+            if (hello.Protocol > 0 && hello.Protocol != RemoteProtocol.Version)
+                ProtocolWarning = $"客户端协议 v{RemoteProtocol.Version}，服务端协议 v{hello.Protocol}，请更新两端";
+        }
+        catch (Exception ex)
+        {
+            ProtocolWarning = "服务端不支持版本握手，可能为旧版本，请更新服务端";
+            Log.Warning(ex, "远程文件服务端版本握手失败");
+        }
         await NavigateAsync("", true);
     }
     public void Disconnect()
     {
         operationCancel?.Cancel();
         client = null;
+        ProtocolWarning = null;
         entries = [];
         totalCount = 0; allLoaded = true;
         navigationVersion++;
@@ -123,6 +143,7 @@ public partial class RemoteBrowser : UserControl
         FileGrid.ItemsSource = null;
         ShowDisconnectedPath();
         ItemCountText.Text = "";
+        SelectionCountChanged?.Invoke(0, 0);
         HideBusy();
         HideProgress();
         SetStatus("尚未连接", "MutedBrush");
@@ -198,7 +219,11 @@ public partial class RemoteBrowser : UserControl
         }
         finally { if (ownedBusy) HideBusy(); }
     }
-    private void UpdateCountText() => ItemCountText.Text = allLoaded ? $"{entries.Count} 项" : $"{entries.Count} / {totalCount} 项";
+    private void UpdateCountText()
+    {
+        ItemCountText.Text = allLoaded ? $"{entries.Count} 项" : $"{entries.Count} / {totalCount} 项";
+        SelectionCountChanged?.Invoke(FileGrid.SelectedItems.Count, totalCount > 0 ? totalCount : entries.Count);
+    }
     // 目录树始终使用未过滤结果，且不受分页影响；结果短时间缓存，避免来回切换时重复请求。
     private async Task<RemoteEntry[]> UnfilteredEntriesAsync(string path, CancellationToken ct)
     {
@@ -602,6 +627,7 @@ public partial class RemoteBrowser : UserControl
             await NavigateAsync(targetDirectory, false, ct);
             SetProgress(100, "上传完成");
             SetStatus(uploaded > 0 ? "上传完成" : "未上传文件", uploaded > 0 ? "SuccessBrush" : "MutedBrush");
+            if (uploaded > 0) Toast.Show(Window.GetWindow(this), $"已上传 {uploaded} 个文件");
         }, cancellable: true);
     }
     private void Grid_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -724,6 +750,7 @@ public partial class RemoteBrowser : UserControl
             unfilteredCache.Clear();
             await NavigateAsync(targetDirectory, false, ct);
             SetStatus($"已拖入 {paths.Length} 项", "SuccessBrush");
+            Toast.Show(Window.GetWindow(this), $"已拖入 {paths.Length} 项");
         }, cancellable: true);
     }
     private static string JoinRemote(string directory, string name) => directory.Length == 0 ? name : directory + "/" + name;
@@ -878,6 +905,7 @@ public partial class RemoteBrowser : UserControl
         Clipboard.SetDataObject(data, true);
         SetBusyProgress(100, "复制完成");
         SetStatus(selected.Count == 1 ? $"已复制 {selected[0].Name}，可在本地文件夹粘贴" : $"已复制 {selected.Count} 项，可在本地文件夹粘贴", "SuccessBrush");
+        Toast.Show(Window.GetWindow(this), selected.Count == 1 ? $"已复制 {selected[0].Name}" : $"已复制 {selected.Count} 项");
     }, cancellable: true);
     // 单个条目的压缩/下载阶段折算成整体进度，避免压缩完成后进度回退。
     private static double CopyStageFraction(string? stage, double percent)
@@ -1031,8 +1059,7 @@ public partial class RemoteBrowser : UserControl
         StatusText.ToolTip = text;
         BrowserStatusDot.Fill = ThemeBrush(brushKey);
         StatusChanged?.Invoke(text, brushKey);
-    }
-    private void ShowBusy(string text)
+    }    private void ShowBusy(string text)
     {
         BusyProgress.IsIndeterminate = true;
         BusyProgress.Value = 0;
@@ -1143,4 +1170,90 @@ public sealed class FileSizeConverter : IValueConverter
         return $"{bytes / (1024d * 1024 * 1024):N1} GB";
     }
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotSupportedException();
+}
+
+public enum ToastKind { Info, Success, Warning, Danger }
+
+/// <summary>�������½ǵ�������ʾ�����ı����в��֡�</summary>
+public static class Toast
+{
+    public static void Show(Window? owner, string message, ToastKind kind = ToastKind.Success, int milliseconds = 2200)
+    {
+        if (owner?.Content is not Visual visual) return;
+        var layer = AdornerLayer.GetAdornerLayer(visual);
+        if (layer is null) return;
+        Color color = kind switch
+        {
+            ToastKind.Success => Color.FromRgb(0x4C, 0xC3, 0x8A),
+            ToastKind.Warning => Color.FromRgb(0xE5, 0xB5, 0x67),
+            ToastKind.Danger => Color.FromRgb(0xE0, 0x6C, 0x75),
+            _ => Color.FromRgb(0x8A, 0xB4, 0xF8)
+        };
+        var content = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(0xF2, 0x20, 0x21, 0x24)),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(12, 7, 14, 7),
+            Opacity = 0,
+            Effect = new DropShadowEffect { BlurRadius = 8, ShadowDepth = 2, Opacity = 0.16, Color = Colors.Black },
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Children =
+                {
+                    new System.Windows.Shapes.Ellipse { Width = 6, Height = 6, Fill = new SolidColorBrush(color), Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center },
+                    new TextBlock { Text = message, Foreground = Brushes.White, FontSize = 12, MaxWidth = 440, TextTrimming = TextTrimming.CharacterEllipsis }
+                }
+            }
+        };
+        var adorner = new ToastAdorner(visual as UIElement ?? owner, content);
+        layer.Add(adorner);
+        content.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(120)));
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(milliseconds) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            if (!owner.IsVisible)
+            {
+                try { layer.Remove(adorner); } catch (Exception ex) { Log.Debug(ex, "移除窗口关闭后的提示失败"); }
+                return;
+            }
+            var fade = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(180));
+            fade.Completed += (_, _) =>
+            {
+                try { layer.Remove(adorner); } catch (Exception ex) { Log.Debug(ex, "移除提示失败"); }
+                content.BeginAnimation(UIElement.OpacityProperty, null);
+            };
+            content.BeginAnimation(UIElement.OpacityProperty, fade);
+        };
+        timer.Start();
+    }
+
+    private sealed class ToastAdorner : Adorner
+    {
+        private readonly UIElement child;
+        public ToastAdorner(UIElement adorned, UIElement child) : base(adorned)
+        {
+            this.child = child;
+            AddVisualChild(child);
+        }
+        protected override int VisualChildrenCount => 1;
+        protected override Visual GetVisualChild(int index) => child;
+        protected override Size MeasureOverride(Size constraint)
+        {
+            child.Measure(constraint);
+            // 覆盖整个被装饰元素，才能把提示定位到右下角。
+            return AdornedElement.RenderSize;
+        }
+        protected override Size ArrangeOverride(Size finalSize)
+        {
+            child.Measure(finalSize);
+            var size = child.DesiredSize;
+            child.Arrange(new Rect(
+                Math.Max(0, finalSize.Width - size.Width - 20),
+                Math.Max(0, finalSize.Height - size.Height - 20),
+                size.Width, size.Height));
+            return finalSize;
+        }
+    }
 }

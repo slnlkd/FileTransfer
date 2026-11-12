@@ -109,12 +109,13 @@
                        Margin="2,0,0,8"
                        TextWrapping="Wrap" />
 
-            <DataGrid x:Name="FileGrid"
-                      ItemsSource="{Binding Files}"
-                      AutoGenerateColumns="False"
-                      IsReadOnly="True"
-                      SelectionMode="Extended"
-                      SelectionUnit="FullRow">
+            <Grid>
+                <DataGrid x:Name="FileGrid"
+                          ItemsSource="{Binding Files}"
+                          AutoGenerateColumns="False"
+                          IsReadOnly="True"
+                          SelectionMode="Extended"
+                          SelectionUnit="FullRow">
                 <DataGrid.Columns>
                     <DataGridTextColumn Header="文件名" Binding="{Binding Name}" Width="*" />
                     <DataGridTextColumn Header="大小" Binding="{Binding Size}" Width="105" />
@@ -130,10 +131,31 @@
                             </DataTemplate>
                         </DataGridTemplateColumn.CellTemplate>
                     </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="速度" Binding="{Binding Speed}" Width="90" />
+                    <DataGridTextColumn Header="剩余" Binding="{Binding Remaining}" Width="90" />
                     <DataGridTextColumn Header="已下载 / 总量 / 会话" Binding="{Binding Detail}" Width="285" />
                     <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="100" />
                 </DataGrid.Columns>
             </DataGrid>
+
+            <Border x:Name="EmptyState"
+                    Margin="1,27,1,1"
+                    Background="{StaticResource SurfaceBrush}">
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,36,0,0">
+                    <TextBlock x:Name="EmptyText"
+                               HorizontalAlignment="Center"
+                               FontSize="12"
+                               Foreground="{StaticResource MutedBrush}"
+                               Text="连接服务端后选择要下载的文件" />
+                    <Button x:Name="EmptyAction"
+                            Margin="0,10,0,0"
+                            HorizontalAlignment="Center"
+                            Content="连接 / 刷新"
+                            Click="Connect_Click"
+                            Style="{StaticResource PrimaryButton}" />
+                </StackPanel>
+            </Border>
+            </Grid>
         </StackPanel>
     </DockPanel>
 </Window>
