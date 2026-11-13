@@ -330,6 +330,30 @@ internal static class RemoteWindowChecks
         await WaitAsync(() => !browser.IsBusy && grid.Items.Cast<RemoteEntry>().Any(e => e.Name == "拖入文件夹"));
         if (await File.ReadAllTextAsync(Path.Combine(root, "拖入文件夹", "子文件.txt")) != "子内容") throw new Exception("拖入文件夹未保留子文件");
         Console.WriteLine("通过：从本地拖入文件夹并保留子文件");
+        // 静默更新提示：平时隐藏，服务端有更新时显示蓝色徽标。
+        var updateBadge = (Button)client.FindName("UpdateBadge");
+        if (updateBadge.Visibility != Visibility.Collapsed) throw new Exception("服务端没有更新时不应显示更新提示");
+        string updateRoot = Path.Combine(temp, "remote-ui-updates");
+        Directory.CreateDirectory(updateRoot);
+        byte[] updateBytes = System.Text.Encoding.UTF8.GetBytes("update-package");
+        await File.WriteAllBytesAsync(Path.Combine(updateRoot, "client.zip"), updateBytes);
+        string updateHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(updateBytes));
+        await File.WriteAllTextAsync(Path.Combine(updateRoot, "manifest.json"),
+            JsonSerializer.Serialize(new { version = "9.9.9", file = "client.zip", sha256 = updateHash, notes = "测试更新" }));
+        await using (var updateService = new RemoteFileService(root) { UpdateDirectory = updateRoot })
+        {
+            var updateProbe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+            updateProbe.Start(); int updatePort = ((System.Net.IPEndPoint)updateProbe.LocalEndpoint).Port; updateProbe.Stop();
+            updateService.Start(updatePort);
+            var updateClient = new ClientWindow(Path.Combine(temp, "remote-client-update.json")); Prepare(updateClient); updateClient.Show();
+            ((TextBox)updateClient.FindName("PortBox")).Text = updatePort.ToString();
+            Click(updateClient, "ConnectButton");
+            await WaitAsync(() => ((Button)updateClient.FindName("UpdateBadge")).Visibility == Visibility.Visible);
+            var shownBadge = (Button)updateClient.FindName("UpdateBadge");
+            if (shownBadge.Content?.ToString()?.Contains("9.9.9") != true) throw new Exception("更新提示未显示最新版本号");
+            await CloseAsync(updateClient);
+        }
+        Console.WriteLine("通过：静默检查更新并在有新版本时显示蓝色提示");
         int rootCount = Directory.GetFileSystemEntries(root).Length;
         await CloseAsync(client);
         Click(server, "StopButton");

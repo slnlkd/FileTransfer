@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Serilog;
 using Transfer.Core;
 using Transfer.Core.Remote;
@@ -19,6 +20,9 @@ public partial class MainWindow : Window
     private bool checkingUpdate;
     private string connectedHost = "";
     private int connectedPort;
+    private RemoteUpdateInfo? pendingUpdate;
+    // 连接期间每 30 分钟静默复查一次，发现新版本只显示蓝色提示，不打断使用。
+    private readonly DispatcherTimer updateTimer = new() { Interval = TimeSpan.FromMinutes(30) };
     private sealed record Settings(string Host, int Port);
     public MainWindow() : this(AppLogging.GetSettingsPath("remote-client.json")) { }
     public MainWindow(string settingsPath)
@@ -38,6 +42,11 @@ public partial class MainWindow : Window
             { HostBox.Text = saved.Host; PortBox.Text = saved.Port.ToString(); }
         }
         catch (Exception ex) { Log.Warning(ex, "读取远程文件客户端配置失败"); }
+        updateTimer.Tick += async (_, _) =>
+        {
+            if (connectedPort != 0 && pendingUpdate is null) await CheckForUpdatesAsync(true);
+        };
+        updateTimer.Start();
         Closing += (_, _) => Log.Information("远程文件客户端窗口关闭");
     }
     private async void Connect_Click(object sender, RoutedEventArgs e)
@@ -50,6 +59,7 @@ public partial class MainWindow : Window
         connecting = true; ConnectButton.IsEnabled = false; Browser.IsEnabled = false;
         SetConnectionState("连接中…", ThemeBrush("WarningBrush"));
         SetStatus("正在连接服务端…", ThemeBrush("WarningBrush"));
+        bool connected = false;
         try
         {
             if (!int.TryParse(PortBox.Text, out int port) || port is < 1 or > 65535) throw new IOException("端口请输入 1～65535");
@@ -67,8 +77,8 @@ public partial class MainWindow : Window
             else
                 SetStatus($"已连接 {host}:{port}。" + (settingsSaved ? "" : " 配置保存失败，下次需重新输入地址。"),
                     settingsSaved ? ThemeBrush("SuccessBrush") : ThemeBrush("WarningBrush"));
-            _ = CheckForUpdatesAsync(true);
             Log.Information("远程文件客户端连接成功；Host {Host}，Port {Port}", host, port);
+            connected = true;
         }
         catch (Exception ex)
         {
@@ -79,40 +89,66 @@ public partial class MainWindow : Window
             SetStatus("连接失败：" + ex.Message, ThemeBrush("DangerBrush"));
         }
         finally { connecting = false; ConnectButton.IsEnabled = true; Browser.IsEnabled = true; }
+        // 连接状态复位后再静默检查，避免被 connecting 标记直接拦掉。
+        if (connected)
+        {
+            pendingUpdate = null; UpdateBadge.Visibility = Visibility.Collapsed;
+            _ = CheckForUpdatesAsync(true);
+        }
     }
-    private async void CheckUpdate_Click(object sender, RoutedEventArgs e) => await CheckForUpdatesAsync(false);
+    private async void UpdateBadge_Click(object sender, RoutedEventArgs e)
+    {
+        if (pendingUpdate is { } pending) await PromptUpdateAsync(pending);
+    }
     private async Task CheckForUpdatesAsync(bool silent)
     {
-        if (checkingUpdate || connecting || Browser.IsBusy) return;
-        if (connectedPort == 0)
-        {
-            if (!silent) MessageBox.Show(this, "请先连接服务端。", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-        checkingUpdate = true; CheckUpdateButton.IsEnabled = false;
+        if (checkingUpdate || connecting || connectedPort == 0) return;
+        checkingUpdate = true;
         try
         {
-            var endpoint = new RemoteFileClient(connectedHost, connectedPort);
-            var info = await endpoint.CheckUpdateAsync();
+            var info = await new RemoteFileClient(connectedHost, connectedPort).CheckUpdateAsync();
             var current = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
             if (!IsNewer(info.Version, current))
             {
+                pendingUpdate = null; UpdateBadge.Visibility = Visibility.Collapsed;
                 if (!silent) MessageBox.Show(this, $"当前已是最新版本 v{current.ToString(3)}。", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
-            string notes = string.IsNullOrWhiteSpace(info.Notes) ? "" : "\n\n更新说明：\n" + info.Notes;
-            var answer = MessageBox.Show(this,
-                $"发现新版本 v{info.Version}\n当前版本 v{current.ToString(3)}{notes}\n\n更新完成后客户端会自动重启。是否现在更新？",
-                "检查更新", MessageBoxButton.YesNo, MessageBoxImage.Information);
-            if (answer != MessageBoxResult.Yes) return;
-            await ApplyUpdateAsync(endpoint, info);
+            pendingUpdate = info;
+            UpdateBadge.Content = $"↑ 新版本 v{info.Version}";
+            UpdateBadge.ToolTip = "发现新版本，点击更新" + (string.IsNullOrWhiteSpace(info.Notes) ? "" : "\n" + info.Notes);
+            UpdateBadge.Visibility = Visibility.Visible;
+            Log.Information("发现客户端新版本；当前 {Current}，最新 {Latest}", current.ToString(3), info.Version);
+            if (!silent) await PromptUpdateAsync(info);
         }
         catch (Exception ex)
         {
-            Log.Warning(ex, "检查更新失败");
-            if (!silent) MessageBox.Show(this, "检查更新失败：" + ex.Message, "检查更新", MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (silent) Log.Debug(ex, "自动检查更新失败");
+            else
+            {
+                Log.Warning(ex, "检查更新失败");
+                MessageBox.Show(this, "检查更新失败：" + ex.Message, "检查更新", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
-        finally { checkingUpdate = false; CheckUpdateButton.IsEnabled = true; }
+        finally { checkingUpdate = false; }
+    }
+    private async Task PromptUpdateAsync(RemoteUpdateInfo info)
+    {
+        var current = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
+        string notes = string.IsNullOrWhiteSpace(info.Notes) ? "" : "\n\n更新说明：\n" + info.Notes;
+        var answer = MessageBox.Show(this,
+            $"发现新版本 v{info.Version}\n当前版本 v{current.ToString(3)}{notes}\n\n更新完成后客户端会自动重启。是否现在更新？",
+            "检查更新", MessageBoxButton.YesNo, MessageBoxImage.Information);
+        if (answer != MessageBoxResult.Yes) return;
+        try
+        {
+            await ApplyUpdateAsync(new RemoteFileClient(connectedHost, connectedPort), info);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "客户端更新失败");
+            MessageBox.Show(this, "更新失败：" + ex.Message, "检查更新", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
     private static bool IsNewer(string latestText, Version current)
     {

@@ -116,6 +116,16 @@
         <Setter Property="MinHeight" Value="24" />
     </Style>
 
+    <!-- 新版本提示：平时隐藏，仅在服务端有更新时显示；蓝色文字 + 浅蓝底。 -->
+    <Style x:Key="UpdateBadgeButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Background" Value="{StaticResource AccentSoftBrush}" />
+        <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource SelectionBorderBrush}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Padding" Value="8,2,8,2" />
+        <Setter Property="MinHeight" Value="24" />
+    </Style>
+
     <Style x:Key="ImageArrowButton" TargetType="Button">
         <Setter Property="Width" Value="38" />
         <Setter Property="Height" Value="56" />

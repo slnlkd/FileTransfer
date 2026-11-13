@@ -63,12 +63,13 @@
                                Text="未连接" />
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                    <Button x:Name="CheckUpdateButton"
+                    <Button x:Name="UpdateBadge"
                             Margin="0,0,4,0"
-                            Click="CheckUpdate_Click"
-                            Content="检查更新"
-                            Style="{StaticResource GhostButton}"
-                            ToolTip="检查服务端是否提供新版本" />
+                            Click="UpdateBadge_Click"
+                            Content="↑ 新版本"
+                            Style="{StaticResource UpdateBadgeButton}"
+                            ToolTip="发现新版本，点击更新"
+                            Visibility="Collapsed" />
                     <Button Click="Logs_Click"
                             Content="日志"
                             Style="{StaticResource GhostButton}"
