@@ -1,6 +1,7 @@
 ﻿using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Transfer.Core;
 using Transfer.Core.Remote;
 
@@ -24,6 +25,19 @@ internal static class RemoteChecks
         var list = (await client.CallAsync(new("list"))).Entries!;
         check(list.Any(e => e.IsDirectory && e.Name == "子目录") && list.Any(e => e.Name == "hello.txt"), "远程文件管理返回文件和目录");
         check((await client.CallAsync(new("hello"))).Protocol == RemoteProtocol.Version, "客户端与服务端协议版本握手一致");
+        string updateRoot = Path.Combine(testRoot, "updates");
+        Directory.CreateDirectory(updateRoot);
+        byte[] updateBytes = Encoding.UTF8.GetBytes("update-package");
+        await File.WriteAllBytesAsync(Path.Combine(updateRoot, "client.zip"), updateBytes);
+        string updateHash = Convert.ToHexString(SHA256.HashData(updateBytes));
+        await File.WriteAllTextAsync(Path.Combine(updateRoot, "manifest.json"),
+            JsonSerializer.Serialize(new { version = "9.9.9", file = "client.zip", sha256 = updateHash, notes = "测试更新" }));
+        server.UpdateDirectory = updateRoot;
+        var updateInfo = await client.CheckUpdateAsync();
+        check(updateInfo.Version == "9.9.9" && updateInfo.Sha256 == updateHash && updateInfo.Length == updateBytes.Length, "读取客户端更新清单");
+        string updateDestination = Path.Combine(testRoot, "update-download.zip");
+        await client.DownloadUpdateAsync(updateInfo, updateDestination);
+        check((await File.ReadAllBytesAsync(updateDestination)).SequenceEqual(updateBytes), "更新包下载与 SHA-256 校验");
         string pageRoot = Path.Combine(root, "分页");
         Directory.CreateDirectory(pageRoot);
         for (int i = 1; i <= 620; i++) await File.WriteAllTextAsync(Path.Combine(pageRoot, i + ".txt"), "");

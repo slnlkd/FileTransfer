@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Text.Json;
 using Serilog;
 
 namespace Transfer.Core.Remote;
@@ -17,6 +18,8 @@ public sealed class RemoteFileService : IAsyncDisposable
     private int sequence;
     private bool disposed;
     public RemoteFileStore Store { get; }
+    // 客户端静默更新包目录，默认放在服务端程序目录下的 updates。
+    public string UpdateDirectory { get; set; } = Path.Combine(AppContext.BaseDirectory, "updates");
     // 可选的目录过滤扩展；未设置时列表请求保持原样。
     public Func<string, string, RemoteEntry[], Task<RemoteFilterResult>>? ListFilter { get; set; }
     public event Action<string>? Activity;
@@ -68,7 +71,7 @@ public sealed class RemoteFileService : IAsyncDisposable
             {
                 var request = await Wire.ReadAsync<RemoteRequest>(stream, ct);
                 active = request;
-                if (request.Command is "compress" or "download" or "file") timeout.CancelAfter(TimeSpan.FromHours(24));
+                if (request.Command is "compress" or "download" or "file" or "update-download") timeout.CancelAfter(TimeSpan.FromHours(24));
                 using var requestContext = LogContext.PushProperty("RequestId", request.RequestId);
                 using var pathContext = LogContext.PushProperty("RemotePath", request.Path);
                 log = log.ForContext("RequestId", request.RequestId).ForContext("Command", request.Command).ForContext("RemotePath", request.Path);
@@ -77,6 +80,27 @@ public sealed class RemoteFileService : IAsyncDisposable
                 switch (request.Command)
                 {
                     case "hello": response = new(true, Protocol: RemoteProtocol.Version); break;
+                    case "update-info":
+                        var update = ReadUpdateManifest();
+                        string updatePath = Path.Combine(UpdateDirectory, update.File);
+                        var updateFile = new FileInfo(updatePath);
+                        if (!updateFile.Exists) throw new IOException("更新包不存在：" + update.File);
+                        response = new(true, Version: update.Version, Text: update.Notes ?? "", Sha256: update.Sha256,
+                            Length: updateFile.Length, Stage: update.File);
+                        break;
+                    case "update-download":
+                        var download = ReadUpdateManifest();
+                        string downloadPath = Path.Combine(UpdateDirectory, download.File);
+                        if (!File.Exists(downloadPath)) throw new IOException("更新包不存在：" + download.File);
+                        await using (var updateStream = new FileStream(downloadPath, FileMode.Open, FileAccess.Read, FileShare.Read, 131072, true))
+                        {
+                            await Wire.WriteAsync(stream, new RemoteResponse(true, Length: updateStream.Length, Sha256: download.Sha256), ct);
+                            sendingBinary = true;
+                            await updateStream.CopyToAsync(stream, ct);
+                        }
+                        Activity?.Invoke("update-download  " + download.File);
+                        log.Information("更新包发送完成；版本 {Version}，文件 {UpdateFile}", download.Version, download.File);
+                        return;
                     case "list": response = await ListAsync(request); break;
                     case "text": response = await Store.ReadTextAsync(request.Path, ct); break;
                     case "file":
@@ -202,6 +226,20 @@ public sealed class RemoteFileService : IAsyncDisposable
         TransferProgress?.Invoke(new(request.RequestId, request.Path, stage, percent, completed, total));
         Log.Debug("远程传输进度；阶段 {Stage}，进度 {Percent:F1}，字节 {Completed}/{Total}", stage, percent, completed, total);
         await Wire.WriteAsync(stream, new RemoteResponse(true, Stage: stage, Percent: percent, CompletedBytes: completed, TotalBytes: total), ct);
+    }
+    private sealed record UpdateManifest(string Version, string File, string Sha256, string? Notes);
+    private UpdateManifest ReadUpdateManifest()
+    {
+        string path = Path.Combine(UpdateDirectory, "manifest.json");
+        if (!File.Exists(path)) throw new IOException("服务端未配置更新清单");
+        var manifest = JsonSerializer.Deserialize<UpdateManifest>(File.ReadAllText(path),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        if (manifest is null || string.IsNullOrWhiteSpace(manifest.Version) || string.IsNullOrWhiteSpace(manifest.File)
+            || manifest.Sha256 is not { Length: 64 })
+            throw new IOException("更新清单格式无效");
+        if (Path.IsPathRooted(manifest.File) || manifest.File.Contains("..") || manifest.File.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            throw new IOException("更新清单中的文件名无效");
+        return manifest;
     }
     private async Task<RemoteResponse> ListAsync(RemoteRequest request)
     {

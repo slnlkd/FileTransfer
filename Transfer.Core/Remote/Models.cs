@@ -22,9 +22,10 @@ public record RemoteRequest(string Command, string Path = "", string? Text = nul
 public record RemoteResponse(bool Ok, string? Error = null, RemoteEntry[]? Entries = null, string? Text = null,
     string? Version = null, string? EncodingName = null, long Length = 0, ProcessState? Process = null, string? RootName = null,
     string? Stage = null, double Percent = 0, string? ArchivePath = null, long CompletedBytes = 0, long TotalBytes = 0,
-    string? Warning = null, int Total = 0, int Protocol = 0);
+    string? Warning = null, int Total = 0, int Protocol = 0, string? Sha256 = null);
 // 目录过滤扩展的返回值：过滤后的条目，以及可选的提示信息。
 public record RemoteFilterResult(RemoteEntry[] Entries, string? Warning = null);
+public record RemoteUpdateInfo(string Version, string FileName, string Sha256, long Length, string Notes);
 // 远程文件管理协议版本；客户端和服务端不一致时给出提示。
 public static class RemoteProtocol
 {

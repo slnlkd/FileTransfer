@@ -14,6 +14,7 @@
 - **传输信息**：下载列表显示实时速度和预计剩余时间。
 - **界面记忆**：保存窗口大小、位置和列表列宽。
 - **协议握手**：客户端与服务端启动时校验协议版本，不一致会提示更新两端。
+- **自动更新**：客户端连接后自动检查服务端 `updates` 目录，内网静默下载、校验并替换重启。
 - **服务端日志**：活动日志可折叠、按级别着色，支持复制和清空。
 - **可取消操作**：打包下载、压缩和上传过程中可以点击“取消”中止。
 - **断线重试**：列表、文本和图片请求遇到网络中断会自动重试一次，并给出更明确的连接错误提示。
@@ -98,6 +99,46 @@ dotnet build .\FileTransfer.sln -c Release
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Local\publish-ng.ps1
 ```
+
+## 客户端自动更新
+
+客户端连接成功后会自动检查更新，也可以点右上角“检查更新”。发现新版本后由客户端自己下载、校验 SHA-256、替换文件并自动重启，不需要打开网页或手动安装。
+
+更新包通过现有 TCP 端口分发，放在服务端程序目录下的 `updates` 文件夹：
+
+```text
+服务端目录\
+  RemoteFiles.Server.exe
+  updates\
+    manifest.json
+    RemoteFiles.Client-1.6.0-win-x64.zip
+```
+
+生成更新包：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Local\publish-update.ps1 -Version 1.6.0 -Notes "本次更新说明"
+# 直接复制到服务端更新目录
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Local\publish-update.ps1 -Version 1.6.0 -Notes "本次更新说明" -Destination D:\Tools\RemoteFiles.Server\updates
+```
+
+`manifest.json` 格式：
+
+```json
+{
+  "version": "1.6.0",
+  "file": "RemoteFiles.Client-1.6.0-win-x64.zip",
+  "sha256": "更新包的 SHA-256",
+  "notes": "更新说明"
+}
+```
+
+注意事项：
+
+- 客户端必须解压到普通用户可写的目录（例如 `D:\Tools\RemoteFiles.Client`），否则替换文件会失败。
+- 更新包只包含 `RemoteFiles.Client` 发布目录内容，不包含服务端和 Transfer 程序。
+- 更新日志在 `%LOCALAPPDATA%\FileTransferDemo\Logs\update.log`。
+- 替换时先尝试整体替换目录，如果目录被占用会退化为逐文件覆盖。
 
 ## 自检
 
