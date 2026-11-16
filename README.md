@@ -41,10 +41,10 @@
 
 ```text
 FileTransfer/
-├─ RemoteFiles.Client.exe   远程文件管理客户端
-├─ RemoteFiles.Server.exe   远程文件管理服务端
-├─ Transfer.Client.exe      文件传输客户端
-├─ Transfer.Server.exe      文件传输服务端
+├─ FileTransfer.Client.exe   远程文件管理客户端
+├─ FileTransfer.Server.exe   远程文件管理服务端
+├─ Transfer.Client.exe       文件传输客户端
+├─ Transfer.Server.exe       文件传输服务端
 └─ README.md
 ```
 
@@ -108,26 +108,28 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Local\publish-ng.ps1
 
 ```text
 服务端目录\
-  RemoteFiles.Server.exe
+  FileTransfer.Server.exe
   updates\
     manifest.json
-    RemoteFiles.Client-1.6.0-win-x64.zip
+    FileTransfer.Client-1.6.2-win-x64.zip
 ```
 
 生成更新包：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Local\publish-update.ps1 -Version 1.6.0 -Notes "本次更新说明"
-# 直接复制到服务端更新目录
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Local\publish-update.ps1 -Version 1.6.0 -Notes "本次更新说明" -Destination D:\Tools\RemoteFiles.Server\updates
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Local\publish-update.ps1 -Version 1.6.2 -Notes "本次更新说明"
+# 直接复制到服务端更新目录（会清理旧版本 zip）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Local\publish-update.ps1 -Version 1.6.2 -Notes "本次更新说明" -Destination D:\RPASoftwares\FileTransfer\FileTransfer.Server\updates
 ```
+
+脚本输出 `artifacts\updates\<版本>\`，里面只有 `manifest.json` 和 zip 两个文件，直接复制到服务端 `updates` 目录即可，不要复制版本目录本身。
 
 `manifest.json` 格式：
 
 ```json
 {
-  "version": "1.6.0",
-  "file": "RemoteFiles.Client-1.6.0-win-x64.zip",
+  "version": "1.6.2",
+  "file": "FileTransfer.Client-1.6.2-win-x64.zip",
   "sha256": "更新包的 SHA-256",
   "notes": "更新说明"
 }
@@ -135,8 +137,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Local\publish-update.ps1 -
 
 注意事项：
 
-- 客户端必须解压到普通用户可写的目录（例如 `D:\Tools\RemoteFiles.Client`），否则替换文件会失败。
-- 更新包只包含 `RemoteFiles.Client` 发布目录内容，不包含服务端和 Transfer 程序。
+- 客户端必须解压到普通用户可写的目录（例如 `D:\Tools\FileTransfer.Client`），否则替换文件会失败。
+- 更新包只包含 `FileTransfer.Client` 发布目录内容，不包含服务端和 Transfer 程序。
 - 更新日志在 `%LOCALAPPDATA%\FileTransferDemo\Logs\update.log`。
 - 替换时先尝试整体替换目录，如果目录被占用会退化为逐文件覆盖。
 

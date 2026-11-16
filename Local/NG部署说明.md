@@ -4,7 +4,7 @@ NG 过滤已纳入版本控制，发布包同样包含该功能；但只有在�
 
 ## 部署步骤
 
-1. 使用发布包中的 `RemoteFiles.Server` 目录部署服务端，确保包含 `Oracle.ManagedDataAccess.dll`。
+1. 使用发布包中的 `FileTransfer.Server` 目录部署服务端，确保包含 `Oracle.ManagedDataAccess.dll`。
 2. 在运行服务端的 Windows 账号下创建配置文件：
 
    ```text
@@ -12,7 +12,7 @@ NG 过滤已纳入版本控制，发布包同样包含该功能；但只有在�
    ```
 
    参考仓库中的 `Local/NgFilter/ngfilter.example.json`，填写实际数据库密码。真实配置包含密码，请单独部署，不要提交到 git，也不要随发布包分发。
-3. 客户端使用同一版本的 `RemoteFiles.Client`，工具栏会显示“NG 过滤”勾选框。
+3. 客户端使用同一版本的 `FileTransfer.Client`，工具栏会显示“NG 过滤”勾选框。
 4. 重启服务端，客户端连接后勾选“NG 过滤”。
 
 不需要该功能时不配置 `ngfilter.json` 即可；勾选后状态栏会提示“服务端未启用目录过滤”。

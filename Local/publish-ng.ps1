@@ -35,8 +35,8 @@ $package = Join-Path $Output 'FileTransfer'
 New-Item -ItemType Directory -Path $package -Force | Out-Null
 
 $apps = @(
-    @{ Name = 'RemoteFiles.Client'; Project = '.\RemoteFiles.Client\RemoteFiles.Client.csproj' },
-    @{ Name = 'RemoteFiles.Server'; Project = '.\RemoteFiles.Server\RemoteFiles.Server.csproj' }
+    @{ Name = 'FileTransfer.Client'; Project = '.\RemoteFiles.Client\RemoteFiles.Client.csproj' },
+    @{ Name = 'FileTransfer.Server'; Project = '.\RemoteFiles.Server\RemoteFiles.Server.csproj' }
 )
 foreach ($app in $apps) {
     Write-Host "正在发布 $($app.Name) …"
@@ -44,16 +44,16 @@ foreach ($app in $apps) {
     if ($LASTEXITCODE -ne 0) { throw "发布失败：$($app.Name)" }
 }
 
-if (-not (Test-Path (Join-Path $package 'RemoteFiles.Server\Oracle.ManagedDataAccess.dll'))) {
+if (-not (Test-Path (Join-Path $package 'FileTransfer.Server\Oracle.ManagedDataAccess.dll'))) {
     throw '服务端发布结果缺少 Oracle.ManagedDataAccess.dll，请检查 Directory.Build.local.props。'
 }
 # 确认 NG 过滤实现确实编译进了客户端（未实现时 partial 方法会被完全移除）。
-$clientDll = Join-Path $package 'RemoteFiles.Client\RemoteFiles.Client.dll'
+$clientDll = Join-Path $package 'FileTransfer.Client\FileTransfer.Client.dll'
 $clientText = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($clientDll))
 if (-not $clientText.Contains('BuildLocalFilters')) {
     throw '客户端未包含 NG 过滤控件，请检查 Directory.Build.local.props。'
 }
-$serverDll = Join-Path $package 'RemoteFiles.Server\RemoteFiles.Server.dll'
+$serverDll = Join-Path $package 'FileTransfer.Server\FileTransfer.Server.dll'
 $serverText = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($serverDll))
 if (-not $serverText.Contains('OracleNgFolderQuery')) {
     throw '服务端未包含 NG 过滤实现，请检查 Directory.Build.local.props。'

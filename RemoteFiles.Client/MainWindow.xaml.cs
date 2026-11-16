@@ -174,12 +174,19 @@ public partial class MainWindow : Window
             string staging = Path.Combine(tempRoot, "app");
             Directory.CreateDirectory(staging);
             ZipFile.ExtractToDirectory(zip, staging, true);
-            string exeName = Path.GetFileName(Process.GetCurrentProcess().MainModule?.FileName ?? "RemoteFiles.Client.exe");
+            string exeName = Path.GetFileName(Process.GetCurrentProcess().MainModule?.FileName ?? "FileTransfer.Client.exe");
             if (!File.Exists(Path.Combine(staging, exeName)))
             {
                 var directories = Directory.GetDirectories(staging);
                 if (directories.Length == 1 && File.Exists(Path.Combine(directories[0], exeName))) staging = directories[0];
-                else throw new IOException("更新包结构无效，未找到 " + exeName);
+                else
+                {
+                    // 兼容发布名调整：RemoteFiles.Client.exe 与 FileTransfer.Client.exe 可以互相迁移。
+                    string renamed = exeName.Equals("RemoteFiles.Client.exe", StringComparison.OrdinalIgnoreCase)
+                        ? "FileTransfer.Client.exe" : "RemoteFiles.Client.exe";
+                    if (File.Exists(Path.Combine(staging, renamed))) exeName = renamed;
+                    else throw new IOException("更新包结构无效，未找到 " + exeName);
+                }
             }
             progressWindow.Report("正在准备重启…", 100);
             string target = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);

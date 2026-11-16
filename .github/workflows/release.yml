@@ -49,8 +49,8 @@ jobs:
         shell: pwsh
         run: |
           $apps = @{
-            "RemoteFiles.Client" = ".\RemoteFiles.Client\RemoteFiles.Client.csproj"
-            "RemoteFiles.Server" = ".\RemoteFiles.Server\RemoteFiles.Server.csproj"
+            "FileTransfer.Client" = ".\RemoteFiles.Client\RemoteFiles.Client.csproj"
+            "FileTransfer.Server" = ".\RemoteFiles.Server\RemoteFiles.Server.csproj"
             "Transfer.Client"    = ".\Transfer.Client\Transfer.Client.csproj"
             "Transfer.Server"    = ".\Transfer.Server\Transfer.Server.csproj"
           }
