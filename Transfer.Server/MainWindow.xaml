@@ -11,34 +11,36 @@
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
         TextOptions.TextFormattingMode="Display">
-    <Window.Resources>
-        <ResourceDictionary>
-            <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="Theme/Controls.xaml" />
-            </ResourceDictionary.MergedDictionaries>
-        </ResourceDictionary>
-    </Window.Resources>
     <DockPanel Margin="16">
         <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
             <StackPanel>
                 <TextBlock Text="文件互传" FontSize="18" FontWeight="SemiBold" />
-                <TextBlock Text="服务端" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,2,0,0" />
+                <TextBlock Text="服务端" FontSize="11" Foreground="{DynamicResource MutedBrush}" Margin="0,2,0,0" />
             </StackPanel>
-            <Button Content="打开日志目录"
-                    Click="OpenLogs_Click"
-                    HorizontalAlignment="Right"
-                    VerticalAlignment="Top"
-                    Style="{StaticResource GhostButton}" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+                <Button x:Name="ThemeButton"
+                        Margin="0,0,2,0"
+                        Click="Theme_Click"
+                        Style="{StaticResource IconButton}"
+                        ToolTip="切换到夜间模式">
+                    <Path x:Name="ThemeIcon" Data="{StaticResource IconMoonGeometry}" Style="{StaticResource IconGlyph}" />
+                </Button>
+                <Button Click="OpenLogs_Click"
+                        Style="{StaticResource IconButton}"
+                        ToolTip="打开日志目录">
+                    <Path Data="{StaticResource IconLogsGeometry}" Style="{StaticResource IconGlyph}" />
+                </Button>
+            </StackPanel>
         </Grid>
 
         <Border DockPanel.Dock="Bottom" Height="24" Margin="0,8,0,0">
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <Ellipse x:Name="StatusDot" Width="5" Height="5" Fill="{StaticResource MutedBrush}" Margin="0,0,6,0" />
+                <Ellipse x:Name="StatusDot" Width="5" Height="5" Fill="{DynamicResource MutedBrush}" Margin="0,0,6,0" />
                 <TextBlock x:Name="StatusText"
                            Text="服务尚未启动"
                            VerticalAlignment="Center"
                            FontSize="11"
-                           Foreground="{StaticResource MutedBrush}"
+                           Foreground="{DynamicResource MutedBrush}"
                            TextTrimming="CharacterEllipsis" />
             </StackPanel>
         </Border>
@@ -57,11 +59,11 @@
 
         <StackPanel DockPanel.Dock="Top">
             <Grid Margin="0,0,0,10">
-                <Border Background="{StaticResource SurfaceBrush}"
+                <Border Background="{DynamicResource SurfaceBrush}"
                         CornerRadius="{StaticResource PanelCornerRadius}"
-                        Effect="{StaticResource CardShadow}" />
-                <Border Background="{StaticResource SurfaceBrush}"
-                        BorderBrush="{StaticResource LineBrush}"
+                        Effect="{DynamicResource CardShadow}" />
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        BorderBrush="{DynamicResource LineBrush}"
                         BorderThickness="1"
                         CornerRadius="{StaticResource PanelCornerRadius}"
                         Padding="12">
@@ -70,7 +72,7 @@
                                Style="{StaticResource SectionLabel}"
                                Margin="0,0,0,8" />
                     <WrapPanel>
-                        <TextBlock Text="监听端口" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="监听端口" VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" />
                         <TextBox x:Name="PortBox" Text="9500" Width="90" Margin="8,0" />
                         <Button x:Name="StartButton" Content="启动服务" Click="Start_Click" Margin="0,0,4,0"
                                 Style="{StaticResource PrimaryButton}" />
@@ -82,8 +84,8 @@
                                 Style="{StaticResource SecondaryButton}" />
                     </WrapPanel>
 
-                    <Border Background="{StaticResource HeaderBrush}"
-                            BorderBrush="{StaticResource LineBrush}"
+                    <Border Background="{DynamicResource HeaderBrush}"
+                            BorderBrush="{DynamicResource LineBrush}"
                             BorderThickness="1"
                             CornerRadius="{StaticResource PanelCornerRadius}"
                             Padding="12"
@@ -92,7 +94,7 @@
                             <TextBlock Text="将文件拖到窗口，或点击添加共享文件" />
                             <TextBlock Text="保存原文件路径，客户端下载时读取源文件；请在传输期间保留源文件。"
                                        FontSize="11"
-                                       Foreground="{StaticResource MutedBrush}"
+                                       Foreground="{DynamicResource MutedBrush}"
                                        Margin="0,4,0,0" />
                         </StackPanel>
                     </Border>
@@ -126,7 +128,7 @@
                             <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="130" />
                         </DataGrid.Columns>
                     </DataGrid>
-                    <Border Margin="1,27,1,1" Background="{StaticResource SurfaceBrush}">
+                    <Border Margin="1,27,1,1" Background="{DynamicResource SurfaceBrush}">
                         <Border.Style>
                             <Style TargetType="Border">
                                 <Setter Property="Visibility" Value="Collapsed" />
@@ -138,8 +140,8 @@
                             </Style>
                         </Border.Style>
                         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,36,0,0">
-                            <TextBlock Text="尚未添加共享文件" FontSize="12" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" />
-                            <TextBlock Text="把文件拖到窗口，或点击上方“添加共享文件”" FontSize="11" Foreground="{StaticResource SubtleBrush}" Margin="0,6,0,0" HorizontalAlignment="Center" />
+                            <TextBlock Text="尚未添加共享文件" FontSize="12" Foreground="{DynamicResource MutedBrush}" HorizontalAlignment="Center" />
+                            <TextBlock Text="把文件拖到窗口，或点击上方“添加共享文件”" FontSize="11" Foreground="{DynamicResource SubtleBrush}" Margin="0,6,0,0" HorizontalAlignment="Center" />
                         </StackPanel>
                     </Border>
                     </Grid>
@@ -167,7 +169,7 @@
                             <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="100" />
                         </DataGrid.Columns>
                     </DataGrid>
-                    <Border Margin="1,27,1,1" Background="{StaticResource SurfaceBrush}">
+                    <Border Margin="1,27,1,1" Background="{DynamicResource SurfaceBrush}">
                         <Border.Style>
                             <Style TargetType="Border">
                                 <Setter Property="Visibility" Value="Collapsed" />
@@ -179,8 +181,8 @@
                             </Style>
                         </Border.Style>
                         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,36,0,0">
-                            <TextBlock Text="暂无客户端下载任务" FontSize="12" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" />
-                            <TextBlock Text="客户端开始下载后会在这里显示进度" FontSize="11" Foreground="{StaticResource SubtleBrush}" Margin="0,6,0,0" HorizontalAlignment="Center" />
+                            <TextBlock Text="暂无客户端下载任务" FontSize="12" Foreground="{DynamicResource MutedBrush}" HorizontalAlignment="Center" />
+                            <TextBlock Text="客户端开始下载后会在这里显示进度" FontSize="11" Foreground="{DynamicResource SubtleBrush}" Margin="0,6,0,0" HorizontalAlignment="Center" />
                         </StackPanel>
                     </Border>
                     </Grid>

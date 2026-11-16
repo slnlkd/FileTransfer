@@ -8,9 +8,9 @@
 		<ProjectReference Include="../Transfer.Core/Transfer.Core.csproj" />
 	</ItemGroup>
 	<ItemGroup>
-		<Compile Include="../Shared/LoggedApplication.cs" Link="LoggedApplication.cs"/><Compile Include="../Shared/WindowLayout.cs" Link="WindowLayout.cs"/>
+		<Compile Include="../Shared/LoggedApplication.cs" Link="LoggedApplication.cs"/><Compile Include="../Shared/Theme/ThemeManager.cs" Link="Theme/ThemeManager.cs"/><Compile Include="../Shared/WindowLayout.cs" Link="WindowLayout.cs"/>
 		<Content Include="../Shared/logging.json" Link="logging.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
-		<Page Include="../Shared/Theme/Tokens.xaml" Link="Theme/Tokens.xaml"/>
+		<Page Include="../Shared/Theme/Tokens.xaml" Link="Theme/Tokens.xaml"/><Page Include="../Shared/Theme/TokensDark.xaml" Link="Theme/TokensDark.xaml"/>
 		<Page Include="../Shared/Theme/Controls.xaml" Link="Theme/Controls.xaml"/>
 	</ItemGroup>
 </Project>

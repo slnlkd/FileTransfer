@@ -10,45 +10,47 @@
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
         TextOptions.TextFormattingMode="Display">
-    <Window.Resources>
-        <ResourceDictionary>
-            <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="Theme/Controls.xaml" />
-            </ResourceDictionary.MergedDictionaries>
-        </ResourceDictionary>
-    </Window.Resources>
     <DockPanel Margin="16">
         <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
             <StackPanel>
                 <TextBlock Text="文件互传" FontSize="18" FontWeight="SemiBold" />
-                <TextBlock Text="客户端" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,2,0,0" />
+                <TextBlock Text="客户端" FontSize="11" Foreground="{DynamicResource MutedBrush}" Margin="0,2,0,0" />
             </StackPanel>
-            <Button Content="打开日志目录"
-                    Click="OpenLogs_Click"
-                    HorizontalAlignment="Right"
-                    VerticalAlignment="Top"
-                    Style="{StaticResource GhostButton}" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+                <Button x:Name="ThemeButton"
+                        Margin="0,0,2,0"
+                        Click="Theme_Click"
+                        Style="{StaticResource IconButton}"
+                        ToolTip="切换到夜间模式">
+                    <Path x:Name="ThemeIcon" Data="{StaticResource IconMoonGeometry}" Style="{StaticResource IconGlyph}" />
+                </Button>
+                <Button Click="OpenLogs_Click"
+                        Style="{StaticResource IconButton}"
+                        ToolTip="打开日志目录">
+                    <Path Data="{StaticResource IconLogsGeometry}" Style="{StaticResource IconGlyph}" />
+                </Button>
+            </StackPanel>
         </Grid>
 
         <Border DockPanel.Dock="Bottom" Height="24" Margin="0,8,0,0">
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <Ellipse x:Name="StatusDot" Width="5" Height="5" Fill="{StaticResource MutedBrush}" Margin="0,0,6,0" />
+                <Ellipse x:Name="StatusDot" Width="5" Height="5" Fill="{DynamicResource MutedBrush}" Margin="0,0,6,0" />
                 <TextBlock x:Name="StatusText"
                            Text="尚未连接"
                            VerticalAlignment="Center"
                            FontSize="11"
-                           Foreground="{StaticResource MutedBrush}"
+                           Foreground="{DynamicResource MutedBrush}"
                            TextTrimming="CharacterEllipsis" />
             </StackPanel>
         </Border>
 
         <StackPanel>
             <Grid Margin="0,0,0,10">
-                <Border Background="{StaticResource SurfaceBrush}"
+                <Border Background="{DynamicResource SurfaceBrush}"
                         CornerRadius="{StaticResource PanelCornerRadius}"
-                        Effect="{StaticResource CardShadow}" />
-                <Border Background="{StaticResource SurfaceBrush}"
-                        BorderBrush="{StaticResource LineBrush}"
+                        Effect="{DynamicResource CardShadow}" />
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        BorderBrush="{DynamicResource LineBrush}"
                         BorderThickness="1"
                         CornerRadius="{StaticResource PanelCornerRadius}"
                         Padding="12">
@@ -65,9 +67,9 @@
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="服务端地址" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="服务端地址" VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" />
                         <TextBox x:Name="HostBox" Grid.Column="1" Margin="8,0" Text="127.0.0.1" />
-                        <TextBlock Grid.Column="2" Text=":" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Grid.Column="2" Text=":" VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" />
                         <TextBox x:Name="PortBox" Grid.Column="3" Margin="8,0" Text="9500" />
                         <Button x:Name="ConnectButton"
                                 Grid.Column="4"
@@ -83,16 +85,16 @@
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="下载保存目录" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="下载保存目录" VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" />
                         <TextBox x:Name="FolderBox" Grid.Column="1" Margin="8,0" IsReadOnly="True" />
                         <Button Grid.Column="2" Content="选择文件夹" Click="Folder_Click" Style="{StaticResource SecondaryButton}" />
                     </Grid>
 
                     <WrapPanel Margin="0,8,0,0">
-                        <TextBlock Text="并发连接数" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="并发连接数" VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" />
                         <TextBox x:Name="ThreadsBox" Text="4" Width="60" Margin="8,0" />
                         <TextBlock Text="1～16" VerticalAlignment="Center" FontSize="11"
-                                   Foreground="{StaticResource SubtleBrush}" Margin="0,0,10,0" />
+                                   Foreground="{DynamicResource SubtleBrush}" Margin="0,0,10,0" />
                         <Button Content="下载所选 / 继续" Click="Download_Click" Margin="0,0,4,0"
                                 Style="{StaticResource PrimaryButton}" />
                         <Button Content="暂停所选" Click="Pause_Click" Margin="0,0,4,0"
@@ -105,7 +107,7 @@
 
             <TextBlock Text="按 Ctrl / Shift 多选文件。暂停、关闭或断网后保留临时文件；选择原目录即可继续。"
                        FontSize="11"
-                       Foreground="{StaticResource MutedBrush}"
+                       Foreground="{DynamicResource MutedBrush}"
                        Margin="2,0,0,8"
                        TextWrapping="Wrap" />
 
@@ -140,12 +142,12 @@
 
             <Border x:Name="EmptyState"
                     Margin="1,27,1,1"
-                    Background="{StaticResource SurfaceBrush}">
+                    Background="{DynamicResource SurfaceBrush}">
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,36,0,0">
                     <TextBlock x:Name="EmptyText"
                                HorizontalAlignment="Center"
                                FontSize="12"
-                               Foreground="{StaticResource MutedBrush}"
+                               Foreground="{DynamicResource MutedBrush}"
                                Text="连接服务端后选择要下载的文件" />
                     <Button x:Name="EmptyAction"
                             Margin="0,10,0,0"

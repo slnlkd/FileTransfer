@@ -11,27 +11,20 @@
         WindowStartupLocation="CenterScreen"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True">
-    <Window.Resources>
-        <ResourceDictionary>
-            <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="Theme/Controls.xaml" />
-            </ResourceDictionary.MergedDictionaries>
-        </ResourceDictionary>
-    </Window.Resources>
 
     <DockPanel>
         <!-- 连接工具条：不再使用卡片，直接嵌在窗口顶部。 -->
         <Border DockPanel.Dock="Top"
                 Height="40"
                 Padding="12,0"
-                Background="{StaticResource HeaderBrush}"
-                BorderBrush="{StaticResource LineBrush}"
+                Background="{DynamicResource HeaderBrush}"
+                BorderBrush="{DynamicResource LineBrush}"
                 BorderThickness="0,0,0,1">
             <Grid>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Margin="0,0,8,0"
                                VerticalAlignment="Center"
-                               Foreground="{StaticResource MutedBrush}"
+                               Foreground="{DynamicResource MutedBrush}"
                                Text="服务端" />
                     <TextBox x:Name="HostBox"
                              Width="170"
@@ -39,7 +32,7 @@
                              Text="127.0.0.1" />
                     <TextBlock Margin="4,0"
                                VerticalAlignment="Center"
-                               Foreground="{StaticResource MutedBrush}"
+                               Foreground="{DynamicResource MutedBrush}"
                                Text=":" />
                     <TextBox x:Name="PortBox"
                              Width="64"
@@ -55,25 +48,34 @@
                     <Ellipse x:Name="ConnectionDot"
                              Width="5" Height="5"
                              Margin="14,0,6,0"
-                             Fill="{StaticResource MutedBrush}" />
+                             Fill="{DynamicResource MutedBrush}" />
                     <TextBlock x:Name="ConnectionText"
                                VerticalAlignment="Center"
                                FontSize="11"
-                               Foreground="{StaticResource MutedBrush}"
+                               Foreground="{DynamicResource MutedBrush}"
                                Text="未连接" />
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                     <Button x:Name="UpdateBadge"
-                            Margin="0,0,4,0"
+                            Margin="0,0,2,0"
                             Click="UpdateBadge_Click"
-                            Content="↑ 新版本"
-                            Style="{StaticResource UpdateBadgeButton}"
+                            Style="{StaticResource UpdateIconButton}"
                             ToolTip="发现新版本，点击更新"
-                            Visibility="Collapsed" />
+                            Visibility="Collapsed">
+                        <Path Data="{StaticResource IconUpdateGeometry}" Style="{StaticResource IconGlyph}" />
+                    </Button>
+                    <Button x:Name="ThemeButton"
+                            Margin="0,0,2,0"
+                            Click="Theme_Click"
+                            Style="{StaticResource IconButton}"
+                            ToolTip="切换到夜间模式">
+                        <Path x:Name="ThemeIcon" Data="{StaticResource IconMoonGeometry}" Style="{StaticResource IconGlyph}" />
+                    </Button>
                     <Button Click="Logs_Click"
-                            Content="日志"
-                            Style="{StaticResource GhostButton}"
-                            ToolTip="打开日志目录" />
+                            Style="{StaticResource IconButton}"
+                            ToolTip="打开日志目录">
+                        <Path Data="{StaticResource IconLogsGeometry}" Style="{StaticResource IconGlyph}" />
+                    </Button>
                 </StackPanel>
             </Grid>
         </Border>
@@ -82,8 +84,8 @@
         <Border DockPanel.Dock="Bottom"
                 Height="24"
                 Padding="12,0"
-                Background="{StaticResource HeaderBrush}"
-                BorderBrush="{StaticResource LineBrush}"
+                Background="{DynamicResource HeaderBrush}"
+                BorderBrush="{DynamicResource LineBrush}"
                 BorderThickness="0,1,0,0"
                 ToolTip="协议未加密，请仅在可信局域网使用。">
             <Grid>
@@ -96,12 +98,12 @@
                 <Ellipse x:Name="StatusDot"
                          Width="5" Height="5"
                          Margin="0,0,6,0"
-                         Fill="{StaticResource MutedBrush}" />
+                         Fill="{DynamicResource MutedBrush}" />
                 <TextBlock Grid.Column="1"
                            x:Name="StatusText"
                            VerticalAlignment="Center"
                            FontSize="11"
-                           Foreground="{StaticResource MutedBrush}"
+                           Foreground="{DynamicResource MutedBrush}"
                            Text="就绪"
                            TextTrimming="CharacterEllipsis" />
                 <TextBlock Grid.Column="2"
@@ -109,7 +111,7 @@
                            VerticalAlignment="Center"
                            FontSize="11"
                            Margin="12,0,0,0"
-                           Foreground="{StaticResource MutedBrush}" />
+                           Foreground="{DynamicResource MutedBrush}" />
                 <StackPanel Grid.Column="3"
                             x:Name="BrowserProgressPanel"
                             Orientation="Horizontal"
@@ -120,7 +122,7 @@
                                Margin="12,0,8,0"
                                VerticalAlignment="Center"
                                FontSize="11"
-                               Foreground="{StaticResource MutedBrush}"
+                               Foreground="{DynamicResource MutedBrush}"
                                TextTrimming="CharacterEllipsis" />
                     <ProgressBar x:Name="BrowserProgress"
                                  Width="120"

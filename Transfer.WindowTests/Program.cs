@@ -16,7 +16,18 @@ internal static class Program
         string logs = Path.Combine(Path.GetTempPath(), "FileTransfer-window-logs-" + Guid.NewGuid().ToString("N"));
         Environment.SetEnvironmentVariable("FILETRANSFER_LOG_DIRECTORY", logs);
         Environment.SetEnvironmentVariable("FILETRANSFER_DISABLE_LAYOUT", "1");
+        Environment.SetEnvironmentVariable("FILETRANSFER_DISABLE_THEME_ANIMATION", "1");
         Application app = args.Contains("client") ? new Transfer.Client.App() : new Transfer.Server.App();
+        // 测试不加载 App.xaml（避免 StartupUri 自动开窗），手动挂载共享主题资源。
+        string themeAssembly = app.GetType().Assembly.GetName().Name!;
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        {
+            Source = new Uri($"pack://application:,,,/{themeAssembly};component/Theme/Tokens.xaml", UriKind.Absolute)
+        });
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        {
+            Source = new Uri($"pack://application:,,,/{themeAssembly};component/Theme/Controls.xaml", UriKind.Absolute)
+        });
         app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
         int result = 0;
         app.DispatcherUnhandledException += (_, e) =>

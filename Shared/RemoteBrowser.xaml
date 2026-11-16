@@ -1,4 +1,4 @@
-<UserControl x:Class="RemoteFiles.Desktop.RemoteBrowser"
+﻿<UserControl x:Class="RemoteFiles.Desktop.RemoteBrowser"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:RemoteFiles.Desktop">
@@ -17,8 +17,8 @@
         <!-- 工具栏 -->
         <Border DockPanel.Dock="Top"
                 Padding="8,6"
-                Background="{StaticResource SurfaceBrush}"
-                BorderBrush="{StaticResource LineBrush}"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource LineBrush}"
                 BorderThickness="0,0,0,1">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -54,7 +54,7 @@
                         Width="1" Height="18"
                         Margin="8,0"
                         VerticalAlignment="Center"
-                        Background="{StaticResource LineBrush}" />
+                        Background="{DynamicResource LineBrush}" />
 
                 <StackPanel Grid.Column="2"
                             x:Name="FilterHost"
@@ -88,7 +88,7 @@
                            Margin="12,0,0,0"
                            VerticalAlignment="Center"
                            FontSize="11"
-                           Foreground="{StaticResource MutedBrush}" />
+                           Foreground="{DynamicResource MutedBrush}" />
             </Grid>
         </Border>
 
@@ -96,8 +96,8 @@
         <Border DockPanel.Dock="Top"
                 Margin="8,8,8,0"
                 Padding="8,3"
-                Background="{StaticResource SurfaceBrush}"
-                BorderBrush="{StaticResource LineBrush}"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource LineBrush}"
                 BorderThickness="1"
                 CornerRadius="{StaticResource PanelCornerRadius}">
             <Grid>
@@ -119,7 +119,7 @@
                            VerticalAlignment="Center"
                            FontFamily="{StaticResource MonoFontFamily}"
                            FontSize="11"
-                           Foreground="{StaticResource MutedBrush}" />
+                           Foreground="{DynamicResource MutedBrush}" />
             </Grid>
         </Border>
 
@@ -144,12 +144,12 @@
                     <Ellipse x:Name="BrowserStatusDot"
                              Width="5" Height="5"
                              Margin="0,0,6,0"
-                             Fill="{StaticResource MutedBrush}" />
+                             Fill="{DynamicResource MutedBrush}" />
                     <TextBlock Grid.Column="1"
                                x:Name="StatusText"
                                VerticalAlignment="Center"
                                FontSize="11"
-                               Foreground="{StaticResource MutedBrush}"
+                               Foreground="{DynamicResource MutedBrush}"
                                Text="右键查看更多操作"
                                TextTrimming="CharacterEllipsis" />
                 </Grid>
@@ -163,7 +163,7 @@
                                Margin="0,0,8,0"
                                VerticalAlignment="Center"
                                FontSize="11"
-                               Foreground="{StaticResource MutedBrush}"
+                               Foreground="{DynamicResource MutedBrush}"
                                TextTrimming="CharacterEllipsis" />
                     <ProgressBar x:Name="UploadProgress"
                                  Width="140" Height="6"
@@ -181,21 +181,21 @@
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0"
-                    Background="{StaticResource SurfaceBrush}"
-                    BorderBrush="{StaticResource LineBrush}"
+                    Background="{DynamicResource SurfaceBrush}"
+                    BorderBrush="{DynamicResource LineBrush}"
                     BorderThickness="1"
                     CornerRadius="2">
                 <DockPanel>
                     <Border DockPanel.Dock="Top"
                             Height="28"
                             Padding="8,0"
-                            Background="{StaticResource HeaderBrush}"
-                            BorderBrush="{StaticResource LineBrush}"
+                            Background="{DynamicResource HeaderBrush}"
+                            BorderBrush="{DynamicResource LineBrush}"
                             BorderThickness="0,0,0,1">
                         <TextBlock VerticalAlignment="Center"
                                    FontSize="11"
                                    FontWeight="SemiBold"
-                                   Foreground="{StaticResource MutedBrush}"
+                                   Foreground="{DynamicResource MutedBrush}"
                                    Text="目录" />
                     </Border>
                     <TreeView x:Name="FolderTree"
@@ -208,7 +208,7 @@
             <GridSplitter Grid.Column="1"
                           Width="5"
                           HorizontalAlignment="Stretch"
-                          Background="{StaticResource CanvasBrush}" />
+                          Background="{DynamicResource CanvasBrush}" />
 
             <Grid Grid.Column="2" x:Name="FileArea"
                   AllowDrop="True"
@@ -294,12 +294,12 @@
                 <Border x:Name="EmptyState"
                         Margin="1,29,1,1"
                         Padding="0,36,0,0"
-                        Background="{StaticResource SurfaceBrush}">
+                        Background="{DynamicResource SurfaceBrush}">
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Top">
                         <TextBlock x:Name="EmptyText"
                                    HorizontalAlignment="Center"
                                    FontSize="12"
-                                   Foreground="{StaticResource MutedBrush}"
+                                   Foreground="{DynamicResource MutedBrush}"
                                    Text="连接后可浏览共享目录" />
                         <Button x:Name="EmptyUploadButton"
                                 Margin="0,12,0,0"
@@ -313,7 +313,7 @@
 
                 <Border x:Name="BusyOverlay"
                         Margin="1,29,1,1"
-                        Background="#CCFFFFFF"
+                        Background="{DynamicResource BusyOverlayBrush}"
                         Visibility="Collapsed">
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                         <ProgressBar x:Name="BusyProgress" Width="220" Height="4" IsIndeterminate="True" />
@@ -321,7 +321,7 @@
                                    Margin="0,10,0,0"
                                    HorizontalAlignment="Center"
                                    FontSize="11"
-                                   Foreground="{StaticResource MutedBrush}"
+                                   Foreground="{DynamicResource MutedBrush}"
                                    Text="正在处理…" />
                         <Button x:Name="CancelButton"
                                 Margin="0,10,0,0"

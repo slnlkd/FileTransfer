@@ -28,6 +28,7 @@ public abstract class LoggedApplication : Application
     }
     protected override void OnStartup(StartupEventArgs e)
     {
+        ThemeManager.Initialize();
         Log.Information("应用程序启动；参数 {@Arguments}", e.Args);
         base.OnStartup(e);
     }

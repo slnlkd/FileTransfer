@@ -11,24 +11,26 @@
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
         TextOptions.TextFormattingMode="Display">
-    <Window.Resources>
-        <ResourceDictionary>
-            <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="Theme/Controls.xaml" />
-            </ResourceDictionary.MergedDictionaries>
-        </ResourceDictionary>
-    </Window.Resources>
     <DockPanel Margin="16">
         <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
             <StackPanel>
                 <TextBlock Text="远程文件管理" FontSize="18" FontWeight="SemiBold" />
-                <TextBlock Text="服务端" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,2,0,0" />
+                <TextBlock Text="服务端" FontSize="11" Foreground="{DynamicResource MutedBrush}" Margin="0,2,0,0" />
             </StackPanel>
-            <Button Content="打开日志目录"
-                    Click="Logs_Click"
-                    HorizontalAlignment="Right"
-                    VerticalAlignment="Top"
-                    Style="{StaticResource GhostButton}" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+                <Button x:Name="ThemeButton"
+                        Margin="0,0,2,0"
+                        Click="Theme_Click"
+                        Style="{StaticResource IconButton}"
+                        ToolTip="切换到夜间模式">
+                    <Path x:Name="ThemeIcon" Data="{StaticResource IconMoonGeometry}" Style="{StaticResource IconGlyph}" />
+                </Button>
+                <Button Click="Logs_Click"
+                        Style="{StaticResource IconButton}"
+                        ToolTip="打开日志目录">
+                    <Path Data="{StaticResource IconLogsGeometry}" Style="{StaticResource IconGlyph}" />
+                </Button>
+            </StackPanel>
         </Grid>
 
         <Border DockPanel.Dock="Bottom" Height="24" Margin="0,8,0,0">
@@ -39,20 +41,20 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <Ellipse x:Name="StatusDot" Width="5" Height="5" Fill="{StaticResource MutedBrush}" Margin="0,0,6,0" />
+                <Ellipse x:Name="StatusDot" Width="5" Height="5" Fill="{DynamicResource MutedBrush}" Margin="0,0,6,0" />
                 <TextBlock x:Name="StatusText"
                            Grid.Column="1"
                            Text="选择共享根目录后启动；仅在选定目录内提供文件读写和程序管理。"
                            VerticalAlignment="Center"
                            FontSize="11"
-                           Foreground="{StaticResource MutedBrush}"
+                           Foreground="{DynamicResource MutedBrush}"
                            TextTrimming="CharacterEllipsis" />
                 <TextBlock Grid.Column="2"
                            x:Name="SelectionText"
                            VerticalAlignment="Center"
                            FontSize="11"
                            Margin="12,0,0,0"
-                           Foreground="{StaticResource MutedBrush}" />
+                           Foreground="{DynamicResource MutedBrush}" />
                 <StackPanel Grid.Column="3"
                             x:Name="BrowserProgressPanel"
                             Orientation="Horizontal"
@@ -63,7 +65,7 @@
                                Margin="12,0,8,0"
                                VerticalAlignment="Center"
                                FontSize="11"
-                               Foreground="{StaticResource MutedBrush}"
+                               Foreground="{DynamicResource MutedBrush}"
                                TextTrimming="CharacterEllipsis" />
                     <ProgressBar x:Name="BrowserProgress"
                                  Width="120"
@@ -74,11 +76,11 @@
         </Border>
 
         <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
-            <Border Background="{StaticResource SurfaceBrush}"
+            <Border Background="{DynamicResource SurfaceBrush}"
                     CornerRadius="{StaticResource PanelCornerRadius}"
-                    Effect="{StaticResource CardShadow}" />
-            <Border Background="{StaticResource SurfaceBrush}"
-                    BorderBrush="{StaticResource LineBrush}"
+                    Effect="{DynamicResource CardShadow}" />
+            <Border Background="{DynamicResource SurfaceBrush}"
+                    BorderBrush="{DynamicResource LineBrush}"
                     BorderThickness="1"
                     CornerRadius="{StaticResource PanelCornerRadius}"
                     Padding="12">
@@ -92,13 +94,13 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock Text="共享根目录" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="共享根目录" VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" />
                     <TextBox x:Name="RootBox" Grid.Column="1" Margin="8,0" IsReadOnly="True" />
                     <Button x:Name="ChooseButton" Grid.Column="2" Content="选择文件夹"
                             Click="Choose_Click" Style="{StaticResource SecondaryButton}" />
                 </Grid>
                 <WrapPanel Margin="0,8,0,0">
-                    <TextBlock Text="TCP 端口" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" />
+                    <TextBlock Text="TCP 端口" VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" />
                     <TextBox x:Name="PortBox" Text="9501" Width="85" Margin="8,0" />
                     <Button x:Name="StartButton" Content="启动服务" Click="Start_Click" Margin="0,0,4,0"
                             Style="{StaticResource PrimaryButton}" />
@@ -131,13 +133,13 @@
                     </DataGridTemplateColumn>
                 </DataGrid.Columns>
             </DataGrid>
-            <Border Background="{StaticResource SurfaceBrush}"
-                    BorderBrush="{StaticResource LineBrush}"
+            <Border Background="{DynamicResource SurfaceBrush}"
+                    BorderBrush="{DynamicResource LineBrush}"
                     BorderThickness="1"
                     CornerRadius="{StaticResource PanelCornerRadius}"
                     Margin="0,8,0,0">
                 <DockPanel>
-                    <Grid DockPanel.Dock="Top" Height="28" Background="{StaticResource HeaderBrush}">
+                    <Grid DockPanel.Dock="Top" Height="28" Background="{DynamicResource HeaderBrush}">
                         <TextBlock Text="活动日志"
                                    Style="{StaticResource SectionLabel}"
                                    Margin="8,0,0,0"
@@ -152,7 +154,7 @@
                                  Height="110"
                                  IsReadOnly="True"
                                  BorderThickness="0"
-                                 Background="{StaticResource SurfaceBrush}"
+                                 Background="{DynamicResource SurfaceBrush}"
                                  VerticalScrollBarVisibility="Auto"
                                  Padding="6"
                                  FontFamily="{StaticResource MonoFontFamily}"

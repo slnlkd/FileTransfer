@@ -142,23 +142,34 @@ internal static class RemoteWindowChecks
         if (FindButtonByContent(imageWindow, "← 上一张") is not null || FindButtonByContent(imageWindow, "下一张 →") is not null)
             throw new Exception("不应保留上一张/下一张文本按钮");
         if (previousArrow.IsEnabled || !nextArrow.IsEnabled) throw new Exception("首张图片时箭头状态错误");
-        var thumbList = FindDescendant<ListBox>(imageWindow) ?? throw new Exception("缺少底部缩略图条");
+        var thumbList = FindDescendant<ListBox>(imageWindow) ?? throw new Exception("缺少缩略图条");
         if (thumbList.Items.Count != 2) throw new Exception("缩略图数量错误：" + thumbList.Items.Count);
-        var pageBox = FindDescendant<TextBox>(imageWindow) ?? throw new Exception("缺少页码输入框");
-        if (pageBox.Text != "1") throw new Exception("初始页码错误：" + pageBox.Text);
-        // 页码跳转
-        pageBox.Text = "2";
-        pageBox.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(imageWindow), 0, Key.Enter) { RoutedEvent = Keyboard.KeyDownEvent });
-        await WaitAsync(() => imageWindow.CurrentPath == "late.png" && !nextArrow.IsEnabled && previousArrow.IsEnabled);
-        pageBox.Text = "1";
-        pageBox.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(imageWindow), 0, Key.Enter) { RoutedEvent = Keyboard.KeyDownEvent });
-        await WaitAsync(() => imageWindow.CurrentPath == "early.png" && !previousArrow.IsEnabled && nextArrow.IsEnabled);
+        if (thumbList.IsVisible) throw new Exception("默认不应显示缩略图条");
+        var thumbToggle = FindButton(imageWindow, "显示缩略图") ?? throw new Exception("缺少缩略图开关按钮");
+        thumbToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await WaitAsync(() => thumbList.IsVisible);
+        if (thumbToggle.ToolTip?.ToString() != "隐藏缩略图") throw new Exception("缩略图开关提示未更新");
         // 缩略图点击切换
         thumbList.SelectedIndex = 1;
         await WaitAsync(() => imageWindow.CurrentPath == "late.png" && !nextArrow.IsEnabled);
         thumbList.SelectedIndex = 0;
         await WaitAsync(() => imageWindow.CurrentPath == "early.png" && !previousArrow.IsEnabled);
-        Console.WriteLine("通过：底部缩略图、页码跳转与点击切换");
+        Console.WriteLine("通过：缩略图默认隐藏、展开与点击切换");
+        // 右下角缩放控件
+        var percentBox = FindDescendant<TextBox>(imageWindow) ?? throw new Exception("缺少缩放比例输入框");
+        if (!percentBox.Text.EndsWith("%")) throw new Exception("缩放比例未显示百分比：" + percentBox.Text);
+        var zoomIn = FindButton(imageWindow, "放大 (Ctrl++)") ?? throw new Exception("缺少放大按钮");
+        var zoomOut = FindButton(imageWindow, "缩小 (Ctrl+-)") ?? throw new Exception("缺少缩小按钮");
+        var zoomSlider = FindDescendant<Slider>(imageWindow) ?? throw new Exception("缺少缩放滑块");
+        if (FindButton(imageWindow, "全屏 (F11)") is null) throw new Exception("缺少全屏按钮");
+        string beforeZoom = percentBox.Text;
+        zoomIn.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await WaitAsync(() => percentBox.Text != beforeZoom);
+        zoomOut.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await WaitAsync(() => percentBox.Text == beforeZoom);
+        zoomSlider.Value = 200;
+        await WaitAsync(() => percentBox.Text == "200%");
+        Console.WriteLine("通过：缩放比例、缩放滑块与全屏按钮");
         nextArrow.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await WaitAsync(() => imageWindow.CurrentPath == "late.png" && FindImage(imageWindow)?.Source != null && !nextArrow.IsEnabled && previousArrow.IsEnabled);
         if (!previousArrow.IsEnabled) throw new Exception("末张图片时左侧箭头未启用");
@@ -171,6 +182,38 @@ internal static class RemoteWindowChecks
         await WaitAsync(() => imageWindow.CurrentPath == "early.png" && FindImage(imageWindow)?.Source != null && !previousArrow.IsEnabled && nextArrow.IsEnabled);
         imageWindow.Close();
         Console.WriteLine("通过：图片真实解码，Right / Left 按创建时间前后切换");
+        // 大图默认适应窗口，实际大小按钮应能来回切换而不是点一次就禁用。
+        var bigBitmap = BitmapSource.Create(2000, 1500, 96, 96, PixelFormats.Bgra32, null, new byte[2000 * 1500 * 4], 2000 * 4);
+        var bigEncoder = new PngBitmapEncoder();
+        bigEncoder.Frames.Add(BitmapFrame.Create(bigBitmap));
+        using (var bigFile = File.Create(Path.Combine(root, "zoom.png"))) bigEncoder.Save(bigFile);
+        await browser.ConnectAsync(new RemoteFileClient("127.0.0.1", port));
+        await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "zoom.png"));
+        var zoomWindow = client.OwnedWindows.OfType<ImageViewer>().Last();
+        await WaitAsync(() => FindImage(zoomWindow)?.Source != null);
+        var zoomPercent = FindDescendant<TextBox>(zoomWindow) ?? throw new Exception("缺少缩放比例输入框");
+        string fitPercent = zoomPercent.Text;
+        if (fitPercent == "100%") throw new Exception("大图初始应显示适应窗口比例");
+        var actualButton = FindButton(zoomWindow, "缩放到实际大小 (100%)") ?? throw new Exception("缺少实际大小按钮");
+        actualButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await WaitAsync(() => zoomPercent.Text == "100%");
+        var fitButton = FindButton(zoomWindow, "适应窗口") ?? throw new Exception("100% 时应能切回适应窗口");
+        fitButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await WaitAsync(() => zoomPercent.Text == fitPercent);
+        // 滚轮缩小到适应窗口就停住；减号可以继续缩小。
+        var previewCanvas = FindDescendant<Canvas>(zoomWindow) ?? throw new Exception("缺少图片画布");
+        previewCanvas.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, -120) { RoutedEvent = UIElement.PreviewMouseWheelEvent });
+        await FlushAsync(zoomWindow);
+        if (zoomPercent.Text != fitPercent) throw new Exception("滚轮缩小不应低于适应窗口比例");
+        var zoomOutButton = FindButton(zoomWindow, "缩小 (Ctrl+-)") ?? throw new Exception("缺少缩小按钮");
+        zoomOutButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await WaitAsync(() => zoomPercent.Text != fitPercent);
+        string belowFit = zoomPercent.Text;
+        previewCanvas.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, -120) { RoutedEvent = UIElement.PreviewMouseWheelEvent });
+        await FlushAsync(zoomWindow);
+        if (zoomPercent.Text != belowFit) throw new Exception("低于适应比例后滚轮不应继续缩小");
+        zoomWindow.Close();
+        Console.WriteLine("通过：实际大小与适应窗口可来回切换");
         // 缩略图滚动到末尾仍应按需加载，不能出现空白。
         string thumbFolder = Path.Combine(root, "缩略图测试");
         Directory.CreateDirectory(thumbFolder);
@@ -181,12 +224,16 @@ internal static class RemoteWindowChecks
         await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().First());
         var thumbWindow = client.OwnedWindows.OfType<ImageViewer>().Last();
         await WaitAsync(() => FindImage(thumbWindow)?.Source != null);
-        var thumbStrip = FindDescendant<ListBox>(thumbWindow) ?? throw new Exception("缺少底部缩略图条");
+        var thumbStrip = FindDescendant<ListBox>(thumbWindow) ?? throw new Exception("缺少缩略图条");
         if (thumbStrip.Items.Count != 25) throw new Exception("缩略图数量错误：" + thumbStrip.Items.Count);
-        if (FindButtonByContent(thumbWindow, "定位") is null) throw new Exception("缺少定位当前图片按钮");
+        var stripToggle = FindButton(thumbWindow, "显示缩略图") ?? throw new Exception("缺少缩略图开关按钮");
+        stripToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await WaitAsync(() => thumbStrip.IsVisible);
+        await FlushAsync(thumbStrip);
         var thumbScroll = FindDescendant<ScrollViewer>(thumbStrip) ?? throw new Exception("缩略图条缺少滚动视图");
         thumbStrip.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, -120) { RoutedEvent = UIElement.PreviewMouseWheelEvent });
         await WaitAsync(() => thumbScroll.HorizontalOffset > 0);
+        await Task.Delay(300);
         if (thumbScroll.ScrollableWidth > 0 && thumbScroll.HorizontalOffset >= thumbScroll.ScrollableWidth - 1)
             throw new Exception("缩略图滚轮一次就跳到了末尾");
         var lastThumb = (RemoteClient::RemoteFiles.Desktop.ImageThumbItem)thumbStrip.Items[24];
@@ -350,10 +397,27 @@ internal static class RemoteWindowChecks
             Click(updateClient, "ConnectButton");
             await WaitAsync(() => ((Button)updateClient.FindName("UpdateBadge")).Visibility == Visibility.Visible);
             var shownBadge = (Button)updateClient.FindName("UpdateBadge");
-            if (shownBadge.Content?.ToString()?.Contains("9.9.9") != true) throw new Exception("更新提示未显示最新版本号");
+            if (shownBadge.ToolTip?.ToString()?.Contains("9.9.9") != true) throw new Exception("更新提示未显示最新版本号");
+            if (shownBadge.Content is not System.Windows.Shapes.Path) throw new Exception("更新提示应使用图标而不是文字");
             await CloseAsync(updateClient);
         }
         Console.WriteLine("通过：静默检查更新并在有新版本时显示蓝色提示");
+        // 夜间模式：图标按钮切换主题，颜色立即变化，再切回。
+        var themeButton = (Button)client.FindName("ThemeButton");
+        if (themeButton.Content is not System.Windows.Shapes.Path) throw new Exception("夜间模式按钮应使用图标");
+        var lightCanvas = ((SolidColorBrush)client.FindResource("CanvasBrush")).Color;
+        if (((System.Windows.Shapes.Path)client.FindName("ThemeIcon")).Stroke is null) throw new Exception("夜间模式图标未设置描边颜色");
+        themeButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await FlushAsync(client);
+        var darkCanvas = ((SolidColorBrush)client.Background).Color;
+        if (darkCanvas == lightCanvas) throw new Exception("切换夜间模式后背景色未变化");
+        if (client.Background is not SolidColorBrush darkBackground || darkBackground.Color != darkCanvas)
+            throw new Exception("窗口背景未跟随夜间模式刷新");
+        if (((System.Windows.Shapes.Path)client.FindName("ThemeIcon")).Data is null) throw new Exception("夜间模式图标未设置");
+        themeButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await FlushAsync(client);
+        if (((SolidColorBrush)client.Background).Color != lightCanvas) throw new Exception("切回日间模式后背景色未恢复");
+        Console.WriteLine("通过：夜间模式图标按钮切换即时生效并可恢复");
         int rootCount = Directory.GetFileSystemEntries(root).Length;
         await CloseAsync(client);
         Click(server, "StopButton");
@@ -435,15 +499,14 @@ internal static class RemoteWindowChecks
     private static void CheckImageName(ImageViewer window, string name)
     {
         var blocks = FindTextBlocks(window).ToArray();
-        // 名称和路径只应出现在顶部工具栏一处，底部只显示创建时间、尺寸和大小。
+        // 名称只应出现在标题栏一处，底部状态栏显示格式、尺寸和大小。
         int occurrences = blocks.Count(b => b.Text.Contains(name));
         if (occurrences != 1) throw new Exception($"图片名称应只出现一次，实际 {occurrences} 次：{name}");
-        if (!blocks.Any(b => b.Inlines.OfType<Run>().Any(r => r.FontWeight == FontWeights.Bold && r.Text == name)))
-            throw new Exception("顶部未加粗显示图片名称：" + name);
-        if (!blocks.Any(b => b.Inlines.OfType<Run>().Any(r => r.Text.StartsWith("创建："))))
-            throw new Exception("底部未显示创建时间");
-        if (!blocks.Any(b => b.Inlines.OfType<Run>().Any(r => r.Text.Contains("×"))))
-            throw new Exception("底部未显示图片尺寸");
+        var title = blocks.FirstOrDefault(b => b.Text == name && b.FontWeight.ToOpenTypeWeight() >= 600)
+            ?? throw new Exception("标题栏未加粗显示图片名称：" + name);
+        if (title.ToolTip?.ToString()?.EndsWith(name) != true) throw new Exception("标题未显示完整路径");
+        if (!blocks.Any(b => b.Text.Contains("PNG")) || !blocks.Any(b => b.Text.Contains("×")))
+            throw new Exception("底部未显示图片格式和尺寸");
     }
     private static IEnumerable<TextBlock> FindTextBlocks(DependencyObject parent)
     {

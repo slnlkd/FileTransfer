@@ -24,6 +24,7 @@ public partial class MainWindow : Window
         settings = settingsPath;
         SLog.Information("准备创建Client主窗口");
         InitializeComponent(); DataContext = this;
+        UpdateThemeButton();
         WindowLayout.Attach(this, "transfer-client", FileGrid);
         UpdateEmptyState();
         SLog.Information("主窗口初始化完成；配置路径 {SettingsPath}", settings);
@@ -52,6 +53,16 @@ public partial class MainWindow : Window
             catch (Exception ex) { SLog.Error(ex, "关闭客户端时等待下载结束失败"); SetStatus("关闭时保存下载进度失败：" + ex.Message, "DangerBrush"); }
             finally { SLog.Information("关闭前资源清理结束，准备关闭主窗口"); closed = true; Close(); }
         };
+    }
+    private void Theme_Click(object sender, RoutedEventArgs e)
+    {
+        ThemeManager.Toggle();
+        UpdateThemeButton();
+    }
+    private void UpdateThemeButton()
+    {
+        ThemeIcon.Data = (Geometry)FindResource(ThemeManager.IsDark ? "IconSunGeometry" : "IconMoonGeometry");
+        ThemeButton.ToolTip = ThemeManager.IsDark ? "切换到日间模式" : "切换到夜间模式";
     }
     private void OpenLogs_Click(object sender, RoutedEventArgs e)
     {

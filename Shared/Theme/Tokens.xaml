@@ -11,9 +11,9 @@
     <SolidColorBrush x:Key="HairlineBrush" Color="#EEF0F2" />
     <SolidColorBrush x:Key="HeaderBrush" Color="#F7F8FA" />
     <SolidColorBrush x:Key="TableHeaderBrush" Color="#F1F3F5" />
-    <SolidColorBrush x:Key="RowHoverBrush" Color="#F7F9FB" />
-    <SolidColorBrush x:Key="SelectionBrush" Color="#E7F0F6" />
-    <SolidColorBrush x:Key="SelectionBorderBrush" Color="#A9C6D8" />
+    <SolidColorBrush x:Key="RowHoverBrush" Color="#E7F0F6" />
+    <SolidColorBrush x:Key="SelectionBrush" Color="#CFE0EA" />
+    <SolidColorBrush x:Key="SelectionBorderBrush" Color="#7FA8BE" />
     <SolidColorBrush x:Key="AccentBrush" Color="#2B5F75" />
     <SolidColorBrush x:Key="AccentHoverBrush" Color="#244E60" />
     <SolidColorBrush x:Key="AccentSoftBrush" Color="#E5EDF2" />
@@ -21,6 +21,9 @@
     <SolidColorBrush x:Key="WarningBrush" Color="#8A5A00" />
     <SolidColorBrush x:Key="SuccessBrush" Color="#1A7F37" />
     <SolidColorBrush x:Key="FocusBrush" Color="#2B5F75" />
+    <SolidColorBrush x:Key="HoverOverlayBrush" Color="#0A000000" />
+    <SolidColorBrush x:Key="PressedOverlayBrush" Color="#14000000" />
+    <SolidColorBrush x:Key="BusyOverlayBrush" Color="#CCFFFFFF" />
 
     <!-- 只给卡片背景使用的极轻投影，正文不参与渲染效果。 -->
     <DropShadowEffect x:Key="CardShadow"

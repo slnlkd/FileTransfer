@@ -30,6 +30,7 @@ public partial class MainWindow : Window
         settings = settingsPath; InitializeComponent();
         var version = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
         Title = $"远程文件管理 · 客户端 v{version.ToString(3)}";
+        UpdateThemeButton();
         if (Browser.FindName("FileGrid") is DataGrid fileGrid) WindowLayout.Attach(this, "remote-client", fileGrid);
         Browser.StatusChanged += (text, key) => SetStatus(text, ThemeBrush(key));
         Browser.ProgressChanged += UpdateBrowserProgress;
@@ -98,7 +99,39 @@ public partial class MainWindow : Window
     }
     private async void UpdateBadge_Click(object sender, RoutedEventArgs e)
     {
-        if (pendingUpdate is { } pending) await PromptUpdateAsync(pending);
+        if (pendingUpdate is null || connectedPort == 0) return;
+        // 点击时重新读一次服务端清单，确保下载的是当前最新版本（而不是上次检查时的旧版本）。
+        try
+        {
+            var latest = await new RemoteFileClient(connectedHost, connectedPort).CheckUpdateAsync();
+            var current = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
+            if (!IsNewer(latest.Version, current))
+            {
+                pendingUpdate = null;
+                UpdateBadge.Visibility = Visibility.Collapsed;
+                MessageBox.Show(this, $"当前已是最新版本 v{current.ToString(3)}。", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            pendingUpdate = latest;
+            UpdateBadge.ToolTip = $"发现新版本 v{latest.Version}，点击更新"
+                + (string.IsNullOrWhiteSpace(latest.Notes) ? "" : "\n" + latest.Notes);
+            await PromptUpdateAsync(latest);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "点击更新时检查最新版本失败");
+            MessageBox.Show(this, "检查更新失败：" + ex.Message, "检查更新", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+    private void Theme_Click(object sender, RoutedEventArgs e)
+    {
+        ThemeManager.Toggle();
+        UpdateThemeButton();
+    }
+    private void UpdateThemeButton()
+    {
+        ThemeIcon.Data = (Geometry)FindResource(ThemeManager.IsDark ? "IconSunGeometry" : "IconMoonGeometry");
+        ThemeButton.ToolTip = ThemeManager.IsDark ? "切换到日间模式" : "切换到夜间模式";
     }
     private async Task CheckForUpdatesAsync(bool silent)
     {
@@ -115,8 +148,8 @@ public partial class MainWindow : Window
                 return;
             }
             pendingUpdate = info;
-            UpdateBadge.Content = $"↑ 新版本 v{info.Version}";
-            UpdateBadge.ToolTip = "发现新版本，点击更新" + (string.IsNullOrWhiteSpace(info.Notes) ? "" : "\n" + info.Notes);
+            UpdateBadge.ToolTip = $"发现新版本 v{info.Version}，点击更新"
+                + (string.IsNullOrWhiteSpace(info.Notes) ? "" : "\n" + info.Notes);
             UpdateBadge.Visibility = Visibility.Visible;
             Log.Information("发现客户端新版本；当前 {Current}，最新 {Latest}", current.ToString(3), info.Version);
             if (!silent) await PromptUpdateAsync(info);
@@ -161,8 +194,7 @@ public partial class MainWindow : Window
     private async Task ApplyUpdateAsync(RemoteFileClient endpoint, RemoteUpdateInfo info)
     {
         string versionTag = string.Concat(info.Version.Select(c => char.IsLetterOrDigit(c) || c == '.' ? c : '_'));
-        string tempRoot = Path.Combine(Path.GetTempPath(), "FileTransferUpdate", versionTag + "-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempRoot);
+        string tempRoot = CreateUpdateTempRoot(versionTag);
         var progressWindow = new UpdateProgressWindow { Owner = this };
         progressWindow.Show();
         try
@@ -193,7 +225,7 @@ public partial class MainWindow : Window
             string script = Path.Combine(tempRoot, "apply-update.ps1");
             // PowerShell 5.1 只有带 BOM 才会按 UTF-8 读取脚本，否则日志中的中文会乱码。
             File.WriteAllText(script, UpdaterScript, new System.Text.UTF8Encoding(true));
-            var start = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true };
+            var start = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Environment.SystemDirectory };
             foreach (string argument in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script,
                 "-ProcessId", Environment.ProcessId.ToString(), "-Staging", staging, "-Target", target, "-Exe", exeName, "-TempRoot", tempRoot })
                 start.ArgumentList.Add(argument);
@@ -207,13 +239,47 @@ public partial class MainWindow : Window
             throw;
         }
     }
+    // 更新临时目录：优先用应用自己的可写目录，避免 %TEMP%\FileTransferUpdate 被历史进程或权限锁住。
+    private static string CreateUpdateTempRoot(string versionTag)
+    {
+        string name = versionTag + "-" + Guid.NewGuid().ToString("N");
+        string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string[] candidates =
+        {
+            Path.Combine(local, "FileTransferDemo", "Update", name),
+            Path.Combine(Path.GetTempPath(), "FTUpdate-" + name)
+        };
+        Exception? last = null;
+        foreach (string path in candidates)
+        {
+            try
+            {
+                Directory.CreateDirectory(path);
+                string probe = Path.Combine(path, ".write-test");
+                File.WriteAllText(probe, "1");
+                File.Delete(probe);
+                Log.Information("更新临时目录已创建；路径 {UpdateTemp}", path);
+                return path;
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+                Log.Warning(ex, "更新临时目录不可用；路径 {UpdateTemp}", path);
+            }
+        }
+        throw new IOException("无法创建更新临时目录，请检查磁盘空间和用户权限", last);
+    }
     private const string UpdaterScript = """
 param([int]$ProcessId,[string]$Staging,[string]$Target,[string]$Exe,[string]$TempRoot)
 $ErrorActionPreference = 'Stop'
-$logDir = Join-Path $env:LOCALAPPDATA 'FileTransferDemo\Logs'
-New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$logRoot = [Environment]::GetFolderPath('LocalApplicationData')
+if ([string]::IsNullOrWhiteSpace($logRoot)) { $logRoot = [IO.Path]::GetTempPath() }
+$logDir = Join-Path $logRoot 'FileTransferDemo\Logs'
+try { New-Item -ItemType Directory -Force -Path $logDir | Out-Null } catch { }
 $log = Join-Path $logDir 'update.log'
-function Write-UpdateLog([string]$Message) { [IO.File]::AppendAllText($log, "$(Get-Date -Format o) $Message`r`n", (New-Object Text.UTF8Encoding($false))) }
+function Write-UpdateLog([string]$Message) {
+    try { [IO.File]::AppendAllText($log, "$(Get-Date -Format o) $Message`r`n", (New-Object Text.UTF8Encoding($false))) } catch { }
+}
 $backup = "$Target.__old"
 try {
     Write-UpdateLog "等待客户端退出：$ProcessId"

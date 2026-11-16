@@ -26,6 +26,7 @@ public partial class MainWindow : Window
     public MainWindow(string settingsPath)
     {
         settings = settingsPath; InitializeComponent(); TransferGrid.ItemsSource = transfers;
+        UpdateThemeButton();
         WindowLayout.Attach(this, "remote-server", (DataGrid)Browser.FindName("FileGrid"), TransferGrid);
         Browser.StatusChanged += (text, key) => SetStatus(text, key);
         Browser.ProgressChanged += UpdateBrowserProgress;
@@ -110,6 +111,16 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) { Log.Error(ex, "停止远程文件管理服务失败"); SetStatus(ex.Message, "DangerBrush"); }
         finally { changing = false; }
+    }
+    private void Theme_Click(object sender, RoutedEventArgs e)
+    {
+        ThemeManager.Toggle();
+        UpdateThemeButton();
+    }
+    private void UpdateThemeButton()
+    {
+        ThemeIcon.Data = (Geometry)FindResource(ThemeManager.IsDark ? "IconSunGeometry" : "IconMoonGeometry");
+        ThemeButton.ToolTip = ThemeManager.IsDark ? "切换到日间模式" : "切换到夜间模式";
     }
     private void Logs_Click(object sender, RoutedEventArgs e)
     {
