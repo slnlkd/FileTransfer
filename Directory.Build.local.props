@@ -5,6 +5,7 @@
     <Compile Include="$(MSBuildThisFileDirectory)Local/NgFilter/OracleNgFolderQuery.cs" Link="NgFilter/OracleNgFolderQuery.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Local/NgFilter/ServerHook.cs" Link="NgFilter/ServerHook.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Local/NgFilter/RemoteBrowser.NgFilter.cs" Link="NgFilter/RemoteBrowser.NgFilter.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Local/Annotations/OracleFailureAnalysisRepository.cs" Link="Annotations/OracleFailureAnalysisRepository.cs" />
   </ItemGroup>
   <ItemGroup Condition="'$(MSBuildProjectName)' == 'RemoteFiles.Client'">
     <Compile Include="$(MSBuildThisFileDirectory)Local/NgFilter/RemoteBrowser.NgFilter.cs" Link="NgFilter/RemoteBrowser.NgFilter.cs" />

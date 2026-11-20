@@ -16,6 +16,12 @@ namespace Transfer.Desktop;
 /// </summary>
 public static class ThemeManager
 {
+    public static readonly DependencyProperty MatchCaptionToCanvasProperty = DependencyProperty.RegisterAttached(
+        "MatchCaptionToCanvas", typeof(bool), typeof(ThemeManager), new PropertyMetadata(false));
+
+    public static bool GetMatchCaptionToCanvas(Window window) => (bool)window.GetValue(MatchCaptionToCanvasProperty);
+    public static void SetMatchCaptionToCanvas(Window window, bool value) => window.SetValue(MatchCaptionToCanvasProperty, value);
+
     private sealed record ThemeSettings(bool Dark);
     private static bool initialized;
     private static readonly bool AnimationsEnabled =
@@ -101,6 +107,8 @@ public static class ThemeManager
     // Windows 10 1809+ 支持深色标题栏；旧系统调用失败时保持系统默认。
     private const int DwmUseImmersiveDarkMode = 20;
     private const int DwmUseImmersiveDarkModeLegacy = 19;
+    private const int DwmCaptionColor = 35;
+    private const int DwmTextColor = 36;
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
@@ -114,8 +122,24 @@ public static class ThemeManager
             int value = dark ? 1 : 0;
             if (DwmSetWindowAttribute(handle, DwmUseImmersiveDarkMode, ref value, sizeof(int)) != 0)
                 DwmSetWindowAttribute(handle, DwmUseImmersiveDarkModeLegacy, ref value, sizeof(int));
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000) && GetMatchCaptionToCanvas(window))
+            {
+                ApplyCaptionColor(window, handle, DwmCaptionColor, "CanvasBrush");
+                ApplyCaptionColor(window, handle, DwmTextColor, "InkBrush");
+            }
         }
         catch (Exception ex) { Log.Debug(ex, "设置标题栏夜间配色失败"); }
+    }
+
+    private static void ApplyCaptionColor(Window window, IntPtr handle, int attribute, string resource)
+    {
+        int colorRef = -1; // 高对比度下交回 Windows 系统配色。
+        if (!SystemParameters.HighContrast && window.TryFindResource(resource) is SolidColorBrush brush)
+        {
+            var color = (Color)brush.GetAnimationBaseValue(SolidColorBrush.ColorProperty);
+            colorRef = color.R | (color.G << 8) | (color.B << 16);
+        }
+        DwmSetWindowAttribute(handle, attribute, ref colorRef, sizeof(int));
     }
 
     private static void Save(bool dark)

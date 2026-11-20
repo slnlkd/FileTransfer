@@ -88,7 +88,9 @@ public partial class MainWindow : Window
             if (Browser.ProtocolWarning is { } protocolWarning)
                 SetStatus(protocolWarning, "WarningBrush");
             else
-                SetStatus($"正在监听 TCP {port}；地址：" + string.Join("、", Dns.GetHostAddresses(Dns.GetHostName()).Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)) + (settingsSaved ? "" : "；配置保存失败，下次需重新设置。"), "SuccessBrush");
+                SetStatus($"正在监听 TCP {port}；地址：" + string.Join("、", Dns.GetHostAddresses(Dns.GetHostName()).Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork))
+                    + "；标注：" + (service.AnnotationRepository is null ? "本地缓存（未接数据库）" : "数据库")
+                    + (settingsSaved ? "" : "；配置保存失败，下次需重新设置。"), "SuccessBrush");
         }
         catch (Exception ex)
         {

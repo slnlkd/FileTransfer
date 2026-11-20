@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -44,6 +44,22 @@ public sealed class TextViewer : Window
     private bool suppressFind;
     private int findVersion;
     private ScrollViewer? editorScroll;
+    private readonly Slider scrollBar = new()
+    {
+        Orientation = Orientation.Vertical,
+        Width = 12,
+        Minimum = 0,
+        Maximum = 0,
+        IsMoveToPointEnabled = true,
+        Focusable = false,
+        Margin = new Thickness(4, 0, 0, 0),
+        VerticalAlignment = VerticalAlignment.Stretch
+    };
+    private bool syncingScrollBar;
+    private readonly System.Windows.Threading.DispatcherTimer scrollTimer = new() { Interval = TimeSpan.FromMilliseconds(15) };
+    private double scrollFrom, scrollTarget;
+    private int scrollElapsed;
+    private const int SmoothScrollDuration = 140;
     private DateTime lastFindScrollUtc;
     public TextViewer(RemoteFileClient client, string path, RemoteResponse response)
     {
@@ -202,14 +218,34 @@ public sealed class TextViewer : Window
         // 编辑器 + 查找高亮层（高亮在文字下方，文字保持清晰）
         Editor.Margin = new Thickness(0);
         Editor.Background = Brushes.Transparent;
+        Editor.VerticalScrollBarVisibility = ScrollBarVisibility.Hidden;
         highlightLayer = new Canvas { IsHitTestVisible = false, ClipToBounds = true };
         var editorHost = new Grid { Background = surface, Margin = new Thickness(12, 10, 12, 10), ClipToBounds = true };
+        editorHost.PreviewMouseWheel += Editor_MouseWheel;
+        editorHost.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        editorHost.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(highlightLayer, 0);
         editorHost.Children.Add(highlightLayer);
+        Grid.SetColumn(Editor, 0);
         editorHost.Children.Add(Editor);
+        scrollBar.Style = ThemeStyle("VerticalTextScrollBarStyle");
+        scrollBar.ValueChanged += (_, _) =>
+        {
+            if (!syncingScrollBar && editorScroll is not null)
+            {
+                scrollTimer.Stop();
+                editorScroll.ScrollToVerticalOffset(scrollBar.Value);
+            }
+        };
+        Grid.SetColumn(scrollBar, 1);
+        editorHost.Children.Add(scrollBar);
+        Editor.SizeChanged += (_, _) => UpdateScrollBar();
+        scrollTimer.Tick += (_, _) => TickSmoothScroll();
         panel.Children.Add(editorHost);
         Content = panel;
 
         Editor.Text = response.Text ?? "";
+        Dispatcher.BeginInvoke(new Action(UpdateScrollBar), System.Windows.Threading.DispatcherPriority.Background);
         status.Text = $"编码：{encoding ?? "未知"} · Ctrl+S 保存";
         Editor.TextChanged += (_, _) =>
         {
@@ -219,6 +255,7 @@ public sealed class TextViewer : Window
             status.Foreground = ThemeBrush("WarningBrush", Color.FromRgb(0x8A, 0x5A, 0x00));
             findVersion++;
             highlightLayer.Children.Clear();
+            Dispatcher.BeginInvoke(new Action(UpdateScrollBar), System.Windows.Threading.DispatcherPriority.Background);
         };
         save.Click += async (_, _) => await SaveAsync();
         PreviewKeyDown += async (_, e) =>
@@ -260,7 +297,7 @@ public sealed class TextViewer : Window
         Closing += (_, e) =>
         {
             if (saving) { e.Cancel = true; status.Text = "正在保存，请稍候再关闭。"; return; }
-            if (dirty && MessageBox.Show(this, "有未保存的文本修改，是否放弃并关闭？", "未保存内容", MessageBoxButton.YesNo) != MessageBoxResult.Yes) e.Cancel = true;
+            if (dirty && !Dialog.Confirm(this, "有未保存的文本修改，是否放弃并关闭？", "未保存内容")) e.Cancel = true;
         };
         Loaded += TextViewer_Loaded;
         Closed += TextViewer_Closed;
@@ -273,20 +310,65 @@ public sealed class TextViewer : Window
         if (editorScroll is not null) editorScroll.ScrollChanged -= EditorScrollChanged;
         editorScroll = scroll;
         editorScroll.ScrollChanged += EditorScrollChanged;
+        UpdateScrollBar();
     }
     private void TextViewer_Closed(object? sender, EventArgs e)
     {
+        scrollTimer.Stop();
         if (editorScroll is null) return;
         editorScroll.ScrollChanged -= EditorScrollChanged;
         editorScroll = null;
     }
     private void EditorScrollChanged(object sender, ScrollChangedEventArgs e)
     {
+        UpdateScrollBar();
         if (Math.Abs(e.VerticalChange) < 0.01 && Math.Abs(e.HorizontalChange) < 0.01) return;
         // ScrollToLine 会触发一次滚动事件，短时间内不要清掉刚画好的高亮。
         if ((DateTime.UtcNow - lastFindScrollUtc).TotalMilliseconds < 250) return;
         findVersion++;
         highlightLayer.Children.Clear();
+    }
+    private void UpdateScrollBar()
+    {
+        if (editorScroll is null) return;
+        syncingScrollBar = true;
+        try
+        {
+            double max = Math.Max(0, editorScroll.ScrollableHeight);
+            scrollBar.Maximum = max;
+            scrollBar.LargeChange = Math.Max(1, editorScroll.ViewportHeight - 40);
+            scrollBar.SmallChange = 40;
+            scrollBar.Value = Math.Min(max, editorScroll.VerticalOffset);
+            scrollBar.Visibility = max > 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        finally { syncingScrollBar = false; }
+    }
+    private void Editor_MouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (editorScroll is null) return;
+        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0) return;
+        e.Handled = true;
+        // 日志通常很长，一次滚轮约 35% 视口，并用缓动动画让滚动更顺滑。
+        double step = Math.Max(24, editorScroll.ViewportHeight * 0.35) * (e.Delta > 0 ? -1 : 1);
+        StartSmoothScroll(editorScroll.VerticalOffset + step);
+    }
+    private void StartSmoothScroll(double target)
+    {
+        if (editorScroll is null) return;
+        scrollFrom = editorScroll.VerticalOffset;
+        scrollTarget = Math.Clamp(target, 0, editorScroll.ScrollableHeight);
+        scrollElapsed = 0;
+        scrollTimer.Stop();
+        scrollTimer.Start();
+    }
+    private void TickSmoothScroll()
+    {
+        if (editorScroll is null) { scrollTimer.Stop(); return; }
+        scrollElapsed += 15;
+        double t = Math.Min(1, scrollElapsed / (double)SmoothScrollDuration);
+        double eased = 1 - Math.Pow(1 - t, 3);
+        editorScroll.ScrollToVerticalOffset(scrollFrom + (scrollTarget - scrollFrom) * eased);
+        if (t >= 1) scrollTimer.Stop();
     }
     private void ShowFind()
     {

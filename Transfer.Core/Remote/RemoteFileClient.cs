@@ -1,4 +1,4 @@
-﻿using System.Net.Sockets;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using Serilog;
 
@@ -302,5 +302,25 @@ public sealed class RemoteFileClient(string host, int port)
         catch (Exception ex) { log.Error(ex, "ZIP 下载失败或中断"); throw; }
         finally { if (File.Exists(temp)) { File.Delete(temp); log.Debug("清理 ZIP 下载临时文件；路径 {TemporaryPath}", temp); } }
     }
+    public async Task<RemoteDictionary> GetAnnotationDictionaryAsync(CancellationToken ct = default)
+        => (await CallAsync(new("annotation-dictionary"), ct)).Dictionary ?? throw new IOException("服务端未返回标注字典");
+    public async Task<RemoteDictionary> AddAnnotationDictionaryItemAsync(AnnotationDictionaryKind kind, string name, CancellationToken ct = default)
+        => (await CallAsync(new("annotation-dictionary-add", kind.ToString().ToLowerInvariant(), Text: name), ct)).Dictionary
+            ?? throw new IOException("服务端未返回标注字典");
+    public async Task<RemoteAnnotation?> GetAnnotationAsync(string path, CancellationToken ct = default)
+        => (await CallAsync(new("annotation-get", path), ct)).Annotation;
+    public async Task<RemoteAnnotation[]> GetAnnotationHistoryAsync(string path, CancellationToken ct = default)
+    {
+        var response = await CallAsync(new("annotation-get", path), ct);
+        return response.Annotations ?? (response.Annotation is { } record ? [record] : []);
+    }
+    public async Task<RemoteAnnotation[]> ListAnnotationsAsync(string directory, CancellationToken ct = default)
+        => (await CallAsync(new("annotation-list", directory), ct)).Annotations ?? [];
+    public async Task<RemoteAnnotation> SaveAnnotationAsync(string path, string categoryCode, string planCode,
+        string? note, string operatorName, string? imageName = null, CancellationToken ct = default)
+        => (await CallAsync(new("annotation-add", path, CategoryCode: categoryCode, PlanCode: planCode,
+            Note: note, Operator: operatorName, ImageName: imageName), ct)).Annotation ?? throw new IOException("服务端未返回标注结果");
+    public async Task<int> DeleteImageAnnotationsAsync(string folderPath, string imageName, CancellationToken ct = default)
+        => (await CallAsync(new("annotation-delete", folderPath, ImageName: imageName), ct)).Total;
     private static void Ensure(RemoteResponse response) { if (!response.Ok) throw new IOException(response.Error ?? "远程操作失败"); }
 }

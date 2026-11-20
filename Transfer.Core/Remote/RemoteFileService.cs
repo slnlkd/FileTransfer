@@ -1,4 +1,4 @@
-﻿using Serilog.Context;
+using Serilog.Context;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
@@ -25,7 +25,26 @@ public sealed class RemoteFileService : IAsyncDisposable
     public event Action<string>? Activity;
     public event Action<RemoteTransferProgress>? TransferProgress;
     public int Port => (listener?.LocalEndpoint as IPEndPoint)?.Port ?? 0;
-    public RemoteFileService(string root) => Store = new(root);
+    public RemoteFileService(string root, IAnnotationRepository? annotations = null)
+    {
+        Store = new(root);
+        AnnotationRepository = annotations;
+    }
+    // 标注仓储；启动时可替换成 Oracle 实现，未设置时回退到本地 JSON 文件。
+    public IAnnotationRepository? AnnotationRepository { get; set; }
+    private AnnotationStore? annotationStore;
+    private AnnotationStore Annotations
+    {
+        get
+        {
+            if (annotationStore is not null) return annotationStore;
+            lock (lifecycle)
+            {
+                AnnotationRepository ??= new JsonAnnotationRepository(AppLogging.GetSettingsPath("annotations.json"));
+                return annotationStore ??= new AnnotationStore(Store, AnnotationRepository);
+            }
+        }
+    }
     public void Start(int port)
     {
         lock (lifecycle)
@@ -129,6 +148,16 @@ public sealed class RemoteFileService : IAsyncDisposable
                         Activity?.Invoke("image  " + request.Path);
                         return;
                     case "status": response = new(true, Process: Store.Status(request.Path)); break;
+                    case "annotation-dictionary": response = new(true, Dictionary: await Annotations.DictionaryAsync(ct)); break;
+                    case "annotation-dictionary-add": response = new(true, Dictionary: await Annotations.AddDictionaryItemAsync(request.Path, request.Text, ct)); break;
+                    case "annotation-list": response = new(true, Annotations: await Annotations.ListAsync(request.Path, ct)); break;
+                    case "annotation-get":
+                        var history = await Annotations.GetHistoryAsync(request.Path, ct);
+                        response = new(true, Annotation: history.FirstOrDefault(), Annotations: history);
+                        break;
+                    case "annotation-add":
+                    case "annotation-save": response = new(true, Annotation: await Annotations.SaveAsync(request, ct)); break;
+                    case "annotation-delete": response = new(true, Total: await Annotations.DeleteImageAsync(request.Path, request.ImageName, ct)); break;
                     case "compress":
                         await ReportAsync(stream, request, "等待压缩", 0, 0, 0, ct);
                         await Store.Mutation.WaitAsync(ct);

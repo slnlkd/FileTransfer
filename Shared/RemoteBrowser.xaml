@@ -1,4 +1,4 @@
-﻿<UserControl x:Class="RemoteFiles.Desktop.RemoteBrowser"
+<UserControl x:Class="RemoteFiles.Desktop.RemoteBrowser"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:RemoteFiles.Desktop">
@@ -10,18 +10,40 @@
             <local:FileIconConverter x:Key="FileIcon" />
             <local:FileKindConverter x:Key="FileKind" />
             <local:FileSizeConverter x:Key="FileSize" />
+            <Geometry x:Key="BrowserUpGeometry">M8,13 V3 M4,7 L8,3 L12,7</Geometry>
+            <Geometry x:Key="BrowserRefreshGeometry">M13,3 V7 H9 M13,7 A5,5 0 1 0 12.5,11</Geometry>
+            <Geometry x:Key="BrowserFolderGeometry">M2,5 V12.5 H14 V5.5 H8 L6.5,3.5 H2 Z</Geometry>
+            <Geometry x:Key="BrowserAnnotateGeometry">M3,10.5 L10.5,3 L13,5.5 L5.5,13 H3 Z M9,4.5 L11.5,7</Geometry>
+            <Style x:Key="BrowserCommand" TargetType="Button" BasedOn="{StaticResource GhostButton}">
+                <Setter Property="Height" Value="30" />
+                <Setter Property="Padding" Value="8,0" />
+                <Setter Property="Foreground" Value="{DynamicResource InkBrush}" />
+            </Style>
+            <Style x:Key="BrowserAnnotateCommand" TargetType="Button" BasedOn="{StaticResource BrowserCommand}">
+                <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Style.Triggers>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter Property="Background" Value="{DynamicResource HeaderBrush}" />
+                        <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
         </ResourceDictionary>
     </UserControl.Resources>
 
     <DockPanel>
-        <!-- 工具栏 -->
+        <!-- 工具栏：导航、命令和路径合并成一行，减少横向分层。 -->
         <Border DockPanel.Dock="Top"
-                Padding="8,6"
+                Padding="6,5"
                 Background="{DynamicResource SurfaceBrush}"
                 BorderBrush="{DynamicResource LineBrush}"
-                BorderThickness="0,0,0,1">
+                BorderThickness="1"
+                CornerRadius="7">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
@@ -31,95 +53,91 @@
                 <StackPanel Grid.Column="0"
                             x:Name="NavHost"
                             Orientation="Horizontal">
-                    <Button Margin="0,0,4,0"
+                    <Button Margin="0,0,2,0"
                             Click="Parent_Click"
+                            Style="{StaticResource BrowserCommand}"
                             ToolTip="返回上一级目录">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE72B;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                       FontSize="12" Margin="0,0,5,0" VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="{StaticResource BrowserUpGeometry}" Style="{StaticResource IconGlyph}" Margin="0,0,5,0" />
                             <TextBlock Text="上一级" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
                     <Button Click="Refresh_Click"
+                            Style="{StaticResource BrowserCommand}"
                             ToolTip="刷新当前目录">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE72C;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                       FontSize="12" Margin="0,0,5,0" VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="{StaticResource BrowserRefreshGeometry}" Style="{StaticResource IconGlyph}" Margin="0,0,5,0" />
                             <TextBlock Text="刷新" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
                 </StackPanel>
 
                 <Border Grid.Column="1"
-                        Width="1" Height="18"
-                        Margin="8,0"
+                        Width="1" Height="16"
+                        Margin="5,0"
                         VerticalAlignment="Center"
                         Background="{DynamicResource LineBrush}" />
 
                 <StackPanel Grid.Column="2"
                             x:Name="FilterHost"
                             Orientation="Horizontal">
-                    <Button Margin="0,0,4,0"
-                            Click="Upload_Click"
-                            Style="{StaticResource PrimaryButton}"
+                    <Button Click="Upload_Click"
+                            Style="{StaticResource BrowserCommand}"
                             ToolTip="上传文件到当前目录">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE898;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                       FontSize="12" Margin="0,0,5,0" VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="{StaticResource IconUpdateGeometry}" Style="{StaticResource IconGlyph}" Margin="0,0,5,0" />
                             <TextBlock Text="上传" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
-                    <Button Margin="0,0,6,0"
-                            Click="NewFolder_Click"
-                            ToolTip="在当前目录新建文件夹">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE8F4;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                       FontSize="12" Margin="0,0,5,0" VerticalAlignment="Center" />
-                            <TextBlock Text="新建文件夹" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
-                    <TextBox x:Name="NewFolderBox"
-                             Width="150"
-                             ToolTip="新建文件夹名称" />
                 </StackPanel>
 
-                <TextBlock Grid.Column="3"
-                           x:Name="ItemCountText"
-                           Margin="12,0,0,0"
-                           VerticalAlignment="Center"
-                           FontSize="11"
-                           Foreground="{DynamicResource MutedBrush}" />
-            </Grid>
-        </Border>
+                <!-- 路径条：占用中间的弹性空间，深路径横向滚动并自动滚到最右侧。 -->
+                <Border Grid.Column="3"
+                        Margin="8,0,12,0"
+                        Padding="8,0"
+                        MinWidth="140"
+                        MinHeight="30"
+                        VerticalAlignment="Center"
+                        Background="{DynamicResource HeaderBrush}"
+                        BorderBrush="{DynamicResource HairlineBrush}"
+                        BorderThickness="1"
+                        CornerRadius="6">
+                    <DockPanel VerticalAlignment="Center">
+                        <Path DockPanel.Dock="Left" Data="{StaticResource BrowserFolderGeometry}"
+                              Style="{StaticResource IconGlyph}" Stroke="{DynamicResource MutedBrush}"
+                              Margin="0,0,5,0" VerticalAlignment="Center" />
+                        <ScrollViewer x:Name="BreadcrumbScroll"
+                                      HorizontalScrollBarVisibility="Auto"
+                                      VerticalScrollBarVisibility="Disabled"
+                                      VerticalAlignment="Center">
+                            <StackPanel x:Name="Breadcrumb"
+                                        Orientation="Horizontal"
+                                        VerticalAlignment="Center" />
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
 
-        <!-- 路径面包屑 -->
-        <Border DockPanel.Dock="Top"
-                Margin="8,8,8,0"
-                Padding="8,3"
-                Background="{DynamicResource SurfaceBrush}"
-                BorderBrush="{DynamicResource LineBrush}"
-                BorderThickness="1"
-                CornerRadius="{StaticResource PanelCornerRadius}">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <ScrollViewer Grid.Column="0"
-                              HorizontalScrollBarVisibility="Hidden"
-                              VerticalScrollBarVisibility="Disabled"
-                              VerticalAlignment="Center">
-                    <StackPanel x:Name="Breadcrumb"
-                                Orientation="Horizontal"
-                                VerticalAlignment="Center" />
-                </ScrollViewer>
-                <TextBlock x:Name="EndpointText"
-                           Grid.Column="1"
-                           Margin="12,0,0,0"
-                           VerticalAlignment="Center"
-                           FontFamily="{StaticResource MonoFontFamily}"
-                           FontSize="11"
-                           Foreground="{DynamicResource MutedBrush}" />
+                <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- 本机个性化过滤（如只看NG）放在标注按钮左侧，和标注形成一组。 -->
+                    <StackPanel x:Name="FilterRightHost" Orientation="Horizontal" VerticalAlignment="Center" />
+                    <Button x:Name="AnnotateButton"
+                            MinWidth="72"
+                            Margin="0,0,8,0"
+                            Click="Annotate_Click"
+                            Style="{StaticResource BrowserAnnotateCommand}"
+                            AutomationProperties.Name="标注"
+                            ToolTip="为选中的图片添加异常标注">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="{StaticResource BrowserAnnotateGeometry}" Style="{StaticResource IconGlyph}" Margin="0,0,5,0" />
+                            <TextBlock Text="标注" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                    <TextBlock x:Name="ItemCountText"
+                               VerticalAlignment="Center"
+                               Margin="4,0,3,0"
+                               FontSize="11"
+                               Foreground="{DynamicResource MutedBrush}" />
+                </StackPanel>
             </Grid>
         </Border>
 
@@ -142,8 +160,8 @@
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <Ellipse x:Name="BrowserStatusDot"
-                             Width="5" Height="5"
-                             Margin="0,0,6,0"
+                             Width="7" Height="7"
+                             Margin="0,0,7,0"
                              Fill="{DynamicResource MutedBrush}" />
                     <TextBlock Grid.Column="1"
                                x:Name="StatusText"
@@ -207,8 +225,7 @@
 
             <GridSplitter Grid.Column="1"
                           Width="5"
-                          HorizontalAlignment="Stretch"
-                          Background="{DynamicResource CanvasBrush}" />
+                          HorizontalAlignment="Stretch" />
 
             <Grid Grid.Column="2" x:Name="FileArea"
                   AllowDrop="True"
@@ -234,12 +251,21 @@
                                                Margin="0,0,6,0"
                                                VerticalAlignment="Center"
                                                Source="{Binding Converter={StaticResource FileIcon}}" />
-                                        <TextBlock Grid.Column="1"
+                                        <TextBlock x:Name="EntryName" Grid.Column="1"
                                                    VerticalAlignment="Center"
                                                    Text="{Binding Name}"
                                                    TextTrimming="CharacterEllipsis"
                                                    ToolTip="{Binding Name}" />
                                     </Grid>
+                                    <DataTemplate.Triggers>
+                                        <MultiDataTrigger>
+                                            <MultiDataTrigger.Conditions>
+                                                <Condition Binding="{Binding IsImage}" Value="True" />
+                                                <Condition Binding="{Binding AnnotationStatus}" Value="已标注" />
+                                            </MultiDataTrigger.Conditions>
+                                            <Setter TargetName="EntryName" Property="Foreground" Value="{DynamicResource SuccessBrush}" />
+                                        </MultiDataTrigger>
+                                    </DataTemplate.Triggers>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
@@ -288,6 +314,42 @@
                                 </Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
+
+                        <!-- 日期层显示批次状态，批次层显示图片状态。 -->
+                        <DataGridTemplateColumn Header="标注状态"
+                                                Width="96"
+                                                SortMemberPath="AnnotationStatus"
+                                                Visibility="Collapsed">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <Ellipse x:Name="Dot"
+                                                 Width="7" Height="7"
+                                                 Margin="0,0,6,0"
+                                                 VerticalAlignment="Center"
+                                                 Fill="Transparent" />
+                                        <TextBlock x:Name="StateText"
+                                                   Text="{Binding AnnotationStatus}"
+                                                   FontSize="11"
+                                                   VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <DataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding AnnotationStatus}" Value="已标注">
+                                            <Setter TargetName="Dot" Property="Fill" Value="{DynamicResource SuccessBrush}" />
+                                            <Setter TargetName="StateText" Property="Foreground" Value="{DynamicResource SuccessBrush}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding AnnotationStatus}" Value="未标注">
+                                            <Setter TargetName="Dot" Property="Fill" Value="{DynamicResource DangerBrush}" />
+                                            <Setter TargetName="StateText" Property="Foreground" Value="{DynamicResource DangerBrush}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding AnnotationStatus}" Value="未知">
+                                            <Setter TargetName="Dot" Property="Fill" Value="{DynamicResource SubtleBrush}" />
+                                            <Setter TargetName="StateText" Property="Foreground" Value="{DynamicResource SubtleBrush}" />
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                     </DataGrid.Columns>
                 </DataGrid>
 

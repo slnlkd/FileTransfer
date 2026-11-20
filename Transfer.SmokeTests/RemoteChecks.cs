@@ -1,4 +1,4 @@
-﻿using System.Net.Sockets;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -134,9 +134,92 @@ internal static class RemoteChecks
         }
         int port = server.Port; await server.StopAsync(); server.Start(port);
         check((await client.CallAsync(new("list"))).Ok, "远程文件管理停止后可同端口重启");
+        await AnnotationChecksAsync(testRoot, image, check);
         await FolderChecksAsync(testRoot, check);
         await ProcessChecksAsync(root, client, testRoot, check);
         await ArchiveChecks.RunAsync(testRoot, check);
+    }
+    // 标注粒度是「一次对线」：机台/yyyyMMdd/批次，一个文件夹一条记录，重复提交覆盖。
+    private static async Task AnnotationChecksAsync(string testRoot, byte[] image, Action<bool, string> check)
+    {
+        string root = Path.Combine(testRoot, "annotation-root");
+        string folder = Path.Combine(root, "A6-DPQG-012", "20261118", "9");
+        Directory.CreateDirectory(folder);
+        Directory.CreateDirectory(Path.Combine(root, "A6-DPQG-012", "20261118", "10"));
+        await File.WriteAllBytesAsync(Path.Combine(folder, "a.png"), image);
+        await File.WriteAllTextAsync(Path.Combine(folder, "b.txt"), "非图片");
+        string repositoryPath = Path.Combine(testRoot, "annotations.json");
+        await File.WriteAllTextAsync(repositoryPath, JsonSerializer.Serialize(new
+        {
+            dictionary = new
+            {
+                categories = new[] { new { code = "外观异常", name = "外观异常" }, new { code = "尺寸超差", name = "尺寸超差" } },
+                plans = new[] { new { code = "重新拍摄", name = "重新拍摄" }, new { code = "人工复检", name = "人工复检" } }
+            },
+            annotations = Array.Empty<object>()
+        }));
+        var repository = new JsonAnnotationRepository(repositoryPath);
+        await using var server = new RemoteFileService(root, repository); server.Start(0);
+        var client = new RemoteFileClient("127.0.0.1", server.Port);
+
+        var dictionary = await client.GetAnnotationDictionaryAsync();
+        check(dictionary.Categories.Length == 2 && dictionary.Plans.Length == 2, "读取标注字典");
+
+        var saved = await client.SaveAnnotationAsync("A6-DPQG-012/20261118/9", "外观异常", "重新拍摄", "第一版", "李明", "a.png");
+        check(saved.CategoryName == "外观异常" && saved.PlanName == "重新拍摄" && saved.Operator == "李明"
+            && saved.EquipmentNo == "A6-DPQG-012" && saved.BatchNumber == "9" && saved.AutoLineDate?.Day == 18
+            && saved.ImageName == "a.png",
+            "按对线文件夹保存标注并记录机台/日期/批次/图片名");
+
+        var second = await client.SaveAnnotationAsync("A6-DPQG-012/20261118/9", "尺寸超差", "人工复检", "第二版", "王芳", "a.png");
+        check(second.CategoryName == "尺寸超差" && second.Note == "第二版", "同一张图可新增第二条标注");
+        await client.SaveAnnotationAsync("A6-DPQG-012/20261118/9", "外观异常", "人工复检", "另一张", "李明", "b.png");
+
+        var fetched = await client.GetAnnotationAsync("A6-DPQG-012/20261118/9");
+        check(fetched is { ImageName: "b.png", Note: "另一张" }, "旧版单条查询仍返回批次最新标注");
+
+        var listed = await client.ListAnnotationsAsync("A6-DPQG-012/20261118");
+        check(listed.Length == 3 && listed.All(item => item.BatchNumber == "9")
+            && listed.Where(item => item.ImageName == "a.png").Select(item => item.Note).SequenceEqual(new[] { "第二版", "第一版" }),
+            "重复提交保留同图历史，不同图片各自新增");
+        var history = await client.GetAnnotationHistoryAsync("A6-DPQG-012/20261118/9");
+        check(history.SequenceEqual(listed), "读取批次内所有图片的标注历史");
+
+        await ExpectRejected(() => client.SaveAnnotationAsync("A6-DPQG-012/20261118/10", "外观异常", "重新拍摄", null, "李明", "../x.png"), check, "图片名包含路径分隔符拒绝标注");
+        await ExpectRejected(() => client.SaveAnnotationAsync("A6-DPQG-012/20261118/10", "外观异常", "重新拍摄", null, " "), check, "操作人为空拒绝标注");
+        await ExpectRejected(() => client.SaveAnnotationAsync("A6-DPQG-012/20261118/10", "未知归类", "重新拍摄", null, "李明"), check, "字典外的归类拒绝标注");
+        await ExpectRejected(() => client.SaveAnnotationAsync("A6-DPQG-012/20261118/10", "外观异常", "重新拍摄", new string('x', AnnotationStore.NoteLimit + 1), "李明"), check, "备注超长拒绝标注");
+        await ExpectRejected(() => client.SaveAnnotationAsync("A6-DPQG-012/20261118/不存在", "外观异常", "重新拍摄", null, "李明"), check, "不存在的对线文件夹拒绝标注");
+        await ExpectRejected(() => client.SaveAnnotationAsync("../outside", "外观异常", "重新拍摄", null, "李明"), check, "路径穿越拒绝标注");
+        check((await client.ListAnnotationsAsync("A6-DPQG-012/20261118")).Length == 3, "被拒绝的提交不会新增或覆盖标注");
+        const string batch = "A6-DPQG-012/20261118/9";
+        const string otherBatch = "A6-DPQG-012/20261118/10";
+        await client.SaveAnnotationAsync(otherBatch, "外观异常", "重新拍摄", "其他批次", "李明", "a.png");
+        await client.SaveAnnotationAsync(batch, "外观异常", "重新拍摄", "旧版批次记录", "李明");
+        var removed = await client.CallAsync(new("annotation-delete", batch, ImageName: "a.png"));
+        check(removed.Total == 2 && File.Exists(Path.Combine(folder, "a.png")), "撤销一次清除同一图片的所有标注并保留源文件");
+        history = await client.GetAnnotationHistoryAsync(batch);
+        check(history.Length == 2 && history.Any(item => item.ImageName == "b.png") && history.Any(item => item.ImageName is null)
+            && (await client.GetAnnotationHistoryAsync(otherBatch)).Single().ImageName == "a.png", "撤销只影响当前图片，不影响同批其他图片、历史批次记录或其他批次同名图片");
+        await ExpectRejected(() => client.CallAsync(new("annotation-delete", batch)), check, "撤销标注必须指定具体图片");
+        await ExpectRejected(() => client.CallAsync(new("annotation-delete", batch, ImageName: "../a.png")), check, "撤销标注拒绝带路径的图片名");
+        check((await client.CallAsync(new("annotation-delete", batch, ImageName: "a.png"))).Total == 0, "重复撤销不存在的记录不会误删");
+
+        var addedCategory = await client.CallAsync(new("annotation-dictionary-add", "category", Text: "  外观复核 A  "));
+        var addedPlan = await client.CallAsync(new("annotation-dictionary-add", "plan", Text: "现场复核"));
+        check(addedCategory.Dictionary is { } categoryResult && categoryResult.Categories.Count(item => item.Name == "外观复核 A") == 1
+            && categoryResult.Plans.Length == 2 && addedPlan.Dictionary is { } planResult && planResult.Plans.Any(item => item.Name == "现场复核"),
+            "新增字典项后返回完整字典并保持两组独立");
+        await client.CallAsync(new("annotation-dictionary-add", "category", Text: "外观复核 a"));
+        var persistedDictionary = await new JsonAnnotationRepository(repositoryPath).GetDictionaryAsync();
+        check(persistedDictionary.Categories.Length == 3,
+            "自定义字典持久化且同名请求不产生重复项");
+        check(persistedDictionary.Categories.Single(item => item.Name == "外观复核 A").Code == "外观复核 A"
+            && persistedDictionary.Plans.Single(item => item.Name == "现场复核").Code == "现场复核", "新字典项的值与名称一致");
+        var customAnnotation = await client.SaveAnnotationAsync(batch, "外观复核 A", "现场复核", null, "李明", "a.png");
+        check(customAnnotation.CategoryName == "外观复核 A" && customAnnotation.PlanName == "现场复核", "新增字典项可立即用于提交标注");
+        await ExpectRejected(() => client.CallAsync(new("annotation-dictionary-add", "category", Text: "   ")), check, "拒绝空白字典名称");
+        await ExpectRejected(() => client.CallAsync(new("annotation-dictionary-add", "other", Text: "不受支持")), check, "拒绝未知字典分组");
     }
     private static async Task ExpectRejected(Func<Task> operation, Action<bool, string> check, string description)
     {

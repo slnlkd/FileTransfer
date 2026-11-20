@@ -1,8 +1,11 @@
-﻿<Window x:Class="RemoteFiles.Client.MainWindow"
+<Window x:Class="RemoteFiles.Client.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:RemoteFiles.Desktop"
+        xmlns:desktop="clr-namespace:Transfer.Desktop"
         Title="远程文件管理 · 客户端"
+        Icon="Assets/FileTransfer.Client.ico"
+        desktop:ThemeManager.MatchCaptionToCanvas="True"
         Width="1280" Height="800" MinWidth="1000" MinHeight="600"
         Background="{DynamicResource CanvasBrush}"
         Foreground="{DynamicResource InkBrush}"
@@ -12,22 +15,36 @@
         UseLayoutRounding="True"
         SnapsToDevicePixels="True">
 
-    <DockPanel>
-        <!-- 连接工具条：不再使用卡片，直接嵌在窗口顶部。 -->
+    <Window.Resources>
+        <Style x:Key="ConnectPrimaryButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+            <Setter Property="Foreground" Value="{DynamicResource CanvasBrush}" />
+        </Style>
+    </Window.Resources>
+
+    <DockPanel Background="{DynamicResource CanvasBrush}">
+        <!-- 连接设置与窗口级命令。 -->
         <Border DockPanel.Dock="Top"
-                Height="40"
+                Margin="12,8,12,0"
+                MinHeight="46"
                 Padding="12,0"
-                Background="{DynamicResource HeaderBrush}"
+                Background="{DynamicResource SurfaceBrush}"
                 BorderBrush="{DynamicResource LineBrush}"
-                BorderThickness="0,0,0,1">
+                BorderThickness="1"
+                CornerRadius="7">
             <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Margin="0,0,8,0"
+                    <TextBlock Margin="0,0,10,0"
                                VerticalAlignment="Center"
-                               Foreground="{DynamicResource MutedBrush}"
+                               FontWeight="SemiBold"
                                Text="服务端" />
                     <TextBox x:Name="HostBox"
-                             Width="170"
+                             Width="176"
+                             Style="{StaticResource RoundedTextInput}"
+                             AutomationProperties.Name="服务端地址"
                              VerticalAlignment="Center"
                              Text="127.0.0.1" />
                     <TextBlock Margin="4,0"
@@ -36,26 +53,28 @@
                                Text=":" />
                     <TextBox x:Name="PortBox"
                              Width="64"
+                             Style="{StaticResource RoundedTextInput}"
+                             AutomationProperties.Name="服务端端口"
                              VerticalAlignment="Center"
                              Text="9501" />
                     <Button x:Name="ConnectButton"
-                            MinWidth="72"
+                            MinWidth="82" Height="32"
                             Margin="8,0,0,0"
                             VerticalAlignment="Center"
                             Click="Connect_Click"
                             Content="连接"
-                            Style="{StaticResource PrimaryButton}" />
-                    <Ellipse x:Name="ConnectionDot"
-                             Width="5" Height="5"
-                             Margin="14,0,6,0"
-                             Fill="{DynamicResource MutedBrush}" />
-                    <TextBlock x:Name="ConnectionText"
-                               VerticalAlignment="Center"
-                               FontSize="11"
-                               Foreground="{DynamicResource MutedBrush}"
-                               Text="未连接" />
+                            Style="{StaticResource ConnectPrimaryButton}" />
+                    <Border Margin="12,0,0,0" Padding="8,4" CornerRadius="5" VerticalAlignment="Center"
+                            Background="{DynamicResource HeaderBrush}">
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse x:Name="ConnectionDot" Width="6" Height="6" Margin="0,0,6,0" VerticalAlignment="Center"
+                                     Fill="{DynamicResource MutedBrush}" />
+                            <TextBlock x:Name="ConnectionText" VerticalAlignment="Center" FontSize="11"
+                                       Foreground="{DynamicResource MutedBrush}" Text="未连接" />
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button x:Name="UpdateBadge"
                             Margin="0,0,2,0"
                             Click="UpdateBadge_Click"
@@ -80,12 +99,12 @@
             </Grid>
         </Border>
 
-        <!-- 底部状态栏：原生高度，只保留状态和必要信息。 -->
+        <!-- 底部状态栏：左侧操作反馈，右侧选择与传输进度。 -->
         <Border DockPanel.Dock="Bottom"
-                Height="24"
-                Padding="12,0"
-                Background="{DynamicResource HeaderBrush}"
-                BorderBrush="{DynamicResource LineBrush}"
+                Height="32"
+                Padding="16,0"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource HairlineBrush}"
                 BorderThickness="0,1,0,0"
                 ToolTip="协议未加密，请仅在可信局域网使用。">
             <Grid>
@@ -96,22 +115,30 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <Ellipse x:Name="StatusDot"
-                         Width="5" Height="5"
-                         Margin="0,0,6,0"
+                         Width="6" Height="6"
+                         Margin="0,0,8,0"
+                         VerticalAlignment="Center"
                          Fill="{DynamicResource MutedBrush}" />
                 <TextBlock Grid.Column="1"
                            x:Name="StatusText"
                            VerticalAlignment="Center"
                            FontSize="11"
-                           Foreground="{DynamicResource MutedBrush}"
+                           Foreground="{DynamicResource InkBrush}"
                            Text="就绪"
                            TextTrimming="CharacterEllipsis" />
-                <TextBlock Grid.Column="2"
-                           x:Name="SelectionText"
-                           VerticalAlignment="Center"
-                           FontSize="11"
-                           Margin="12,0,0,0"
-                           Foreground="{DynamicResource MutedBrush}" />
+                <Border Grid.Column="2" Margin="12,0,0,0" Padding="8,3" CornerRadius="5"
+                        VerticalAlignment="Center" Background="{DynamicResource AccentSoftBrush}">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Text, ElementName=SelectionText}" Value="">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <TextBlock x:Name="SelectionText" FontSize="11" Foreground="{DynamicResource AccentBrush}" />
+                </Border>
                 <StackPanel Grid.Column="3"
                             x:Name="BrowserProgressPanel"
                             Orientation="Horizontal"
@@ -127,11 +154,12 @@
                     <ProgressBar x:Name="BrowserProgress"
                                  Width="120"
                                  Height="6"
+                                 VerticalAlignment="Center"
                                  Maximum="100" />
                 </StackPanel>
             </Grid>
         </Border>
 
-        <local:RemoteBrowser x:Name="Browser" Margin="12,10,12,0" />
+        <local:RemoteBrowser x:Name="Browser" Margin="12,8,12,8" />
     </DockPanel>
 </Window>

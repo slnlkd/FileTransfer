@@ -5,12 +5,14 @@ using System.Reflection;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Serilog;
 using Transfer.Core;
 using Transfer.Core.Remote;
 using Transfer.Desktop;
+using RemoteFiles.Desktop;
 
 namespace RemoteFiles.Client;
 public partial class MainWindow : Window
@@ -109,18 +111,17 @@ public partial class MainWindow : Window
             {
                 pendingUpdate = null;
                 UpdateBadge.Visibility = Visibility.Collapsed;
-                MessageBox.Show(this, $"当前已是最新版本 v{current.ToString(3)}。", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+                Dialog.Notify(this, $"当前已是最新版本 v{current.ToString(3)}。", "检查更新");
                 return;
             }
             pendingUpdate = latest;
-            UpdateBadge.ToolTip = $"发现新版本 v{latest.Version}，点击更新"
-                + (string.IsNullOrWhiteSpace(latest.Notes) ? "" : "\n" + latest.Notes);
+            SetUpdateTooltip(latest);
             await PromptUpdateAsync(latest);
         }
         catch (Exception ex)
         {
             Log.Warning(ex, "点击更新时检查最新版本失败");
-            MessageBox.Show(this, "检查更新失败：" + ex.Message, "检查更新", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Dialog.Notify(this, "检查更新失败：" + ex.Message, "检查更新", DialogTone.Warning);
         }
     }
     private void Theme_Click(object sender, RoutedEventArgs e)
@@ -144,12 +145,11 @@ public partial class MainWindow : Window
             if (!IsNewer(info.Version, current))
             {
                 pendingUpdate = null; UpdateBadge.Visibility = Visibility.Collapsed;
-                if (!silent) MessageBox.Show(this, $"当前已是最新版本 v{current.ToString(3)}。", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+                if (!silent) Dialog.Notify(this, $"当前已是最新版本 v{current.ToString(3)}。", "检查更新");
                 return;
             }
             pendingUpdate = info;
-            UpdateBadge.ToolTip = $"发现新版本 v{info.Version}，点击更新"
-                + (string.IsNullOrWhiteSpace(info.Notes) ? "" : "\n" + info.Notes);
+            SetUpdateTooltip(info);
             UpdateBadge.Visibility = Visibility.Visible;
             Log.Information("发现客户端新版本；当前 {Current}，最新 {Latest}", current.ToString(3), info.Version);
             if (!silent) await PromptUpdateAsync(info);
@@ -160,19 +160,39 @@ public partial class MainWindow : Window
             else
             {
                 Log.Warning(ex, "检查更新失败");
-                MessageBox.Show(this, "检查更新失败：" + ex.Message, "检查更新", MessageBoxButton.OK, MessageBoxImage.Warning);
+                Dialog.Notify(this, "检查更新失败：" + ex.Message, "检查更新", DialogTone.Warning);
             }
         }
         finally { checkingUpdate = false; }
     }
+    private void SetUpdateTooltip(RemoteUpdateInfo info)
+    {
+        UpdateBadge.ToolTip = new ToolTip
+        {
+            Content = new TextBlock
+            {
+                Text = $"发现新版本 v{info.Version}，点击更新"
+                    + (string.IsNullOrWhiteSpace(info.Notes) ? "" : "\n" + info.Notes),
+                MaxWidth = 380,
+                TextWrapping = TextWrapping.Wrap
+            },
+            PlacementTarget = UpdateBadge,
+            Placement = PlacementMode.Custom,
+            CustomPopupPlacementCallback = (popup, target, _) =>
+            [
+                new(new Point(target.Width - popup.Width, target.Height + 4), PopupPrimaryAxis.Vertical),
+                new(new Point(target.Width - popup.Width, -popup.Height - 4), PopupPrimaryAxis.Vertical)
+            ]
+        };
+    }
+
     private async Task PromptUpdateAsync(RemoteUpdateInfo info)
     {
         var current = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
         string notes = string.IsNullOrWhiteSpace(info.Notes) ? "" : "\n\n更新说明：\n" + info.Notes;
-        var answer = MessageBox.Show(this,
+        if (!Dialog.Confirm(this,
             $"发现新版本 v{info.Version}\n当前版本 v{current.ToString(3)}{notes}\n\n更新完成后客户端会自动重启。是否现在更新？",
-            "检查更新", MessageBoxButton.YesNo, MessageBoxImage.Information);
-        if (answer != MessageBoxResult.Yes) return;
+            "检查更新")) return;
         try
         {
             await ApplyUpdateAsync(new RemoteFileClient(connectedHost, connectedPort), info);
@@ -180,7 +200,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             Log.Warning(ex, "客户端更新失败");
-            MessageBox.Show(this, "更新失败：" + ex.Message, "检查更新", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Dialog.Notify(this, "更新失败：" + ex.Message, "检查更新", DialogTone.Warning);
         }
     }
     private static bool IsNewer(string latestText, Version current)
@@ -322,7 +342,7 @@ try {
     {
         ConnectionText.Text = text;
         ConnectionDot.Fill = dot;
-        ConnectButton.Style = (Style)FindResource(text == "已连接" ? "SecondaryButton" : "PrimaryButton");
+        ConnectButton.Style = (Style)FindResource(text == "已连接" ? "SecondaryButton" : "ConnectPrimaryButton");
     }
     private void SetStatus(string text, Brush dot)
     {
