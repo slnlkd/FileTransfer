@@ -146,9 +146,10 @@ public partial class MainWindow : Window
         BrowserProgress.IsIndeterminate = indeterminate;
         if (!indeterminate) BrowserProgress.Value = Math.Clamp(percent, 0, 100);
     }
-    private void UpdateSelection(int selected, int total)
+    private void UpdateSelection(int selected, int? total)
     {
-        SelectionText.Text = selected > 0 ? $"已选择 {selected} 项 / 共 {total} 项" : "";
+        SelectionText.Text = total is null ? "" : selected == 0
+            ? $"{total} 项" : $"已选择 {selected} 项 / 共 {total} 项";
         SelectionText.ToolTip = SelectionText.Text;
     }
     private void AppendActivity(string message)

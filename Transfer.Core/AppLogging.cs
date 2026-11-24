@@ -30,26 +30,26 @@ public static class AppLogging
                 throw new InvalidDataException("日志级别、文件保留数量或大小不合法");
         }
         catch (Exception ex) { configurationError = ex; options = new(); }
-        string fallback = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FileTransferDemo", "Logs", application);
+        string fallback = Path.Combine(AppContext.BaseDirectory, "Logs", application);
         string directory = fallback;
         Exception? directoryError = null;
         try
         {
             string? configuredDirectory = Environment.GetEnvironmentVariable("FILETRANSFER_LOG_DIRECTORY") ?? options.Directory;
             if (!string.IsNullOrWhiteSpace(configuredDirectory))
+            {
                 directory = Path.GetFullPath(Environment.ExpandEnvironmentVariables(configuredDirectory), AppContext.BaseDirectory);
+                string relative = Path.GetRelativePath(AppContext.BaseDirectory, directory);
+                if (Path.IsPathRooted(relative) || relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                    throw new IOException("日志目录必须位于程序部署目录下");
+            }
             Probe(directory);
         }
         catch (Exception ex)
         {
             directoryError = ex;
-            try { directory = fallback; Probe(directory); }
-            catch (Exception fallbackError)
-            {
-                directoryError = new AggregateException(ex, fallbackError);
-                directory = Path.Combine(AppContext.BaseDirectory, "Logs", application);
-                Probe(directory);
-            }
+            directory = fallback;
+            Probe(directory);
         }
         LogDirectory = directory;
         // Serilog 自身故障不能递归写回 Serilog，单独保留诊断文件。
@@ -88,18 +88,7 @@ public static class AppLogging
             directory, level, options.RetainedFileCountLimit, options.FileSizeLimitBytes,
             System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString(), Environment.Version, Environment.CurrentDirectory);
     }
-    public static string GetSettingsPath(string fileName)
-    {
-        string directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FileTransferDemo");
-        try { Probe(directory); }
-        catch (Exception ex)
-        {
-            directory = Path.Combine(AppContext.BaseDirectory, "Settings");
-            Probe(directory);
-            Log.Warning(ex, "默认配置目录不可写，使用 {SettingsDirectory}", directory);
-        }
-        return Path.Combine(directory, fileName);
-    }
+    public static string GetSettingsPath(string fileName) => Path.Combine(AppContext.BaseDirectory, fileName);
     private static void Probe(string directory)
     {
         Directory.CreateDirectory(directory);

@@ -2,6 +2,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Collections;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows.Data;
@@ -24,6 +25,7 @@ public partial class RemoteBrowser : UserControl
 {
     private RemoteFileClient? client;
     private string directory = "";
+    private string? fullDirectoryPath;
     private bool busy;
     private ImageViewer? annotationWindow;
     private Dictionary<string, RemoteAnnotation>? annotationIndex;
@@ -40,10 +42,17 @@ public partial class RemoteBrowser : UserControl
     private readonly Dictionary<string, (DateTime At, RemoteEntry[] Entries)> unfilteredCache = [];
     private int navigationVersion;
     private CancellationTokenSource? operationCancel;
+    private static readonly TimeSpan BusyIndicatorDelay = TimeSpan.FromMilliseconds(250);
+    private const int LargeTextThreshold = 1024 * 1024;
+    private readonly DispatcherTimer busyIndicatorTimer = new(DispatcherPriority.Normal) { Interval = BusyIndicatorDelay };
     private Window? hostWindow;
     private int pendingUp;
     private bool navigatingUp;
     private string? listFilter;
+    private string? ngOverviewPath;
+    private RemoteNgDay[] ngDays = [];
+    private bool ngOverviewHasResult;
+    private readonly Dictionary<DateTime, bool> ngExpandedDays = [];
     private Func<string, string?>? localEmptyText = null;
     private ScrollViewer? fileScroll;
     private bool scrollHooked;
@@ -52,7 +61,7 @@ public partial class RemoteBrowser : UserControl
     private bool dragArmed;
     public event Action<string, string>? StatusChanged;
     public event Action<string, double, bool, bool>? ProgressChanged;
-    public event Action<int, int>? SelectionCountChanged;
+    public event Action<int, int?>? SelectionCountChanged;
     public bool IsBusy => busy;
     public string? ProtocolWarning { get; private set; }
     private async void Grid_Sorting(object sender, DataGridSortingEventArgs e)
@@ -96,10 +105,10 @@ public partial class RemoteBrowser : UserControl
     public RemoteBrowser()
     {
         InitializeComponent();
+        busyIndicatorTimer.Tick += (_, _) => DisplayBusyIndicator();
+        ((ContextMenu)FindResource("ColumnSettingsMenu")).Opened += ColumnSettings_Opened;
         FileGrid.Columns[0].SortDirection = ListSortDirection.Ascending;
-        var style = new Style(typeof(DataGridRow));
-        var baseRowStyle = TryFindResource("DataGridRowStyle") as Style ?? Application.Current?.TryFindResource("DataGridRowStyle") as Style;
-        if (baseRowStyle is not null) style.BasedOn = baseRowStyle;
+        var style = new Style(typeof(DataGridRow), FileGrid.RowStyle);
         style.Setters.Add(new EventSetter(ContextMenuOpeningEvent, new ContextMenuEventHandler(Row_ContextMenuOpening)));
         style.Setters.Add(new EventSetter(PreviewMouseRightButtonDownEvent, new MouseButtonEventHandler(Row_RightClick)));
         // 占位菜单确保 WPF 会引发 ContextMenuOpening；打开时按当前行生成真实菜单。
@@ -113,7 +122,7 @@ public partial class RemoteBrowser : UserControl
         FileGrid.AddHandler(PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler(Grid_MouseLeftButtonUp), true);
         FileGrid.SelectionChanged += (_, _) =>
         {
-            SelectionCountChanged?.Invoke(FileGrid.SelectedItems.Count, totalCount > 0 ? totalCount : entries.Count);
+            UpdateItemCount();
             UpdateAnnotateButton();
         };
         UpdateAnnotateButton();
@@ -157,8 +166,7 @@ public partial class RemoteBrowser : UserControl
         annotationReadError = null;
         FileGrid.SelectionMode = DataGridSelectionMode.Extended;
         ShowDisconnectedPath();
-        ItemCountText.Text = "";
-        SelectionCountChanged?.Invoke(0, 0);
+        UpdateItemCount();
         HideBusy();
         HideProgress();
         SetStatus("尚未连接", "MutedBrush");
@@ -198,6 +206,7 @@ public partial class RemoteBrowser : UserControl
             }
             // 返回上一级时定位到刚才所在的文件夹；其他目录切换回到顶部，同目录刷新保留位置。
             bool movedUp = revealReturnedFolder && !string.IsNullOrEmpty(previous) && string.Equals(ParentPath(previous), path, StringComparison.Ordinal);
+            bool resetScroll = !string.Equals(previous, path, StringComparison.Ordinal);
             if (movedUp)
             {
                 var anchor = entries.FirstOrDefault(e => e.Path == previous && e.IsDirectory);
@@ -208,12 +217,14 @@ public partial class RemoteBrowser : UserControl
                     if (entries.Count == before) break;
                     anchor = entries.FirstOrDefault(e => e.Path == previous && e.IsDirectory);
                 }
-                if (anchor is not null) SelectAndReveal(anchor);
-                else ResetFileScroll();
+                if (anchor is not null)
+                {
+                    SelectAndReveal(anchor);
+                    resetScroll = false;
+                }
             }
-            else if (!string.Equals(previous, path, StringComparison.Ordinal)) ResetFileScroll();
             UpdatePath(response);
-            UpdateCountText();
+            UpdateItemCount();
             SetStatus(response.Warning ?? (entries.Count == 0 ? EmptyTextFor(directory) : "就绪"),
                 response.Warning is null ? "MutedBrush" : "WarningBrush");
             UpdateEmptyState();
@@ -238,13 +249,16 @@ public partial class RemoteBrowser : UserControl
             // 双击文件夹、点面包屑、退格或“上一级”切换目录后，把树的选中项同步到当前目录。
             await SyncTreeSelectionAsync(path);
             await RefreshAnnotationStatusAsync(path, ct);
+            await UpdateNgOverviewAsync(path, ct);
+            if (resetScroll) await ResetFileScrollAsync();
         }
         finally { if (ownedBusy) HideBusy(); }
     }
-    private void UpdateCountText()
+    private void UpdateItemCount()
     {
-        ItemCountText.Text = allLoaded ? $"{entries.Count} 项" : $"{entries.Count} / {totalCount} 项";
-        SelectionCountChanged?.Invoke(FileGrid.SelectedItems.Count, totalCount > 0 ? totalCount : entries.Count);
+        int? count = client is not null && FileGrid.Visibility == Visibility.Visible
+            ? Math.Max(totalCount, entries.Count) : null;
+        SelectionCountChanged?.Invoke(FileGrid.SelectedItems.Count, count);
     }
     // 目录树始终使用未过滤结果，且不受分页影响；结果短时间缓存，避免来回切换时重复请求。
     private async Task<RemoteEntry[]> UnfilteredEntriesAsync(string path, CancellationToken ct)
@@ -273,7 +287,7 @@ public partial class RemoteBrowser : UserControl
             ApplyAnnotationStatuses(page);
             foreach (var entry in page) entries.Add(entry);
             allLoaded = page.Length == 0 || entries.Count >= totalCount;
-            UpdateCountText();
+            UpdateItemCount();
             UpdateEmptyState();
             if (CollectionViewSource.GetDefaultView(entries) is ListCollectionView view && view.CustomSort is not null) view.Refresh();
         }
@@ -304,6 +318,10 @@ public partial class RemoteBrowser : UserControl
     }
     private void ShowDisconnectedPath()
     {
+        ngOverviewPath = null;
+        ngExpandedDays.Clear();
+        ClearNgOverviewResult("");
+        SetNgOverviewVisible(false);
         Breadcrumb.Children.Clear();
         Breadcrumb.Children.Add(new TextBlock
         {
@@ -313,6 +331,8 @@ public partial class RemoteBrowser : UserControl
             VerticalAlignment = VerticalAlignment.Center
         });
         Breadcrumb.ToolTip = null;
+        fullDirectoryPath = null;
+        CopyPathButton.IsEnabled = false;
         BreadcrumbScroll.ScrollToLeftEnd();
     }
     private void UpdatePath(RemoteResponse response)
@@ -330,9 +350,44 @@ public partial class RemoteBrowser : UserControl
                 AddBreadcrumb(parts[i], path, i == parts.Length - 1);
             }
         }
-        Breadcrumb.ToolTip = $"{Endpoint.Host}:{Endpoint.Port} / {rootName}" + (directory.Length == 0 ? "" : " / " + directory);
+        string host = Endpoint.Host.Contains(':') ? $"[{Endpoint.Host.Trim('[', ']')}]" : Endpoint.Host;
+        fullDirectoryPath = $"{host}:{Endpoint.Port}/{rootName}" + (directory.Length == 0 ? "" : "/" + directory);
+        Breadcrumb.ToolTip = fullDirectoryPath;
+        CopyPathButton.IsEnabled = true;
         // 出现横向滚动条时默认停在最左，当前目录会被藏起来；等布局完成再滚到最右。
         Dispatcher.BeginInvoke(new Action(() => BreadcrumbScroll.ScrollToRightEnd()), DispatcherPriority.Loaded);
+    }
+    private void CopyPath_Click(object sender, RoutedEventArgs e)
+    {
+        if (fullDirectoryPath is null) return;
+        try
+        {
+            Clipboard.SetText(fullDirectoryPath);
+            SetStatus("已复制完整路径", "SuccessBrush");
+        }
+        catch (ExternalException ex)
+        {
+            Log.Warning(ex, "复制完整路径失败");
+            SetStatus("无法访问剪贴板，请重试", "WarningBrush");
+        }
+    }
+
+    private void ColumnSettings_Opened(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ContextMenu menu) return;
+        menu.Items.Clear();
+        foreach (var column in new[] { CreatedTimeColumn, ModifiedTimeColumn })
+        {
+            var item = new MenuItem
+            {
+                Header = column.Header,
+                IsCheckable = true,
+                IsChecked = column.Visibility == Visibility.Visible,
+                StaysOpenOnClick = true
+            };
+            item.Click += (_, _) => column.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
+            menu.Items.Add(item);
+        }
     }
     private void AddBreadcrumb(string label, string path, bool current)
     {
@@ -385,18 +440,28 @@ public partial class RemoteBrowser : UserControl
             FileGrid.ScrollIntoView(entry);
         }), System.Windows.Threading.DispatcherPriority.Loaded);
     }
-    private void ResetFileScroll()
+    private async Task ResetFileScrollAsync()
     {
         fileScroll ??= FindVisualChild<ScrollViewer>(FileGrid);
         if (fileScroll is null) return;
+        int version = navigationVersion;
         scrollResetPending = true;
-        fileScroll.ScrollToTop();
-        // 等待新条目完成布局后再设置一次，避免虚拟化把偏移量恢复成旧位置。
-        Dispatcher.BeginInvoke(new Action(() =>
+        try
         {
-            fileScroll?.ScrollToTop();
-            scrollResetPending = false;
-        }), System.Windows.Threading.DispatcherPriority.Loaded);
+            // 让数据绑定与虚拟化先完成，再把新列表的首行定位到视口顶部。
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (version != navigationVersion || fileScroll is not { } scroll) return;
+                if (FileGrid.IsVisible && FileGrid.Items.Count > 0)
+                    FileGrid.ScrollIntoView(FileGrid.Items[0]);
+                scroll.ScrollToVerticalOffset(0);
+                if (FileGrid.IsVisible) FileGrid.UpdateLayout();
+            }, DispatcherPriority.ContextIdle);
+        }
+        finally
+        {
+            if (version == navigationVersion) scrollResetPending = false;
+        }
     }
     private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
     {
@@ -417,9 +482,12 @@ public partial class RemoteBrowser : UserControl
         if (string.Equals(listFilter, value, StringComparison.Ordinal)) return;
         listFilter = value;
         if (client is null) return;
-        await ExecuteAsync(() => NavigateAsync(directory));
-        // 过滤条件变化会改变列表内容，同样回到顶部。
-        ResetFileScroll();
+        await ExecuteAsync(async () =>
+        {
+            await NavigateAsync(directory);
+            // 同目录的过滤条件变化也需要回到顶部。
+            await ResetFileScrollAsync();
+        });
     }
     // 逐级展开并加载，直到目标目录出现在树里，再把高亮移到它上面。
     // 只展开到目标目录本身，不预加载它下面的子目录，避免一次导航拉取整棵树。
@@ -543,27 +611,49 @@ public partial class RemoteBrowser : UserControl
     public async Task OpenAsync(RemoteEntry entry)
     {
         Log.Information("打开远程文件；路径 {RemotePath}，类型 {Kind}", entry.Path, entry.Kind);
-        BusyText.Text = "正在打开文件…";
         if (entry.IsDirectory) { await NavigateAsync(entry.Path); return; }
-        Window viewer;
-        if (entry.IsText) viewer = new TextViewer(Endpoint, entry.Path, await Endpoint.CallAsync(new("text", entry.Path)));
-        else if (entry.IsImage)
+        bool ownsIndicator = !busy;
+        if (ownsIndicator) ShowBusy("正在打开文件…");
+        else BusyText.Text = "正在打开文件…";
+        try
         {
             var endpoint = Endpoint;
-            string parent = ParentPath(entry.Path);
-            var siblings = (await endpoint.CallAsync(new("list", parent))).Entries ?? [];
-            var imageViewer = new ImageViewer(endpoint, siblings.Where(e => e.IsImage).OrderBy(e => e.CreatedUtc).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToArray(), entry.Path);
-            imageViewer.Closed += async (_, _) =>
+            Window viewer;
+            if (entry.IsText)
             {
-                try { await RestoreViewedImageAsync(endpoint, parent, imageViewer.CurrentPath); }
-                catch (Exception ex) { Log.Debug(ex, "关闭查看器后定位图片失败；路径 {RemotePath}", imageViewer.CurrentPath); }
-            };
-            viewer = imageViewer;
+                var elapsed = Stopwatch.StartNew();
+                BusyText.Text = "正在读取文本…";
+                var response = await Task.Run(() => endpoint.CallAsync(new("text", entry.Path)));
+                if (!ReferenceEquals(client, endpoint)) return;
+                // 大文本赋值和首屏布局必须在 UI 线程上完成，先让等待提示获得一次绘制机会。
+                if (entry.Length >= LargeTextThreshold || response.Text?.Length >= LargeTextThreshold
+                    || elapsed.Elapsed >= BusyIndicatorDelay)
+                {
+                    BusyText.Text = "正在准备文本查看器…";
+                    DisplayBusyIndicator();
+                    await Dispatcher.Yield(DispatcherPriority.Background);
+                    if (!ReferenceEquals(client, endpoint)) return;
+                }
+                viewer = new TextViewer(endpoint, entry.Path, response);
+            }
+            else if (entry.IsImage)
+            {
+                string parent = ParentPath(entry.Path);
+                var siblings = (await endpoint.CallAsync(new("list", parent))).Entries ?? [];
+                var imageViewer = new ImageViewer(endpoint, siblings.Where(e => e.IsImage).OrderBy(e => e.CreatedUtc).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToArray(), entry.Path);
+                imageViewer.Closed += async (_, _) =>
+                {
+                    try { await RestoreViewedImageAsync(endpoint, parent, imageViewer.CurrentPath); }
+                    catch (Exception ex) { Log.Debug(ex, "关闭查看器后定位图片失败；路径 {RemotePath}", imageViewer.CurrentPath); }
+                };
+                viewer = imageViewer;
+            }
+            else if (entry.IsExe) viewer = new ProcessViewer(endpoint, entry.Path);
+            else { SetStatus("此文件类型暂不提供预览或编辑：" + entry.Kind, "MutedBrush"); return; }
+            viewer.Owner = Window.GetWindow(this); viewer.Show();
+            SetStatus("已打开 " + entry.Name, "MutedBrush");
         }
-        else if (entry.IsExe) viewer = new ProcessViewer(Endpoint, entry.Path);
-        else { SetStatus("此文件类型暂不提供预览或编辑：" + entry.Kind, "MutedBrush"); return; }
-        viewer.Owner = Window.GetWindow(this); viewer.Show();
-        SetStatus("已打开 " + entry.Name, "MutedBrush");
+        finally { if (ownsIndicator) HideBusy(); }
     }
     private async Task RestoreViewedImageAsync(RemoteFileClient endpoint, string parent, string imagePath)
     {
@@ -603,6 +693,7 @@ public partial class RemoteBrowser : UserControl
     }
     private void Browser_Unloaded(object sender, RoutedEventArgs e)
     {
+        HideBusy();
         if (fileScroll is not null) { fileScroll.ScrollChanged -= FileScroll_ScrollChanged; fileScroll = null; }
         scrollHooked = false;
         if (hostWindow is null) return;
@@ -614,7 +705,7 @@ public partial class RemoteBrowser : UserControl
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && e.Key is Key.A or Key.C)
         {
             // 输入框里的 Ctrl+A/C 继续用于编辑文字。
-            if (Keyboard.FocusedElement is TextBox) return;
+            if (!FileGrid.IsVisible || Keyboard.FocusedElement is TextBox) return;
             if (!FileArea.IsMouseOver && !FileGrid.IsKeyboardFocusWithin) return;
             if (e.Key == Key.A)
             {
@@ -669,14 +760,188 @@ public partial class RemoteBrowser : UserControl
     // NG 过滤是否开启（本地个性化过滤器把 listFilter 设为 "ng"）。
     private bool NgFilterEnabled => string.Equals(listFilter, "ng", StringComparison.OrdinalIgnoreCase);
     private bool CanOpenAnnotation => !busy && client is not null && annotationWindow is null;
+
+    private sealed class NgDayRow(RemoteNgDay day, RemoteNgBatch[] visibleBatches, bool expanded)
+    {
+        public DateTime Date => day.Date;
+        private int Total => day.Batches.Length;
+        private int Annotated { get; } = day.Batches.Count(batch => batch.Annotated);
+        public bool IsComplete => Annotated == Total;
+        public string Progress => $"{Annotated}/{Total}";
+        public string ProgressDetails => $"NG {Total} · 已标注 {Annotated} · 未标注 {Total - Annotated}";
+        public RemoteNgBatch[] VisibleBatches { get; } = visibleBatches;
+        public bool IsExpanded { get; set; } = expanded;
+    }
+
+    private async Task UpdateNgOverviewAsync(string path, CancellationToken ct)
+    {
+        string equipment = path.Split('/').Last();
+        if (equipment.Equals("SaveImages", StringComparison.OrdinalIgnoreCase))
+            equipment = ParentPath(path).Split('/').Last();
+        if (!NgFilterEnabled || !equipment.StartsWith("A6", StringComparison.OrdinalIgnoreCase))
+        {
+            ngOverviewPath = null;
+            ngExpandedDays.Clear();
+            ClearNgOverviewResult("");
+            SetNgOverviewVisible(false);
+            return;
+        }
+
+        if (!string.Equals(ngOverviewPath, path, StringComparison.Ordinal))
+        {
+            ngOverviewPath = path;
+            ngExpandedDays.Clear();
+            ClearNgOverviewResult("");
+            if (NgEndDate.Text.Length == 0) NgEndDate.Text = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            if (NgStartDate.Text.Length == 0) NgStartDate.Text = DateTime.Today.AddDays(-6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            SetNgOverviewVisible(true);
+        }
+        if (NgOverviewPanel.Visibility == Visibility.Visible) await RefreshNgOverviewAsync(ct);
+    }
+
+    private void SetNgOverviewVisible(bool visible)
+    {
+        NgOverviewPanel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        var fileVisibility = visible ? Visibility.Collapsed : Visibility.Visible;
+        FileGrid.Visibility = fileVisibility;
+        AnnotateButton.Visibility = fileVisibility;
+        NgOverviewOpenButton.Visibility = !visible && ngOverviewPath is not null ? Visibility.Visible : Visibility.Collapsed;
+        UpdateItemCount();
+    }
+
+    private async void NgOverviewOpen_Click(object sender, RoutedEventArgs e)
+    {
+        if (ngOverviewPath is null || busy) return;
+        SetNgOverviewVisible(true);
+        await ExecuteAsync(ct => RefreshNgOverviewAsync(ct), cancellable: true);
+    }
+
+    private void NgOverviewReturn_Click(object sender, RoutedEventArgs e) => SetNgOverviewVisible(false);
+
+    private async void NgOverviewQuery_Click(object sender, RoutedEventArgs e) =>
+        await ExecuteAsync(ct => RefreshNgOverviewAsync(ct), cancellable: true);
+
+    private async void NgOverviewToday_Click(object sender, RoutedEventArgs e) => await QueryNgOverviewPresetAsync(0);
+
+    private async void NgOverviewLastWeek_Click(object sender, RoutedEventArgs e) => await QueryNgOverviewPresetAsync(6);
+
+    private Task QueryNgOverviewPresetAsync(int daysBack) => ExecuteAsync(async ct =>
+    {
+        var today = DateTime.Today;
+        NgStartDate.Text = today.AddDays(-daysBack).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        NgEndDate.Text = today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        await RefreshNgOverviewAsync(ct);
+    }, cancellable: true);
+
+    private async void NgOverviewDate_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        e.Handled = true;
+        await ExecuteAsync(ct => RefreshNgOverviewAsync(ct), cancellable: true);
+    }
+
+    private void NgOverviewFilter_Changed(object sender, RoutedEventArgs e)
+    {
+        if (ngOverviewHasResult && NgOverviewPanel.Visibility == Visibility.Visible) RenderNgOverview(keepScroll: false);
+    }
+
+    private void NgOverviewDate_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (NgOverviewPanel?.Visibility == Visibility.Visible)
+            ClearNgOverviewResult("日期已更改，请点击查询");
+    }
+
+    private void ClearNgOverviewResult(string message)
+    {
+        ngOverviewHasResult = false;
+        ngDays = [];
+        NgOverviewDays.ItemsSource = null;
+        UpdateNgOverviewCounts();
+        ShowNgOverviewMessage(message);
+    }
+
+    private void UpdateNgOverviewCounts()
+    {
+        int total = ngDays.Sum(day => day.Batches.Length);
+        int annotated = ngDays.Sum(day => day.Batches.Count(batch => batch.Annotated));
+        NgAllCount.Text = ngOverviewHasResult ? $" {total}" : "";
+        NgPendingCount.Text = ngOverviewHasResult ? $" {total - annotated}" : "";
+        NgDoneCount.Text = ngOverviewHasResult ? $" {annotated}" : "";
+    }
+
+    private async Task RefreshNgOverviewAsync(CancellationToken ct)
+    {
+        if (ngOverviewPath is not { } path || NgOverviewPanel.Visibility != Visibility.Visible) return;
+        string[] formats = ["yyyy-MM-dd", "yyyy.MM.dd", "yyyyMMdd"];
+        string startText = NgStartDate.Text.Trim();
+        string endText = NgEndDate.Text.Trim();
+        if (!DateTime.TryParseExact(startText, formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var start)
+            || !DateTime.TryParseExact(endText, formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var end)
+            || end.Date < start.Date || (end.Date - start.Date).TotalDays >= 31)
+        {
+            ClearNgOverviewResult("请输入有效日期，格式为 yyyy-MM-dd，范围最多 31 天");
+            return;
+        }
+        var endpoint = Endpoint;
+        int version = navigationVersion;
+        bool Current() => ReferenceEquals(client, endpoint) && version == navigationVersion
+            && path == ngOverviewPath && NgOverviewPanel.Visibility == Visibility.Visible
+            && startText == NgStartDate.Text.Trim() && endText == NgEndDate.Text.Trim();
+        try
+        {
+            var days = await endpoint.GetNgOverviewAsync(path, start, end, ct);
+            if (!Current()) return;
+            ngDays = days;
+            ngOverviewHasResult = true;
+            UpdateNgOverviewCounts();
+            RenderNgOverview(keepScroll: true);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            if (!Current()) return;
+            ClearNgOverviewResult("读取 NG 总览失败：" + ex.Message);
+            Log.Warning(ex, "读取 NG 总览失败；目录 {RemoteDirectory}", path);
+        }
+    }
+
+    private void ShowNgOverviewMessage(string message)
+    {
+        NgOverviewMessage.Text = message;
+        NgOverviewMessage.Visibility = message.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void RenderNgOverview(bool keepScroll)
+    {
+        if (NgOverviewDays.ItemsSource is IEnumerable<NgDayRow> previous)
+            foreach (var day in previous) ngExpandedDays[day.Date] = day.IsExpanded;
+        var rows = new List<NgDayRow>();
+        bool? onlyAnnotated = NgPendingFilter.IsChecked == true ? false : NgDoneFilter.IsChecked == true ? true : null;
+        foreach (var day in ngDays)
+        {
+            var batches = onlyAnnotated is { } annotated ? day.Batches.Where(batch => batch.Annotated == annotated).ToArray() : day.Batches;
+            if (batches.Length == 0) continue;
+            bool expanded = ngExpandedDays.GetValueOrDefault(day.Date, rows.Count == 0 && ngExpandedDays.Count == 0);
+            rows.Add(new(day, batches, expanded));
+        }
+        double offset = keepScroll ? NgOverviewScroll.VerticalOffset : 0;
+        NgOverviewDays.ItemsSource = rows;
+        NgOverviewScroll.ScrollToVerticalOffset(offset);
+        ShowNgOverviewMessage(rows.Count > 0 ? "" : ngDays.Length == 0 ? "所选日期范围内没有可查看的 NG 批次" : "没有符合筛选条件的 NG 批次");
+    }
+
+    private async void NgBatch_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: RemoteNgBatch batch })
+            await OpenAnnotationAsync(new(batch.Name, batch.Path, true, 0, default, default));
+    }
+
     private void UpdateAnnotateButton()
     {
+        NgOverviewPanel.IsEnabled = !busy && annotationWindow is null;
         var selected = FileGrid.SelectedItems.Cast<RemoteEntry>().ToArray();
         // 标注只针对 NG 的对线：必须勾选「只看NG」，且选中的是日期目录下的批次文件夹。
-        bool annotatable = NgFilterEnabled && selected.Length == 1
-            && (selected[0].IsDirectory
-                ? IsBatchFolder(selected[0].Path)
-                : selected[0].IsImage && IsBatchFolder(ParentPath(selected[0].Path)));
+        bool annotatable = NgFilterEnabled && selected.Length == 1 && IsAnnotatableEntry(selected[0]);
         AnnotateButton.IsEnabled = CanOpenAnnotation && annotatable;
         AnnotateButton.ToolTip = annotationWindow is not null
             ? "请先完成当前标注"
@@ -686,6 +951,9 @@ public partial class RemoteBrowser : UserControl
             : selected.Length > 1 ? "请只选择一个对线文件夹"
             : "请进入 机台/日期 后选择一个对线文件夹";
     }
+    private static bool IsAnnotatableEntry(RemoteEntry entry) => entry.IsDirectory
+        ? IsBatchFolder(entry.Path)
+        : entry.IsImage && IsBatchFolder(ParentPath(entry.Path));
     // 父目录是 yyyyMMdd 的文件夹才是「一次对线」。
     private static bool IsBatchFolder(string path)
     {
@@ -731,6 +999,9 @@ public partial class RemoteBrowser : UserControl
             {
                 if (ReferenceEquals(client, endpoint) && (directory == listDirectory || directory == folder))
                     await RefreshAnnotationStatusAsync(directory, CancellationToken.None);
+                if (ReferenceEquals(client, endpoint) && ngOverviewPath is { } overview
+                    && folder.StartsWith(overview + "/", StringComparison.OrdinalIgnoreCase))
+                    await RefreshNgOverviewAsync(CancellationToken.None);
             }
             catch (Exception ex) { Log.Debug(ex, "标注窗口关闭后刷新状态失败"); }
             finally
@@ -803,7 +1074,7 @@ public partial class RemoteBrowser : UserControl
             if (annotationIndex is not null && annotationIndex.TryGetValue(entry.Name, out var annotation))
             {
                 entry.AnnotationStatus = "已标注";
-                entry.AnnotationTip = $"{annotation.CategoryName} / {annotation.PlanName}\n{annotation.Operator} · {annotation.UpdatedAt?.ToLocalTime():yyyy-MM-dd HH:mm}";
+                entry.AnnotationTip = $"{annotation.CategoryName} / {annotation.PlanName}\n{annotation.Operator} · {AnnotationContext.GetDisplayTime(annotation.UpdatedAt):yyyy-MM-dd HH:mm}";
             }
             else
             {
@@ -1026,41 +1297,49 @@ public partial class RemoteBrowser : UserControl
     {
         if (sender is not DataGridRow row) return;
         // 与资源管理器一致：右键已选中的行保留多选，右键未选中的行改为只选该行。
-        if (!row.IsSelected)
-        {
-            FileGrid.SelectedItems.Clear();
-            row.IsSelected = true;
-        }
+        if (!row.IsSelected) FileGrid.SelectedItem = row.Item;
         row.Focus();
     }
     private void Row_ContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
         if (sender is not DataGridRow { Item: RemoteEntry entry } row) return;
-        row.ContextMenu = BuildMenu(entry);
+        row.ContextMenu = BuildMenu(entry, showCopyShortcut: true);
         if (row.ContextMenu == null) e.Handled = true;
     }
-    private ContextMenu BuildMenu(RemoteEntry entry)
+    private MenuItem CreateFileMenuItem(string header, string iconKey)
+    {
+        var icon = new System.Windows.Shapes.Path
+        {
+            Style = (Style)FindResource("IconGlyph"),
+            Data = (Geometry)FindResource(iconKey)
+        };
+        icon.SetResourceReference(System.Windows.Shapes.Shape.StrokeProperty, "MutedBrush");
+        return new MenuItem { Header = header, Icon = icon };
+    }
+    private ContextMenu BuildMenu(RemoteEntry entry, bool showCopyShortcut = false)
     {
         var menu = new ContextMenu();
-        var copy = new MenuItem { Header = "复制" };
+        var separatorStyle = (Style)FindResource("FileMenuSeparator");
+        var copy = CreateFileMenuItem("复制", "IconRestoreGeometry");
+        if (showCopyShortcut) copy.InputGestureText = "Ctrl+C";
         copy.Click += async (_, _) =>
         {
             var selected = FileGrid.SelectedItems.Cast<RemoteEntry>().ToArray();
             await CopyToClipboardAsync(selected.Contains(entry) ? selected : [entry]);
         };
         menu.Items.Add(copy);
-        if (entry.IsDirectory || entry.IsImage)
+        if (IsAnnotatableEntry(entry))
         {
-            menu.Items.Add(new Separator());
-            var annotate = new MenuItem { Header = entry.IsDirectory ? "标注此对线…" : "标注此图片…" };
+            menu.Items.Add(new Separator { Style = separatorStyle });
+            var annotate = CreateFileMenuItem("标注", "BrowserAnnotateGeometry");
             menu.Opened += (_, _) => annotate.IsEnabled = CanOpenAnnotation;
             annotate.Click += async (_, _) => await OpenAnnotationAsync(entry);
             menu.Items.Add(annotate);
         }
         if (!entry.IsDirectory)
         {
-            menu.Items.Add(new Separator());
-            var delete = new MenuItem { Header = "删除服务端文件…" };
+            menu.Items.Add(new Separator { Style = separatorStyle });
+            var delete = CreateFileMenuItem("删除服务端文件…", "BrowserDeleteGeometry");
             delete.Click += async (_, _) =>
             {
                 if (busy || client == null) return;
@@ -1112,10 +1391,8 @@ public partial class RemoteBrowser : UserControl
         SetStatus("下载完成，SHA-256 校验通过", "SuccessBrush");
     }, cancellable: true);
     // 按用户和进程隔离，避免多个客户端实例互相删除正在使用的剪贴板会话。
-    // 放在 LocalAppData\FileTransferDemo 下（日志和配置已验证可写），避免部分环境禁止写 %TEMP%。
     private static readonly string ClipboardTempRoot = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "FileTransferDemo", "Clipboard", Environment.UserName, Environment.ProcessId.ToString());
+        AppContext.BaseDirectory, "Clipboard", Environment.UserName, Environment.ProcessId.ToString());
     private static readonly List<string> clipboardSessions = [];
     // 复制到 Windows 剪贴板：先取到本机临时目录，再以文件拖放格式写入，资源管理器可直接粘贴。
     public Task CopyToClipboardAsync(RemoteEntry entry) => CopyToClipboardAsync([entry]);
@@ -1175,38 +1452,11 @@ public partial class RemoteBrowser : UserControl
     }
     private static string CreateClipboardSession()
     {
-        try
-        {
-            Directory.CreateDirectory(ClipboardTempRoot);
-            CleanClipboardTemp();
-            CleanStaleClipboardRoots();
-            string session = Path.Combine(ClipboardTempRoot, Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(session);
-            return session;
-        }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
-        {
-            // 默认目录不可用时依次尝试 LocalAppData 独立目录和系统临时目录。
-            Log.Warning(ex, "默认剪贴板临时目录不可用，尝试备用目录");
-            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            foreach (string fallback in new[]
-            {
-                Path.Combine(local, "FileTransferDemo", "Clipboard-" + Guid.NewGuid().ToString("N")),
-                Path.Combine(Path.GetTempPath(), "FileTransferClipboard-" + Guid.NewGuid().ToString("N"))
-            })
-            {
-                try
-                {
-                    Directory.CreateDirectory(fallback);
-                    return fallback;
-                }
-                catch (Exception retry) when (retry is UnauthorizedAccessException or IOException)
-                {
-                    Log.Warning(retry, "剪贴板备用目录不可用；路径 {Path}", fallback);
-                }
-            }
-            throw new IOException("无法创建剪贴板临时目录，请检查 LocalAppData 和 TEMP 目录权限", ex);
-        }
+        CleanClipboardTemp();
+        CleanStaleClipboardRoots();
+        string session = Path.Combine(ClipboardTempRoot, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(session);
+        return session;
     }
     private static void CleanClipboardTemp()
     {
@@ -1313,23 +1563,29 @@ public partial class RemoteBrowser : UserControl
         StatusText.ToolTip = text;
         BrowserStatusDot.Fill = ThemeBrush(brushKey);
         StatusChanged?.Invoke(text, brushKey);
-    }    private void ShowBusy(string text)
+    }
+    private void ShowBusy(string text)
     {
         BusyProgress.IsIndeterminate = true;
         BusyProgress.Value = 0;
         BusyText.Text = text;
-        BusyOverlay.Visibility = Visibility.Visible;
+        busyIndicatorTimer.Start();
     }
     private void SetBusyProgress(double percent, string text)
     {
         BusyProgress.IsIndeterminate = false;
         BusyProgress.Value = Math.Clamp(percent, 0, 100);
         BusyText.Text = text;
-        BusyOverlay.Visibility = Visibility.Visible;
+    }
+    private void DisplayBusyIndicator()
+    {
+        busyIndicatorTimer.Stop();
+        BusyIndicator.Visibility = Visibility.Visible;
     }
     private void HideBusy()
     {
-        BusyOverlay.Visibility = Visibility.Collapsed;
+        busyIndicatorTimer.Stop();
+        BusyIndicator.Visibility = Visibility.Collapsed;
         BusyProgress.IsIndeterminate = true;
         BusyProgress.Value = 0;
     }

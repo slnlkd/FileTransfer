@@ -16,7 +16,7 @@ if (args.Length == 4 && args[0] == "crash")
     return;
 }
 
-string root = Path.Combine(Path.GetTempPath(), "FileTransfer-tests-" + Guid.NewGuid().ToString("N"));
+string root = Path.Combine(AppContext.BaseDirectory, "FileTransfer-tests-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
 string loggingConfig = Path.Combine(root, "logging.json");
 string logs = Path.Combine(root, "logs");
@@ -35,6 +35,8 @@ async Task Verify(string path, SharedFile file)
 }
 try
 {
+    Check(AppLogging.GetSettingsPath("ngfilter.json") == Path.Combine(AppContext.BaseDirectory, "ngfilter.json"),
+        "NG 配置从部署根目录读取");
     string source = Path.Combine(root, "中文测试文件.bin");
     await File.WriteAllBytesAsync(source, RandomNumberGenerator.GetBytes(24 * 1024 * 1024 + 137));
     await using var server = new FileServer();
@@ -177,6 +179,21 @@ try
     AppLogging.Initialize("SmokeTests", loggingConfig); Log.CloseAndFlush();
     Check(string.Join("\n", Directory.GetFiles(fallbackLogs, "app-*.log").Select(File.ReadAllText)).Contains("读取日志配置失败"), "配置损坏时回退默认配置并保留异常日志");
     Environment.SetEnvironmentVariable("FILETRANSFER_LOG_DIRECTORY", null);
+    string loggingRole = Path.GetFileName(root);
+    string defaultLogs = Path.Combine(AppContext.BaseDirectory, "Logs", loggingRole);
+    try
+    {
+        await File.WriteAllTextAsync(loggingConfig, JsonSerializer.Serialize(new LoggingOptions { Directory = "../outside-deployment" }));
+        AppLogging.Initialize(loggingRole, loggingConfig);
+        Log.CloseAndFlush();
+        Check(AppLogging.LogDirectory == defaultLogs && Directory.GetFiles(defaultLogs, "app-*.log").Length > 0,
+            "部署目录之外的日志配置回退到部署目录下的 Logs");
+    }
+    finally
+    {
+        Log.CloseAndFlush();
+        if (Directory.Exists(defaultLogs)) Directory.Delete(defaultLogs, true);
+    }
     Console.WriteLine($"全部通过，共 {passed} 项检查。");
 }
 finally

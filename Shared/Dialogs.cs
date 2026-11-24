@@ -27,7 +27,16 @@ public static class Dialog
     public static void Notify(Window? owner, string message, string title = "提示", DialogTone tone = DialogTone.Info)
         => Show(owner, title, message, tone, "确定", null, danger: tone == DialogTone.Error);
 
-    private static bool? Show(Window? owner, string title, string message, DialogTone tone, string acceptText, string? cancelText, bool danger)
+    internal static MessageBoxResult ConfirmSaveChanges(Window owner, string message)
+    {
+        bool discarded = false;
+        bool? saved = Show(owner, "未保存内容", message, DialogTone.Question, "保存", "取消",
+            danger: false, discard: () => discarded = true);
+        return saved == true ? MessageBoxResult.Yes : discarded ? MessageBoxResult.No : MessageBoxResult.Cancel;
+    }
+
+    private static bool? Show(Window? owner, string title, string message, DialogTone tone, string acceptText, string? cancelText,
+        bool danger, Action? discard = null)
     {
         var window = new Window
         {
@@ -68,17 +77,6 @@ public static class Dialog
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 18, 0, 0)
         };
-        if (cancelText is not null)
-        {
-            // IsCancel 自带 Esc 与“返回 false”，不要再挂 Click 重复设置 DialogResult。
-            buttons.Children.Add(new Button
-            {
-                Content = cancelText,
-                MinWidth = 76,
-                IsCancel = true,
-                Margin = new Thickness(0, 0, 8, 0)
-            });
-        }
         var accept = new Button
         {
             Content = acceptText,
@@ -87,7 +85,26 @@ public static class Dialog
             Style = StyleFor(danger ? "DangerButton" : "PrimaryButton")
         };
         accept.Click += (_, _) => window.DialogResult = true;
-        buttons.Children.Add(accept);
+        if (discard is not null)
+        {
+            accept.Margin = new Thickness(0, 0, 8, 0);
+            buttons.Children.Add(accept);
+            var discardButton = new Button { Content = "放弃", MinWidth = 76, Margin = new Thickness(0, 0, 8, 0) };
+            discardButton.Click += (_, _) => { discard(); window.DialogResult = false; };
+            buttons.Children.Add(discardButton);
+        }
+        if (cancelText is not null)
+        {
+            // IsCancel 自带 Esc 与“返回 false”，不要再挂 Click 重复设置 DialogResult。
+            buttons.Children.Add(new Button
+            {
+                Content = cancelText,
+                MinWidth = 76,
+                IsCancel = true,
+                Margin = discard is null ? new Thickness(0, 0, 8, 0) : new Thickness(0)
+            });
+        }
+        if (discard is null) buttons.Children.Add(accept);
         panel.Children.Add(buttons);
 
         var root = new Border

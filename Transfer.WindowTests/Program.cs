@@ -13,7 +13,7 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
-        string logs = Path.Combine(Path.GetTempPath(), "FileTransfer-window-logs-" + Guid.NewGuid().ToString("N"));
+        string logs = Path.Combine(AppContext.BaseDirectory, "FileTransfer-window-logs-" + Guid.NewGuid().ToString("N"));
         Environment.SetEnvironmentVariable("FILETRANSFER_LOG_DIRECTORY", logs);
         Environment.SetEnvironmentVariable("FILETRANSFER_DISABLE_LAYOUT", "1");
         Environment.SetEnvironmentVariable("FILETRANSFER_DISABLE_THEME_ANIMATION", "1");

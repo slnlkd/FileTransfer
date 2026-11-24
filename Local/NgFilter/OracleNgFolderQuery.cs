@@ -45,34 +45,35 @@ internal sealed class OracleNgFolderQuery
             part => part.StartsWith("A6", StringComparison.OrdinalIgnoreCase));
         if (index < 0) return new(entries);
         string equipmentNo = parts[index];
-        var matches = await FindAsync(equipmentNo, DateTime.SpecifyKind(date.Date, DateTimeKind.Utc));
+        var matches = (await FindBatchesAsync(equipmentNo, date.Date, date.Date.AddDays(1), CancellationToken.None))
+            .Select(item => item.Batch).ToHashSet(StringComparer.OrdinalIgnoreCase);
         return new(entries.Where(e => e.IsDirectory && matches.Contains(e.Name.Trim())).ToArray());
     }
 
-    private async Task<HashSet<string>> FindAsync(string equipmentNo, DateTime utcDate)
+    public async Task<RemoteBatchKey[]> FindBatchesAsync(string equipmentNo, DateTime start, DateTime end, CancellationToken ct)
     {
-        const string sql = "SELECT DISTINCT \"Parameter2\" FROM \"RCMDB\".\"ProjectRpaAutoAlignmentResults\" " +
+        const string sql = "SELECT DISTINCT TRUNC(\"AlignmentStartTime\"), \"Parameter2\" FROM \"RCMDB\".\"ProjectRpaAutoAlignmentResults\" " +
             "WHERE \"EquipmentNo\" = :equipmentNo AND \"AlignmentResult\" = :result " +
             "AND \"AlignmentStartTime\" >= :startUtc AND \"AlignmentStartTime\" < :endUtc AND \"Parameter2\" IS NOT NULL";
         await using var connection = new OracleConnection(settings.ConnectionString);
-        await connection.OpenAsync();
+        await connection.OpenAsync(ct);
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
         command.BindByName = true;
         command.CommandTimeout = Math.Clamp(settings.CommandTimeoutSeconds, 1, 60);
         command.Parameters.Add("equipmentNo", OracleDbType.NVarchar2, 50).Value = equipmentNo;
         command.Parameters.Add("result", OracleDbType.NVarchar2, 50).Value = "N";
-        command.Parameters.Add("startUtc", OracleDbType.TimeStamp).Value = DateTime.SpecifyKind(utcDate.Date, DateTimeKind.Unspecified);
-        command.Parameters.Add("endUtc", OracleDbType.TimeStamp).Value = DateTime.SpecifyKind(utcDate.Date.AddDays(1), DateTimeKind.Unspecified);
-        var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        await using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
+        command.Parameters.Add("startUtc", OracleDbType.TimeStamp).Value = DateTime.SpecifyKind(start, DateTimeKind.Unspecified);
+        command.Parameters.Add("endUtc", OracleDbType.TimeStamp).Value = DateTime.SpecifyKind(end, DateTimeKind.Unspecified);
+        var values = new List<RemoteBatchKey>();
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
         {
-            if (reader.IsDBNull(0)) continue;
-            string value = reader.GetString(0).Trim();
-            if (value.Length > 0) values.Add(value);
+            if (reader.IsDBNull(1)) continue;
+            string value = reader.GetString(1).Trim();
+            if (value.Length > 0) values.Add(new(reader.GetDateTime(0), value));
         }
-        Log.Information("只看NG查询完成；机台 {EquipmentNo}，日期 {Date}，NG 文件夹 {Count}", equipmentNo, utcDate.ToString("yyyyMMdd"), values.Count);
-        return values;
+        Log.Information("NG 查询完成；机台 {EquipmentNo}，开始 {Start}，截止 {End}，NG 批次 {Count}", equipmentNo, start, end, values.Count);
+        return values.ToArray();
     }
 }

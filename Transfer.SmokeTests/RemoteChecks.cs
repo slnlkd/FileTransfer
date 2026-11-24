@@ -205,6 +205,46 @@ internal static class RemoteChecks
         await ExpectRejected(() => client.CallAsync(new("annotation-delete", batch, ImageName: "../a.png")), check, "撤销标注拒绝带路径的图片名");
         check((await client.CallAsync(new("annotation-delete", batch, ImageName: "a.png"))).Total == 0, "重复撤销不存在的记录不会误删");
 
+        const string date616 = "DS616/A6-DPQG-055/SaveImages/20261115";
+        const string otherDate616 = "DS616/A6-DPQG-056/SaveImages/20261115";
+        const string batch616 = date616 + "/9";
+        const string otherBatch616 = otherDate616 + "/9";
+        Directory.CreateDirectory(Path.Combine(root, batch616));
+        Directory.CreateDirectory(Path.Combine(root, otherBatch616));
+        var saved616 = await client.SaveAnnotationAsync(batch616, "外观异常", "重新拍摄", null, "李明", "a.png");
+        check(saved616 is { EquipmentNo: "A6-DPQG-055", EquipmentType: "DS616", BatchNumber: "9", FolderPath: batch616 }
+            && saved616.AutoLineDate == new DateTime(2026, 11, 15), "DS616 截图目录跳过 SaveImages，正确保存机台、机型和日期");
+        await client.SaveAnnotationAsync(otherBatch616, "外观异常", "重新拍摄", null, "李明", "a.png");
+        check((await client.ListAnnotationsAsync(date616)).Single().EquipmentNo == "A6-DPQG-055"
+            && (await client.GetAnnotationHistoryAsync(batch616)).Single().EquipmentType == "DS616",
+            "DS616 按天和批次查询都使用正确机台编号");
+        check((await client.CallAsync(new("annotation-delete", batch616, ImageName: "a.png"))).Total == 1
+            && (await client.GetAnnotationHistoryAsync(batch616)).Length == 0
+            && (await client.ListAnnotationsAsync(otherDate616)).Single().EquipmentNo == "A6-DPQG-056",
+            "DS616 撤销不影响同日期、同批次的其他机台");
+
+        const string newer616 = "DS616/A6-DPQG-055/SaveImages/20261116/9";
+        Directory.CreateDirectory(Path.Combine(root, newer616));
+        Directory.CreateDirectory(Path.Combine(root, date616, "10"));
+        await client.SaveAnnotationAsync(newer616, "外观异常", "重新拍摄", null, "李明", "a.png");
+        var rangeStart = new DateTime(2026, 11, 15);
+        var rangeEnd = rangeStart.AddDays(1);
+        server.NgBatchQuery = (equipment, start, end, _) =>
+        {
+            if (equipment != "A6-DPQG-055" || start != rangeStart || end != rangeEnd.AddDays(1))
+                throw new Exception("NG 总览应按机台和完整日期区间批量查询");
+            return Task.FromResult<RemoteBatchKey[]>([new(start, "9"), new(end.AddDays(-1), "9"), new(start, "99")]);
+        };
+        var overview = await client.GetNgOverviewAsync("DS616/A6-DPQG-055", rangeStart, rangeEnd);
+        check(overview.Length == 2 && overview[0].Batches.Single() is { Path: newer616, Annotated: true }
+            && overview[1].Batches.Single() is { Path: batch616, Annotated: false },
+            "NG 总览识别 DS616、按日期区分同编号批次且仅列出现存的 NG 文件夹");
+        await client.SaveAnnotationAsync(batch616, "外观异常", "重新拍摄", null, "李明", "a.png");
+        check((await client.GetNgOverviewAsync("DS616/A6-DPQG-055/SaveImages", rangeStart, rangeEnd))
+            .All(day => day.Batches.Single().Annotated), "NG 总览刷新后反映最新标注状态，支持 SaveImages 入口");
+        await ExpectRejected(() => client.GetNgOverviewAsync("DS616/A6-DPQG-055", rangeStart, rangeStart.AddDays(31)),
+            check, "拒绝超过 31 天的 NG 总览查询");
+
         var addedCategory = await client.CallAsync(new("annotation-dictionary-add", "category", Text: "  外观复核 A  "));
         var addedPlan = await client.CallAsync(new("annotation-dictionary-add", "plan", Text: "现场复核"));
         check(addedCategory.Dictionary is { } categoryResult && categoryResult.Categories.Count(item => item.Name == "外观复核 A") == 1

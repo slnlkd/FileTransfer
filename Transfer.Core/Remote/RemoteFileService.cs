@@ -22,6 +22,7 @@ public sealed class RemoteFileService : IAsyncDisposable
     public string UpdateDirectory { get; set; } = Path.Combine(AppContext.BaseDirectory, "updates");
     // 可选的目录过滤扩展；未设置时列表请求保持原样。
     public Func<string, string, RemoteEntry[], Task<RemoteFilterResult>>? ListFilter { get; set; }
+    public Func<string, DateTime, DateTime, CancellationToken, Task<RemoteBatchKey[]>>? NgBatchQuery { get; set; }
     public event Action<string>? Activity;
     public event Action<RemoteTransferProgress>? TransferProgress;
     public int Port => (listener?.LocalEndpoint as IPEndPoint)?.Port ?? 0;
@@ -151,6 +152,10 @@ public sealed class RemoteFileService : IAsyncDisposable
                     case "annotation-dictionary": response = new(true, Dictionary: await Annotations.DictionaryAsync(ct)); break;
                     case "annotation-dictionary-add": response = new(true, Dictionary: await Annotations.AddDictionaryItemAsync(request.Path, request.Text, ct)); break;
                     case "annotation-list": response = new(true, Annotations: await Annotations.ListAsync(request.Path, ct)); break;
+                    case "ng-overview":
+                        var query = NgBatchQuery ?? throw new IOException("服务端未配置 NG 总览查询");
+                        response = new(true, NgDays: await Annotations.GetNgOverviewAsync(request.Path, request.StartDate, request.EndDate, query, ct));
+                        break;
                     case "annotation-get":
                         var history = await Annotations.GetHistoryAsync(request.Path, ct);
                         response = new(true, Annotation: history.FirstOrDefault(), Annotations: history);

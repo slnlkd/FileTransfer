@@ -89,7 +89,10 @@ public sealed class ImageViewer : Window
     private TextBlock? categoryLabel;
     private TextBlock? planLabel;
     private TextBlock? annotationStatus;
-    private Border? annotationStatusBadge;
+    private Button? annotationHistoryButton;
+    private RotateTransform? annotationHistoryChevron;
+    private StackPanel? annotationHistory;
+    private bool onlyUnannotated;
     private TextBlock? annotationImageName;
     private TextBlock? annotationSummary;
     private TextBlock? annotationError;
@@ -193,7 +196,6 @@ public sealed class ImageViewer : Window
         nextArrow = CreateArrow(true, "下一张", HorizontalAlignment.Right);
 
         var panel = new DockPanel();
-        const double annotationListWidth = 244;
 
         // 标题栏：文件名居中，窗口按钮在右侧，统一使用线性图标。
         var titleButtons = new StackPanel { Orientation = Orientation.Horizontal };
@@ -416,16 +418,31 @@ public sealed class ImageViewer : Window
             shell.Children.Add(titleBar);
             shell.Children.Add(statusBar);
             var columns = new Grid { Margin = new Thickness(12, 4, 12, 0) };
-            columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(annotationListWidth) });
-            columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(320) });
+            var listColumn = new ColumnDefinition { Width = new GridLength(244) };
+            columns.ColumnDefinitions.Add(listColumn);
+            columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 260 });
+            columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
+            columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(320), MinWidth = 260, MaxWidth = 420 });
             var panelLine = ThemeBrush("HairlineBrush", Color.FromRgb(0x2C, 0x31, 0x37));
-            columns.Children.Add(BuildAnnotationList(surface, panelLine, muted));
-            panel.Margin = new Thickness(10, 0, 10, 0);
+            columns.Children.Add(BuildAnnotationList(surface, panelLine, muted, listColumn));
+            panel.Margin = new Thickness(8, 0, 0, 0);
             Grid.SetColumn(panel, 1);
             columns.Children.Add(panel);
+            var splitter = new GridSplitter
+            {
+                Foreground = Brushes.Transparent,
+                FocusVisualStyle = null,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                ResizeDirection = GridResizeDirection.Columns,
+                ResizeBehavior = GridResizeBehavior.PreviousAndNext,
+                ToolTip = "调整标注面板宽度"
+            };
+            System.Windows.Automation.AutomationProperties.SetName(splitter, "调整标注面板宽度");
+            Grid.SetColumn(splitter, 2);
+            columns.Children.Add(splitter);
             var annotationSide = BuildAnnotationSide(panelLine);
-            Grid.SetColumn(annotationSide, 2);
+            Grid.SetColumn(annotationSide, 3);
             columns.Children.Add(annotationSide);
             shell.Children.Add(columns);
             Content = shell;
@@ -439,32 +456,49 @@ public sealed class ImageViewer : Window
             Height = Math.Max(600, Math.Min(900, workArea.Height * 0.9));
             MinWidth = 960;
             MinHeight = 560;
+            stage.Focusable = true;
+            System.Windows.Automation.AutomationProperties.SetName(stage, "图片预览");
+            stage.PreviewMouseLeftButtonDown += (_, _) => stage.Focus();
         }
 
-        Loaded += async (_, _) => { FitToWindow(); await LoadAnnotationDictionaryAsync(); await ShowCurrentAsync(); };
+        Loaded += async (_, _) =>
+        {
+            if (annotation is not null && IsActive) stage.Focus();
+            FitToWindow();
+            await LoadAnnotationDictionaryAsync();
+            await ShowCurrentAsync();
+        };
         previousArrow.Click += async (_, _) => await MoveAsync(-1);
         nextArrow.Click += async (_, _) => await MoveAsync(1);
+        UIElement navigationSurface = annotation is null ? this : stage;
+        navigationSurface.PreviewKeyDown += async (_, e) =>
+        {
+            if (e.Key is not (Key.Left or Key.Right)) return;
+            e.Handled = true;
+            await MoveAsync(e.Key == Key.Left ? -1 : 1);
+        };
         PreviewKeyDown += async (_, e) =>
         {
             bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
-            if (e.Key is Key.Left or Key.Right) { e.Handled = true; await MoveAsync(e.Key == Key.Left ? -1 : 1); }
-            else if (e.Key == Key.Escape && fullscreen) { e.Handled = true; ToggleFullscreen(); }
+            if (e.Key == Key.Escape && fullscreen) { e.Handled = true; ToggleFullscreen(); }
             else if (e.Key == Key.F11) { e.Handled = true; ToggleFullscreen(); }
             else if (ctrl && e.Key is Key.OemPlus or Key.Add) { e.Handled = true; ZoomAtCenter(zoom * 1.15); }
             else if (ctrl && e.Key is Key.OemMinus or Key.Subtract) { e.Handled = true; ZoomAtCenter(zoom / 1.15); }
         };
-        Closing += (_, e) => { if (annotationWriting) e.Cancel = true; };
+        Closing += (_, e) => { e.Cancel = annotationWriting || !ConfirmDiscard("关闭窗口"); };
         Closed += (_, _) => { lifetime.Cancel(); loadCancel?.Cancel(); thumbScrollTimer.Stop(); if (pickerPopup is not null) pickerPopup.IsOpen = false; };
         UpdateZoomUi();
     }
 
     // ---------------- 标注模式：左栏图片列表 + 右栏标注面板 ----------------
 
-    private Border BuildAnnotationList(Brush surface, Brush line, Brush muted)
+    private Border BuildAnnotationList(Brush surface, Brush line, Brush muted, ColumnDefinition column)
     {
+        var visibleImages = new ListCollectionView(thumbs);
         var list = new ListBox
         {
-            ItemsSource = thumbs,
+            ItemsSource = visibleImages,
+            IsSynchronizedWithCurrentItem = false,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
             Padding = new Thickness(6, 2, 6, 6),
@@ -490,6 +524,7 @@ public sealed class ImageViewer : Window
         var head = new Grid { Height = 42 };
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var title = new TextBlock
         {
             Text = "图片列表",
@@ -501,19 +536,78 @@ public sealed class ImageViewer : Window
         title.SetResourceReference(TextBlock.ForegroundProperty, "InkBrush");
         var count = new TextBlock
         {
-            Text = $"{thumbs.Count} 张",
+            Text = $"已标注 {thumbs.Count(item => item.Annotated)} / {thumbs.Count} 张",
             FontSize = 11,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 12, 0),
+            Margin = new Thickness(0, 0, 6, 0),
             Foreground = muted
         };
         head.Children.Add(title);
         Grid.SetColumn(count, 1);
         head.Children.Add(count);
+        var toggle = CreateIconButton("IconChevronGeometry", "折叠图片列表", out var chevron);
+        toggle.Margin = new Thickness(0, 0, 4, 0);
+        chevron.RenderTransformOrigin = new Point(0.5, 0.5);
+        var rotation = new RotateTransform(90);
+        GridLength expandedWidth = column.Width;
+        chevron.RenderTransform = rotation;
+        var filter = new CheckBox { Content = "仅看未标注", Margin = new Thickness(12, 0, 12, 8) };
+        var empty = new TextBlock
+        {
+            Text = "本批次图片均已标注",
+            Foreground = muted,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(12, 8, 12, 0),
+            Visibility = Visibility.Collapsed
+        };
+        filter.Click += async (_, _) =>
+        {
+            bool enabled = filter.IsChecked == true;
+            var firstPending = enabled && thumbs[index].Annotated ? thumbs.FirstOrDefault(item => !item.Annotated) : null;
+            if (firstPending is not null && !ConfirmDiscard("切图"))
+            {
+                filter.IsChecked = onlyUnannotated;
+                return;
+            }
+            onlyUnannotated = enabled;
+            syncingAnnotation = true;
+            try { visibleImages.Filter = enabled ? item => !((ImageThumbItem)item).Annotated : null; }
+            finally { syncingAnnotation = false; }
+            empty.Visibility = visibleImages.IsEmpty ? Visibility.Visible : Visibility.Collapsed;
+            if (firstPending is not null)
+            {
+                index = firstPending.Index;
+                await ShowCurrentAsync();
+            }
+            else
+            {
+                SyncAnnotationSelection();
+                UpdateNavigationArrows();
+            }
+        };
+        System.Windows.Automation.AutomationProperties.SetName(toggle, "折叠图片列表");
+        toggle.Click += (_, _) =>
+        {
+            bool expand = list.Visibility == Visibility.Collapsed;
+            column.Width = expand ? expandedWidth : new GridLength(40);
+            list.Visibility = title.Visibility = count.Visibility = filter.Visibility = expand ? Visibility.Visible : Visibility.Collapsed;
+            empty.Visibility = expand && visibleImages.IsEmpty ? Visibility.Visible : Visibility.Collapsed;
+            rotation.Angle = expand ? 90 : -90;
+            string action = expand ? "折叠图片列表" : "展开图片列表";
+            toggle.ToolTip = action;
+            System.Windows.Automation.AutomationProperties.SetName(toggle, action);
+            if (expand && list.SelectedItem is { } selected) list.ScrollIntoView(selected);
+        };
+        Grid.SetColumn(toggle, 2);
+        head.Children.Add(toggle);
 
         var root = new DockPanel();
         DockPanel.SetDock(head, Dock.Top);
+        DockPanel.SetDock(filter, Dock.Top);
+        DockPanel.SetDock(empty, Dock.Top);
         root.Children.Add(head);
+        root.Children.Add(filter);
+        root.Children.Add(empty);
         root.Children.Add(list);
         return new Border { Background = surface, BorderBrush = line, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Child = root };
     }
@@ -621,7 +715,7 @@ public sealed class ImageViewer : Window
         noteBox = new TextBox
         {
             Height = 72,
-            Style = ThemeStyle("RoundedTextInput"),
+            Style = ThemeStyle("AnnotationFieldInput"),
             Margin = new Thickness(0, 6, 0, 0),
             AcceptsReturn = true,
             TextWrapping = TextWrapping.Wrap,
@@ -629,11 +723,13 @@ public sealed class ImageViewer : Window
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             MaxLength = AnnotationStore.NoteLimit
         };
+        System.Windows.Automation.AutomationProperties.SetName(noteBox, "备注");
         noteBox.TextChanged += (_, _) => MarkDirty();
         stack.Children.Add(noteBox);
 
         stack.Children.Add(FieldLabel("操作人", 12));
-        operatorBox = new TextBox { Style = ThemeStyle("RoundedTextInput"), Margin = new Thickness(0, 6, 0, 0), Text = operatorName };
+        operatorBox = new TextBox { Style = ThemeStyle("AnnotationFieldInput"), Margin = new Thickness(0, 6, 0, 0), Text = operatorName };
+        System.Windows.Automation.AutomationProperties.SetName(operatorBox, "操作人");
         operatorBox.TextChanged += (_, _) => MarkDirty();
         stack.Children.Add(operatorBox);
 
@@ -657,24 +753,45 @@ public sealed class ImageViewer : Window
             Visibility = Visibility.Collapsed
         };
         revokeButton.Click += async (_, _) => await RevokeAnnotationAsync();
-        stack.Children.Add(new StackPanel
+        var actions = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 16, 0, 0),
             Children = { revokeButton, submitButton }
-        });
+        };
 
-        annotationError = new TextBlock { FontSize = 11, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
+        annotationError = new TextBlock
+        {
+            FontSize = 11,
+            Margin = new Thickness(0, 0, 0, 8),
+            MaxHeight = 60,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Visibility = Visibility.Collapsed
+        };
         annotationError.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");
-        stack.Children.Add(annotationError);
 
         annotationHint = new TextBlock { FontSize = 10, Margin = new Thickness(0, 10, 0, 0), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
         annotationHint.SetResourceReference(TextBlock.ForegroundProperty, "SubtleBrush");
         stack.Children.Add(annotationHint);
 
-        var scroll = new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-        var side = new Border { BorderBrush = line, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Child = scroll };
+        var scroll = new ScrollViewer
+        {
+            Content = stack,
+            FocusVisualStyle = null,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+        };
+        var footer = new Border
+        {
+            BorderBrush = line,
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(14, 10, 14, 12),
+            Child = new StackPanel { Children = { annotationError, actions } }
+        };
+        DockPanel.SetDock(footer, Dock.Bottom);
+        var layout = new DockPanel { Children = { footer, scroll } };
+        var side = new Border { BorderBrush = line, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Child = layout };
         side.SetResourceReference(Border.BackgroundProperty, "SurfaceBrush");
         return side;
     }
@@ -682,10 +799,34 @@ public sealed class ImageViewer : Window
     private Border BuildAnnotationStatusCard(Brush line)
     {
         annotationStatus = new TextBlock { FontSize = 11, FontWeight = FontWeights.SemiBold };
-        annotationStatusBadge = new Border { Child = annotationStatus, CornerRadius = new CornerRadius(4), Padding = new Thickness(7, 3, 7, 3) };
+        annotationHistoryButton = new Button
+        {
+            Style = ThemeStyle("AnnotationHistoryButton"),
+            IsEnabled = false
+        };
+        annotationHistoryChevron = new RotateTransform();
+        var chevron = new System.Windows.Shapes.Path
+        {
+            Data = (Geometry)FindResource("IconChevronGeometry"),
+            Style = ThemeStyle("IconGlyph"),
+            Width = 10,
+            Height = 6,
+            Stretch = Stretch.Uniform,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 0, 0),
+            RenderTransform = annotationHistoryChevron,
+            RenderTransformOrigin = new Point(0.5, 0.5)
+        };
+        chevron.SetBinding(VisibilityProperty, new Binding(nameof(IsEnabled))
+        {
+            Source = annotationHistoryButton,
+            Converter = new BooleanToVisibilityConverter()
+        });
+        annotationHistoryButton.Content = new StackPanel { Orientation = Orientation.Horizontal, Children = { annotationStatus, chevron } };
+        annotationHistoryButton.Click += (_, _) => ToggleAnnotationHistory();
         var header = new DockPanel();
-        DockPanel.SetDock(annotationStatusBadge, Dock.Right);
-        header.Children.Add(annotationStatusBadge);
+        DockPanel.SetDock(annotationHistoryButton, Dock.Right);
+        header.Children.Add(annotationHistoryButton);
         var caption = FieldLabel("当前图片", 0);
         caption.VerticalAlignment = VerticalAlignment.Center;
         header.Children.Add(caption);
@@ -700,14 +841,80 @@ public sealed class ImageViewer : Window
             FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 5, 0, 0), Visibility = Visibility.Collapsed
         };
         annotationSummary.SetResourceReference(TextBlock.ForegroundProperty, "MutedBrush");
+        annotationHistory = new StackPanel
+        {
+            Margin = new Thickness(0, 6, 0, 0),
+            Visibility = Visibility.Collapsed
+        };
         var card = new Border
         {
-            Child = new StackPanel { Children = { header, annotationImageName, annotationSummary } },
+            Child = new StackPanel { Children = { header, annotationImageName, annotationSummary, annotationHistory } },
             Margin = new Thickness(0, 10, 0, 0), Padding = new Thickness(10, 8, 10, 8),
             CornerRadius = new CornerRadius(6), BorderBrush = line, BorderThickness = new Thickness(1)
         };
         card.SetResourceReference(Border.BackgroundProperty, "HeaderBrush");
         return card;
+    }
+
+    private void ToggleAnnotationHistory()
+    {
+        if (annotationHistory is null || annotation is null) return;
+        if (annotationHistory.Visibility == Visibility.Visible)
+        {
+            annotationHistory.Visibility = Visibility.Collapsed;
+            annotationSummary!.Visibility = Visibility.Visible;
+            annotationHistoryChevron!.Angle = 0;
+            return;
+        }
+        var history = annotation.GetImageHistory(images[index].Name);
+        if (history.Count == 0) return;
+        annotationHistory.Children.Clear();
+        foreach (var record in history) annotationHistory.Children.Add(BuildHistoryRecord(record));
+        annotationSummary!.Visibility = Visibility.Collapsed;
+        annotationHistory.Visibility = Visibility.Visible;
+        annotationHistoryChevron!.Angle = 180;
+    }
+
+    private Border BuildHistoryRecord(RemoteAnnotation record)
+    {
+        var fields = new Grid();
+        fields.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(60) });
+        fields.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        void AddField(string name, string? value)
+        {
+            int row = fields.RowDefinitions.Count;
+            fields.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var label = FieldLabel(name, 0);
+            var text = new TextBlock
+            {
+                Text = string.IsNullOrWhiteSpace(value) ? "未记录" : value,
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 11,
+                Margin = new Thickness(0, 0, 0, 3)
+            };
+            text.SetResourceReference(TextBlock.ForegroundProperty, "InkBrush");
+            Grid.SetRow(label, row);
+            Grid.SetRow(text, row);
+            Grid.SetColumn(text, 1);
+            fields.Children.Add(label);
+            fields.Children.Add(text);
+        }
+
+        AddField("时间", AnnotationContext.GetDisplayTime(record.UpdatedAt)?.ToString("yyyy.MM.dd HH:mm:ss"));
+        AddField("操作人", record.Operator);
+        AddField("归类", record.CategoryName);
+        AddField("处理方案", record.PlanName);
+        if (!string.IsNullOrWhiteSpace(record.Note)) AddField("备注", record.Note);
+
+        var item = new Border
+        {
+            Child = fields,
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(0, 8, 0, 5)
+        };
+        item.SetResourceReference(Border.BorderBrushProperty, "HairlineBrush");
+        return item;
     }
 
     private TextBlock FieldLabel(string text, double top)
@@ -742,19 +949,19 @@ public sealed class ImageViewer : Window
         var button = new Button
         {
             Content = content,
-            Height = 32,
+            Style = ThemeStyle("AnnotationFieldButton"),
             Padding = new Thickness(10, 0, 10, 0),
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             ToolTip = placeholder
         };
-        button.SetResourceReference(Control.BackgroundProperty, "HeaderBrush");
         button.Click += (_, _) => ShowPickerMenu(button, label, placeholder);
         return (button, label);
     }
 
     private Grid CreatePickerRow(Button picker, TextBlock label, AnnotationDictionaryKind kind, string fieldName)
     {
+        System.Windows.Automation.AutomationProperties.SetName(picker, fieldName);
         var row = new Grid { Margin = new Thickness(0, 6, 0, 0) };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -762,7 +969,7 @@ public sealed class ImageViewer : Window
         {
             Content = new System.Windows.Shapes.Path { Data = (Geometry)FindResource("IconAddGeometry"), Style = ThemeStyle("IconGlyph") },
             Width = 32,
-            Height = 32,
+            Style = ThemeStyle("AnnotationFieldButton"),
             Padding = new Thickness(0),
             Margin = new Thickness(6, 0, 0, 0),
             ToolTip = "新增" + fieldName
@@ -778,7 +985,7 @@ public sealed class ImageViewer : Window
     private void ShowDictionaryEditor(Button anchor, TextBlock label, AnnotationDictionaryKind kind, string fieldName)
     {
         if (dictionary is null || annotationWriting || dictionaryAdding) return;
-        var input = new TextBox { MaxLength = AnnotationStore.NameLimit, Margin = new Thickness(0, 6, 0, 0), Style = ThemeStyle("RoundedTextInput") };
+        var input = new TextBox { MaxLength = AnnotationStore.NameLimit, Margin = new Thickness(0, 6, 0, 0), Style = ThemeStyle("AnnotationFieldInput") };
         System.Windows.Automation.AutomationProperties.SetName(input, fieldName + "名称");
         var error = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0), Visibility = Visibility.Collapsed };
         error.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");
@@ -974,8 +1181,13 @@ public sealed class ImageViewer : Window
         bool annotated = latest is not null;
         annotationImageName!.Text = imageName;
         annotationStatus!.Text = annotated ? $"已标注 {history.Count} 次" : "未标注";
-        annotationStatus.SetResourceReference(TextBlock.ForegroundProperty, annotated ? "SuccessBrush" : "MutedBrush");
-        annotationStatusBadge!.SetResourceReference(Border.BackgroundProperty, annotated ? "AccentSoftBrush" : "SurfaceBrush");
+        annotationHistoryButton!.IsEnabled = annotated;
+        annotationHistoryButton.ToolTip = annotated ? "查看标注历史" : null;
+        System.Windows.Automation.AutomationProperties.SetName(annotationHistoryButton,
+            annotated ? $"{annotationStatus.Text}，查看标注历史" : annotationStatus.Text);
+        annotationHistory!.Visibility = Visibility.Collapsed;
+        annotationHistory.Children.Clear();
+        annotationHistoryChevron!.Angle = 0;
         annotationSummary!.Text = latest is null ? "" : $"最近一次 · {latest.CategoryName} / {latest.PlanName}";
         annotationSummary.Visibility = annotated ? Visibility.Visible : Visibility.Collapsed;
         submitButton!.Content = annotated ? "新增标注" : "提交标注";
@@ -987,9 +1199,9 @@ public sealed class ImageViewer : Window
         if (annotation is null || annotationWriting || dictionaryAdding) return;
         annotationError!.Visibility = Visibility.Collapsed;
         string operatorText = (operatorBox?.Text ?? "").Trim();
-        if (string.IsNullOrEmpty(categoryCode)) { ShowAnnotationError("请选择异常归类"); return; }
-        if (string.IsNullOrEmpty(planCode)) { ShowAnnotationError("请选择异常处理方案"); return; }
-        if (operatorText.Length == 0) { ShowAnnotationError("请填写操作人"); return; }
+        if (string.IsNullOrEmpty(categoryCode)) { ShowAnnotationError("请选择异常归类", categoryPicker); return; }
+        if (string.IsNullOrEmpty(planCode)) { ShowAnnotationError("请选择异常处理方案", planPicker); return; }
+        if (operatorText.Length == 0) { ShowAnnotationError("请填写操作人", operatorBox); return; }
         string imageName = images[index].Name;
         await RunAnnotationWriteAsync("正在提交…", "提交失败", "标注已提交", async () =>
         {
@@ -1041,10 +1253,13 @@ public sealed class ImageViewer : Window
         Toast.Show(owner, success, ToastKind.Success);
     }
 
-    private void ShowAnnotationError(string message)
+    private void ShowAnnotationError(string message, FrameworkElement? field = null)
     {
         annotationError!.Text = message;
+        annotationError.ToolTip = message;
         annotationError.Visibility = Visibility.Visible;
+        field?.BringIntoView();
+        field?.Focus();
     }
 
     private static string LoadOperatorName()
@@ -1090,8 +1305,10 @@ public sealed class ImageViewer : Window
         syncingAnnotation = true;
         try
         {
-            annotationList.SelectedIndex = index;
-            if (index >= 0 && index < thumbs.Count) annotationList.ScrollIntoView(thumbs[index]);
+            var current = thumbs[index];
+            bool visible = !onlyUnannotated || !current.Annotated;
+            annotationList.SelectedItem = visible ? current : null;
+            if (visible) annotationList.ScrollIntoView(current);
         }
         finally { syncingAnnotation = false; }
     }
@@ -1539,27 +1756,41 @@ public sealed class ImageViewer : Window
         }
     }
 
-    // 切图前确认未提交的标注，避免直接丢掉用户填的内容。
-    private async Task<bool> ConfirmDiscardAsync()
+    private bool ConfirmDiscard(string action)
     {
         if (annotation is null || !annotationDirty) return true;
-        if (!Dialog.Confirm(this, "当前图片的标注尚未提交，切换后填写的内容会丢失。", "未提交的标注")) return false;
+        if (!Dialog.Confirm(this, $"当前图片的标注尚未提交，{action}后填写的内容会丢失。是否继续？", "未提交的标注")) return false;
         annotationDirty = false;
         return true;
     }
 
     public async Task MoveAsync(int direction)
     {
-        if (index + direction < 0 || index + direction >= images.Length) return;
-        if (!await ConfirmDiscardAsync()) { SyncAnnotationSelection(); return; }
-        index += direction; await ShowCurrentAsync();
+        int target = FindAdjacentImage(direction);
+        if (target >= 0) await MoveToAsync(target);
+    }
+
+    private int FindAdjacentImage(int direction)
+    {
+        if (direction == 0) return -1;
+        for (int target = index + direction; target >= 0 && target < images.Length; target += Math.Sign(direction))
+            if (!onlyUnannotated || !thumbs[target].Annotated) return target;
+        return -1;
+    }
+
+    private void UpdateNavigationArrows()
+    {
+        previousArrow.IsEnabled = FindAdjacentImage(-1) >= 0;
+        nextArrow.IsEnabled = FindAdjacentImage(1) >= 0;
+        if (!previousArrow.IsEnabled) SetArrowVisual(previousArrow, 0, 0);
+        if (!nextArrow.IsEnabled) SetArrowVisual(nextArrow, 0, 0);
     }
 
     public async Task MoveToAsync(int target)
     {
         if (target < 0 || target >= images.Length) return;
         if (target == index) { SyncThumbSelection(); return; }
-        if (!await ConfirmDiscardAsync()) { SyncAnnotationSelection(); SyncThumbSelection(); return; }
+        if (!ConfirmDiscard("切图")) { SyncAnnotationSelection(); SyncThumbSelection(); return; }
         index = target;
         await ShowCurrentAsync();
     }
@@ -1818,13 +2049,7 @@ public sealed class ImageViewer : Window
         }
         finally
         {
-            if (version == loadVersion)
-            {
-                previousArrow.IsEnabled = index > 0;
-                nextArrow.IsEnabled = index < images.Length - 1;
-                if (!previousArrow.IsEnabled) SetArrowVisual(previousArrow, 0, 0);
-                if (!nextArrow.IsEnabled) SetArrowVisual(nextArrow, 0, 0);
-            }
+            if (version == loadVersion) UpdateNavigationArrows();
         }
     }
 

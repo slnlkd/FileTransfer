@@ -10,6 +10,7 @@ public interface IAnnotationRepository
 {
     // 按标注时间从新到旧返回；batch 为空时返回整天的记录。
     Task<RemoteAnnotation[]> ListAsync(string equipmentNo, DateTime date, CancellationToken ct = default, string? batch = null);
+    Task<RemoteBatchKey[]> ListAnnotatedBatchesAsync(string equipmentNo, DateTime start, DateTime end, CancellationToken ct);
     Task<RemoteAnnotation> SaveAsync(RemoteAnnotation annotation, CancellationToken ct = default);
     Task<int> DeleteImageAsync(string equipmentNo, DateTime date, string batch, string folderPath, string imageName, CancellationToken ct = default);
     Task<RemoteDictionary> GetDictionaryAsync(CancellationToken ct = default);
@@ -18,7 +19,8 @@ public interface IAnnotationRepository
 
 /// <summary>
 /// 标注读写入口。每次提交追加一张图片的标注记录：
-/// 路径形如 机台/yyyyMMdd/批次，机台、日期、批次从路径解析后落到
+/// 支持 机台/yyyyMMdd/批次 和 DS616/机台/SaveImages/yyyyMMdd/批次，
+/// 机台、日期、批次从路径解析后落到
 /// AutoLineFailureAnalysisLog 的 EQP_ID / AUTOLINE_DATE / JOB_BATCH_NUMBER。
 /// </summary>
 public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository repository)
@@ -29,6 +31,50 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
     private readonly SemaphoreSlim gate = new(1, 1);
     private RemoteDictionary? dictionary;
     private DateTime dictionaryAt;
+
+    public async Task<RemoteNgDay[]> GetNgOverviewAsync(string path, DateTime? startDate, DateTime? endDate,
+        Func<string, DateTime, DateTime, CancellationToken, Task<RemoteBatchKey[]>> query, CancellationToken ct)
+    {
+        if (startDate is null || endDate is null || endDate.Value.Date < startDate.Value.Date
+            || (endDate.Value.Date - startDate.Value.Date).TotalDays >= 31 || endDate.Value.Date == DateTime.MaxValue.Date)
+            throw new IOException("请选择有效的日期范围，最多 31 天");
+        var start = DateTime.SpecifyKind(startDate.Value.Date, DateTimeKind.Unspecified);
+        var end = DateTime.SpecifyKind(endDate.Value.Date.AddDays(1), DateTimeKind.Unspecified);
+        string[] parts = path.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        string equipment = parts.LastOrDefault() ?? "";
+        bool imageRoot = equipment.Equals("SaveImages", StringComparison.OrdinalIgnoreCase);
+        if (imageRoot) equipment = parts.Length > 1 ? parts[^2] : "";
+        if (!equipment.StartsWith("A6", StringComparison.OrdinalIgnoreCase))
+            throw new IOException("NG 总览需在机台目录或 SaveImages 目录打开");
+
+        var dates = store.List(path).Where(item => item.IsDirectory).ToArray();
+        var screenshots = !imageRoot ? dates.FirstOrDefault(item => item.Name.Equals("SaveImages", StringComparison.OrdinalIgnoreCase)) : null;
+        if (screenshots is not null)
+            dates = [.. store.List(screenshots.Path).Where(item => item.IsDirectory), .. dates];
+        var dayFolders = dates.Select(item =>
+            (item.Path, Date: DateTime.TryParseExact(item.Name, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date) ? (DateTime?)date : null))
+            .Where(item => item.Date >= start && item.Date < end).ToArray();
+        if (dayFolders.Length == 0) return [];
+
+        var ng = (await query(equipment, start, end, ct)).ToLookup(item => item.Date.Date, item => item.Batch);
+        var annotated = (await repository.ListAnnotatedBatchesAsync(equipment, start, end, ct))
+            .ToLookup(item => item.Date.Date, item => item.Batch);
+        var days = new List<RemoteNgDay>();
+        foreach (var day in dayFolders.GroupBy(item => item.Date!.Value).OrderByDescending(group => group.Key))
+        {
+            ct.ThrowIfCancellationRequested();
+            var ngNames = ng[day.Key].ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (ngNames.Count == 0) continue;
+            var annotatedNames = annotated[day.Key].ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var batches = day.SelectMany(item => store.List(item.Path))
+                .Where(item => item.IsDirectory && ngNames.Contains(item.Name))
+                .DistinctBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(item => item.Name, NaturalComparer.Instance)
+                .Select(item => new RemoteNgBatch(item.Name, item.Path, annotatedNames.Contains(item.Name))).ToArray();
+            if (batches.Length > 0) days.Add(new(day.Key, batches));
+        }
+        return days.ToArray();
+    }
 
     public async Task<RemoteDictionary> DictionaryAsync(CancellationToken ct = default)
     {
@@ -130,39 +176,34 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
 
     private sealed record FolderKey(string Normalized, string Equipment, DateTime Date, string Batch, string? EquipmentType);
 
-    /// <summary>解析 机台/yyyyMMdd/批次；允许中间存在额外层级。</summary>
-    private FolderKey ParseFolder(string relative)
+    private FolderKey ParseFolder(string relative) => ParsePath(relative, hasBatch: true);
+
+    private FolderKey ParseDateDirectory(string relative) => ParsePath(relative, hasBatch: false);
+
+    private FolderKey ParsePath(string relative, bool hasBatch)
     {
         string full = store.Resolve(relative);
-        if (!Directory.Exists(full)) throw new IOException("对线文件夹不存在：" + relative);
-        string normalized = Relative(full);
+        if (!Directory.Exists(full)) throw new IOException((hasBatch ? "对线文件夹不存在：" : "目录不存在：") + relative);
+        string normalized = Path.GetRelativePath(store.Root, full).Replace('\\', '/');
         var segments = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (segments.Length < 3) throw new IOException("路径不符合 机台/日期/批次 结构：" + normalized);
-        for (int i = 1; i < segments.Length - 1; i++)
+        int dateLimit = segments.Length - (hasBatch ? 1 : 0);
+        if (dateLimit < 2) throw new IOException((hasBatch ? "路径不符合 机台/日期/批次 结构：" : "路径不符合 机台/日期 结构：") + normalized);
+        for (int i = 1; i < dateLimit; i++)
         {
             if (!DateTime.TryParseExact(segments[i], "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)) continue;
-            return new(normalized, segments[i - 1], DateTime.SpecifyKind(date.Date, DateTimeKind.Unspecified), segments[^1], null);
+            int equipmentIndex = i - 1;
+            if (segments[equipmentIndex].Equals("SaveImages", StringComparison.OrdinalIgnoreCase))
+            {
+                if (equipmentIndex == 0) throw new IOException("SaveImages 前缺少机台目录：" + normalized);
+                equipmentIndex--;
+            }
+            string modelDirectory = equipmentIndex > 0 ? segments[equipmentIndex - 1] : Path.GetFileName(store.Root);
+            string? equipmentType = modelDirectory.Equals("DS616", StringComparison.OrdinalIgnoreCase) ? "DS616" : null;
+            return new(normalized, segments[equipmentIndex], DateTime.SpecifyKind(date.Date, DateTimeKind.Unspecified),
+                hasBatch ? segments[^1] : "", equipmentType);
         }
         throw new IOException("路径中没有 yyyyMMdd 日期目录：" + normalized);
     }
-
-    /// <summary>解析 机台/yyyyMMdd，用于按天查询标注状态。</summary>
-    private FolderKey ParseDateDirectory(string relative)
-    {
-        string full = store.Resolve(relative);
-        if (!Directory.Exists(full)) throw new IOException("目录不存在：" + relative);
-        string normalized = Relative(full);
-        var segments = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (segments.Length < 2) throw new IOException("路径不符合 机台/日期 结构：" + normalized);
-        for (int i = 1; i < segments.Length; i++)
-        {
-            if (!DateTime.TryParseExact(segments[i], "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)) continue;
-            return new(normalized, segments[i - 1], DateTime.SpecifyKind(date.Date, DateTimeKind.Unspecified), "", null);
-        }
-        throw new IOException("路径中没有 yyyyMMdd 日期目录：" + normalized);
-    }
-
-    private string Relative(string full) => Path.GetRelativePath(store.Root, full).Replace('\\', '/');
 }
 
 /// <summary>
@@ -194,6 +235,14 @@ public sealed class JsonAnnotationRepository : IAnnotationRepository
                 && (batch is null || string.Equals(item.BatchNumber, batch, StringComparison.OrdinalIgnoreCase)))
             .OrderByDescending(item => item.UpdatedAt)
             .ToArray();
+    }
+
+    public async Task<RemoteBatchKey[]> ListAnnotatedBatchesAsync(string equipmentNo, DateTime start, DateTime end, CancellationToken ct)
+    {
+        var document = await ReadAsync(ct);
+        return document.Annotations.Where(item => string.Equals(item.EquipmentNo, equipmentNo, StringComparison.OrdinalIgnoreCase)
+            && item.AutoLineDate >= start && item.AutoLineDate < end && !string.IsNullOrWhiteSpace(item.BatchNumber))
+            .Select(item => new RemoteBatchKey(item.AutoLineDate!.Value.Date, item.BatchNumber!)).Distinct().ToArray();
     }
 
     public async Task<RemoteAnnotation> SaveAsync(RemoteAnnotation annotation, CancellationToken ct = default)

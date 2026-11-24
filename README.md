@@ -87,12 +87,12 @@ dotnet build .\FileTransfer.sln -c Release
 
 同一台电脑测试可使用 `127.0.0.1`；跨电脑连接请使用服务端局域网 IP，并按需放行对应防火墙端口。
 
-## 可选：NG 过滤（RCMDB）
+## 可选：NG 过滤和 NG 总览（RCMDB）
 
-远程文件管理客户端支持按机台和日期只显示 NG 截图文件夹。该功能默认不生效，需要服务端配置 Oracle 连接：
+远程文件管理客户端支持按机台和日期筛选 NG 截图文件夹，并查看 NG 标注进度。两个功能都需要在服务端配置 Oracle 连接。
 
-1. 复制 `Local/NgFilter/ngfilter.example.json` 为 `%LOCALAPPDATA%\FileTransferDemo\ngfilter.json`，填入实际密码。
-2. 重启服务端，在客户端勾选“NG 过滤”。
+1. 将 `ngfilter.example.json` 复制到 `FileTransfer.Server.exe` 所在目录，命名为 `ngfilter.json`，填入实际连接字符串。
+2. 重启服务端并点击“启动服务”，然后在客户端勾选“NG 过滤”或打开机台目录查看 NG 总览。
 3. 只对 `A6` 开头的机台目录和日期目录生效；未配置时状态栏会提示“服务端未启用目录过滤”。
 
 真实 `ngfilter.json` 已在 `.gitignore` 中排除，请勿提交。需要带该功能的自包含发布包时，运行：
@@ -140,8 +140,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Local\publish-update.ps1 -
 
 - 客户端必须解压到普通用户可写的目录（例如 `D:\Tools\FileTransfer.Client`），否则替换文件会失败。
 - 更新包只包含 `FileTransfer.Client` 发布目录内容，不包含服务端和 Transfer 程序。
-- 更新日志在 `%LOCALAPPDATA%\FileTransferDemo\Logs\update.log`。
-- 替换时先尝试整体替换目录，如果目录被占用会退化为逐文件覆盖。
+- 更新日志在客户端部署目录的 `Logs\update.log`。更新暂存在同目录下的 `Update\`，逐个替换程序文件并保留已有的 `logging.json` 和本地设置。
 
 ## 自检
 
@@ -154,4 +153,5 @@ dotnet run --project .\Transfer.WindowTests -c Release
 
 - 程序面向可信局域网，协议**没有身份认证和 TLS**。远程文件管理客户端可在共享根目录内执行读写及 EXE 管理操作，请谨慎选择共享目录和网络环境。
 - 断点续传需要保留下载目录中的 `.part` 和 `.part.json` 文件；ZIP 下载和远程文件管理上传不支持断点续传。
-- 日志和程序配置默认保存在 `%LOCALAPPDATA%\FileTransferDemo`。
+- 配置文件与各程序的 EXE 放在一起，应用日志在 `Logs\<程序名>\`。剪贴板、拖拽和更新缓存分别位于部署目录下的 `Clipboard\`、`Drag\` 和 `Update\`。运行账号需要对部署目录有写权限。
+- 远程文件管理客户端自 v1.6.10 起，会在启动时从旧配置目录自动补齐服务端连接、主题、窗口布局和标注操作人配置，保留安装目录已有的配置。服务端从旧版本迁移时，先退出程序，再把所需的 `ngfilter.json`、`remote-server.json` 和 `annotations.json` 复制到对应 EXE 所在目录。

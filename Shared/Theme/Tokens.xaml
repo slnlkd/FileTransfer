@@ -23,7 +23,6 @@
     <SolidColorBrush x:Key="FocusBrush" Color="#2B5F75" />
     <SolidColorBrush x:Key="HoverOverlayBrush" Color="#0A000000" />
     <SolidColorBrush x:Key="PressedOverlayBrush" Color="#14000000" />
-    <SolidColorBrush x:Key="BusyOverlayBrush" Color="#CCFFFFFF" />
 
     <!-- 只给卡片背景使用的极轻投影，正文不参与渲染效果。 -->
     <DropShadowEffect x:Key="CardShadow"

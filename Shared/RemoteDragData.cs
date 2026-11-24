@@ -28,8 +28,7 @@ public sealed class RemoteFileDataObject : IDataObject
     private static readonly int ContentsFormat = Native.RegisterClipboardFormat("FileContents");
     private static readonly int DropEffectFormat = Native.RegisterClipboardFormat("Preferred DropEffect");
 
-    private static readonly string SessionRoot = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FileTransferDemo", "Drag");
+    private static readonly string SessionRoot = Path.Combine(AppContext.BaseDirectory, "Drag");
 
     private readonly RemoteFileClient client;
     private readonly RemoteEntry[] roots;

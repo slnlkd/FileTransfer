@@ -16,67 +16,158 @@
         SnapsToDevicePixels="True">
 
     <Window.Resources>
-        <Style x:Key="ConnectPrimaryButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
-            <Setter Property="Foreground" Value="{DynamicResource CanvasBrush}" />
+        <Style x:Key="ConnectToolbarButton" TargetType="Button" BasedOn="{StaticResource GhostButton}">
+            <Setter Property="Foreground" Value="{DynamicResource InkBrush}" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="8,0" />
+        </Style>
+        <Style x:Key="ConnectPrimaryButton" TargetType="Button" BasedOn="{StaticResource ConnectToolbarButton}">
+            <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="ToolTip" Value="连接所选服务端" />
+            <Setter Property="AutomationProperties.Name" Value="连接" />
+        </Style>
+        <Style x:Key="ReconnectIconButton" TargetType="Button" BasedOn="{StaticResource ConnectToolbarButton}">
+            <Setter Property="Width" Value="32" />
+            <Setter Property="MinWidth" Value="32" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="ToolTip" Value="重新连接所选服务端" />
+            <Setter Property="AutomationProperties.Name" Value="重新连接" />
+            <Setter Property="ContentTemplate">
+                <Setter.Value>
+                    <DataTemplate>
+                        <Path Data="M13,3 V7 H9 M13,7 A5,5 0 1 0 12.5,11" Style="{StaticResource IconGlyph}" />
+                    </DataTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="ClientToolbarIcon" TargetType="Button" BasedOn="{StaticResource IconButton}">
+            <Setter Property="Width" Value="32" />
+            <Setter Property="Height" Value="30" />
+        </Style>
+        <Style x:Key="ServerEndpointItem" TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="{DynamicResource InkBrush}" />
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="ItemBackground" Background="Transparent" CornerRadius="4" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="ItemBackground" Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="ItemBackground" Property="Background" Value="{DynamicResource RowHoverBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="ServerEndpointInput" TargetType="ComboBox">
+            <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource InkBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource HairlineBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="ItemContainerStyle" Value="{StaticResource ServerEndpointItem}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <Border x:Name="Chrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+                                <DockPanel>
+                                    <ToggleButton DockPanel.Dock="Right" Width="28" Focusable="False" ClickMode="Press"
+                                                  AutomationProperties.Name="展开服务端列表"
+                                                  IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
+                                        <ToggleButton.Template>
+                                            <ControlTemplate TargetType="ToggleButton">
+                                                <Border x:Name="ArrowBackground" Background="Transparent" CornerRadius="0,5,5,0">
+                                                    <Path Data="M2,2 L6,6 L10,2" Stroke="{DynamicResource MutedBrush}"
+                                                          StrokeThickness="1.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                                          StrokeLineJoin="Round" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ArrowBackground" Property="Background" Value="{DynamicResource RowHoverBrush}" />
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </ToggleButton.Template>
+                                    </ToggleButton>
+                                    <TextBox x:Name="PART_EditableTextBox" Background="Transparent" BorderThickness="0"
+                                             Padding="8,0" VerticalContentAlignment="Center" IsReadOnly="{TemplateBinding IsReadOnly}"
+                                             AutomationProperties.Name="服务端地址和端口" />
+                                </DockPanel>
+                            </Border>
+                            <Popup x:Name="PART_Popup" Placement="Bottom" AllowsTransparency="True"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}">
+                                <Border MinWidth="{TemplateBinding ActualWidth}" Background="{DynamicResource SurfaceBrush}"
+                                        BorderBrush="{DynamicResource LineBrush}" BorderThickness="1" CornerRadius="6" Padding="3">
+                                    <ScrollViewer MaxHeight="{TemplateBinding MaxDropDownHeight}" VerticalScrollBarVisibility="Auto"
+                                                  HorizontalScrollBarVisibility="Disabled" CanContentScroll="True">
+                                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="Chrome" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsDropDownOpen" Value="True">
+                                <Setter TargetName="Chrome" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Chrome" Property="Opacity" Value="0.55" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
     </Window.Resources>
 
     <DockPanel Background="{DynamicResource CanvasBrush}">
         <!-- 连接设置与窗口级命令。 -->
         <Border DockPanel.Dock="Top"
-                Margin="12,8,12,0"
-                MinHeight="46"
-                Padding="12,0"
-                Background="{DynamicResource SurfaceBrush}"
-                BorderBrush="{DynamicResource LineBrush}"
-                BorderThickness="1"
-                CornerRadius="7">
+                Padding="12,4"
+                Background="{DynamicResource HeaderBrush}">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Margin="0,0,10,0"
-                               VerticalAlignment="Center"
-                               FontWeight="SemiBold"
-                               Text="服务端" />
-                    <TextBox x:Name="HostBox"
-                             Width="176"
-                             Style="{StaticResource RoundedTextInput}"
-                             AutomationProperties.Name="服务端地址"
-                             VerticalAlignment="Center"
-                             Text="127.0.0.1" />
-                    <TextBlock Margin="4,0"
+                    <TextBlock Margin="0,0,8,0"
                                VerticalAlignment="Center"
                                Foreground="{DynamicResource MutedBrush}"
-                               Text=":" />
-                    <TextBox x:Name="PortBox"
-                             Width="64"
-                             Style="{StaticResource RoundedTextInput}"
-                             AutomationProperties.Name="服务端端口"
-                             VerticalAlignment="Center"
-                             Text="9501" />
+                               Text="服务端" />
+                    <ComboBox x:Name="EndpointBox" Width="196" Height="30" VerticalAlignment="Center"
+                              IsEditable="True" IsTextSearchEnabled="False" MaxDropDownHeight="260"
+                              Style="{StaticResource ServerEndpointInput}"
+                              AutomationProperties.Name="服务端地址和端口"
+                              ToolTip="选择或输入地址和端口，例如 10.100.40.181:9501"
+                              PreviewKeyDown="EndpointBox_PreviewKeyDown" />
+                    <Ellipse x:Name="ConnectionDot" Width="6" Height="6" Margin="10,0,6,0" VerticalAlignment="Center"
+                             Fill="{DynamicResource MutedBrush}" />
+                    <TextBlock x:Name="ConnectionText" VerticalAlignment="Center" FontSize="11"
+                               Foreground="{DynamicResource MutedBrush}" Text="未连接" />
                     <Button x:Name="ConnectButton"
-                            MinWidth="82" Height="32"
-                            Margin="8,0,0,0"
+                            Margin="6,0,0,0"
                             VerticalAlignment="Center"
                             Click="Connect_Click"
                             Content="连接"
                             Style="{StaticResource ConnectPrimaryButton}" />
-                    <Border Margin="12,0,0,0" Padding="8,4" CornerRadius="5" VerticalAlignment="Center"
-                            Background="{DynamicResource HeaderBrush}">
-                        <StackPanel Orientation="Horizontal">
-                            <Ellipse x:Name="ConnectionDot" Width="6" Height="6" Margin="0,0,6,0" VerticalAlignment="Center"
-                                     Fill="{DynamicResource MutedBrush}" />
-                            <TextBlock x:Name="ConnectionText" VerticalAlignment="Center" FontSize="11"
-                                       Foreground="{DynamicResource MutedBrush}" Text="未连接" />
-                        </StackPanel>
-                    </Border>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button x:Name="UpdateBadge"
                             Margin="0,0,2,0"
+                            Height="30"
                             Click="UpdateBadge_Click"
                             Style="{StaticResource UpdateIconButton}"
                             ToolTip="发现新版本，点击更新"
@@ -86,12 +177,12 @@
                     <Button x:Name="ThemeButton"
                             Margin="0,0,2,0"
                             Click="Theme_Click"
-                            Style="{StaticResource IconButton}"
+                            Style="{StaticResource ClientToolbarIcon}"
                             ToolTip="切换到夜间模式">
                         <Path x:Name="ThemeIcon" Data="{StaticResource IconMoonGeometry}" Style="{StaticResource IconGlyph}" />
                     </Button>
                     <Button Click="Logs_Click"
-                            Style="{StaticResource IconButton}"
+                            Style="{StaticResource ClientToolbarIcon}"
                             ToolTip="打开日志目录">
                         <Path Data="{StaticResource IconLogsGeometry}" Style="{StaticResource IconGlyph}" />
                     </Button>
@@ -126,19 +217,9 @@
                            Foreground="{DynamicResource InkBrush}"
                            Text="就绪"
                            TextTrimming="CharacterEllipsis" />
-                <Border Grid.Column="2" Margin="12,0,0,0" Padding="8,3" CornerRadius="5"
-                        VerticalAlignment="Center" Background="{DynamicResource AccentSoftBrush}">
-                    <Border.Style>
-                        <Style TargetType="Border">
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding Text, ElementName=SelectionText}" Value="">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </Border.Style>
-                    <TextBlock x:Name="SelectionText" FontSize="11" Foreground="{DynamicResource AccentBrush}" />
-                </Border>
+                <TextBlock x:Name="SelectionText" Grid.Column="2"
+                           Margin="12,0,0,0" VerticalAlignment="Center"
+                           FontSize="11" Foreground="{DynamicResource MutedBrush}" />
                 <StackPanel Grid.Column="3"
                             x:Name="BrowserProgressPanel"
                             Orientation="Horizontal"
@@ -160,6 +241,6 @@
             </Grid>
         </Border>
 
-        <local:RemoteBrowser x:Name="Browser" Margin="12,8,12,8" />
+        <local:RemoteBrowser x:Name="Browser" />
     </DockPanel>
 </Window>

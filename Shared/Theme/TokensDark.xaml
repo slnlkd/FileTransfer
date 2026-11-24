@@ -23,7 +23,6 @@
     <SolidColorBrush x:Key="FocusBrush" Color="#7FB3CC" />
     <SolidColorBrush x:Key="HoverOverlayBrush" Color="#14FFFFFF" />
     <SolidColorBrush x:Key="PressedOverlayBrush" Color="#24FFFFFF" />
-    <SolidColorBrush x:Key="BusyOverlayBrush" Color="#D924282D" />
 
     <DropShadowEffect x:Key="CardShadow"
                       BlurRadius="8"

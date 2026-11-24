@@ -36,11 +36,14 @@ public record RemoteAnnotation(string FolderPath,
 public record RemoteDictionaryItem(string Code, string Name);
 public enum AnnotationDictionaryKind { Category, Plan }
 public record RemoteDictionary(RemoteDictionaryItem[] Categories, RemoteDictionaryItem[] Plans);
+public record RemoteBatchKey(DateTime Date, string Batch);
+public record RemoteNgBatch(string Name, string Path, bool Annotated);
+public record RemoteNgDay(DateTime Date, RemoteNgBatch[] Batches);
 public record RemoteRequest(string Command, string Path = "", string? Text = null, string? Version = null,
     string? EncodingName = null, long Length = 0, string? Sha256 = null, bool Overwrite = false,
     string? Filter = null, int Skip = 0, int Take = 0, bool FoldersOnly = false, int Protocol = 0,
     string? CategoryCode = null, string? PlanCode = null, string? Note = null, string? Operator = null,
-    string? ImageName = null)
+    string? ImageName = null, DateTime? StartDate = null, DateTime? EndDate = null)
 {
     public string RequestId { get; init; } = Guid.NewGuid().ToString("N");
 }
@@ -48,7 +51,8 @@ public record RemoteResponse(bool Ok, string? Error = null, RemoteEntry[]? Entri
     string? Version = null, string? EncodingName = null, long Length = 0, ProcessState? Process = null, string? RootName = null,
     string? Stage = null, double Percent = 0, string? ArchivePath = null, long CompletedBytes = 0, long TotalBytes = 0,
     string? Warning = null, int Total = 0, int Protocol = 0, string? Sha256 = null,
-    RemoteAnnotation? Annotation = null, RemoteAnnotation[]? Annotations = null, RemoteDictionary? Dictionary = null);
+    RemoteAnnotation? Annotation = null, RemoteAnnotation[]? Annotations = null, RemoteDictionary? Dictionary = null,
+    RemoteNgDay[]? NgDays = null);
 // 目录过滤扩展的返回值：过滤后的条目，以及可选的提示信息。
 public record RemoteFilterResult(RemoteEntry[] Entries, string? Warning = null);
 public record RemoteUpdateInfo(string Version, string FileName, string Sha256, long Length, string Notes);

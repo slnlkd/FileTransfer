@@ -1,6 +1,7 @@
 extern alias RemoteServer;
 extern alias RemoteClient;
 using System.IO;
+using System.ComponentModel;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -22,6 +23,7 @@ internal static class RemoteWindowChecks
 {
     public static async Task RunAsync(string temp)
     {
+        CheckLegacyClientSettingsMigration(temp);
         await CheckAnnotationReopenAsync(temp);
         string root = Path.Combine(temp, "remote-ui"); Directory.CreateDirectory(root);
         Directory.CreateDirectory(Path.Combine(root, "文本"));
@@ -48,28 +50,81 @@ internal static class RemoteWindowChecks
         string blocked = Path.Combine(temp, "settings-blocked");
         await File.WriteAllTextAsync(blocked, "file, not directory");
         var blockedClient = new ClientWindow(Path.Combine(blocked, "client.json")); Prepare(blockedClient); blockedClient.Show();
-        ((TextBox)blockedClient.FindName("PortBox")).Text = port.ToString(); Click(blockedClient, "ConnectButton");
+        ((ComboBox)blockedClient.FindName("EndpointBox")).Text = $"127.0.0.1:{port}"; Click(blockedClient, "ConnectButton");
         await WaitAsync(() => ((Button)blockedClient.FindName("ConnectButton")).IsEnabled);
         if (!((TextBlock)blockedClient.FindName("StatusText")).Text.StartsWith("已连接")) throw new Exception("配置无法保存时不应断开成功的连接");
         await CloseAsync(blockedClient);
-        var client = new ClientWindow(Path.Combine(temp, "remote-client-ui.json")); Prepare(client); client.Show();
-        ((TextBox)client.FindName("PortBox")).Text = port.ToString(); Click(client, "ConnectButton");
+        string connectionSettings = Path.Combine(temp, "remote-client-ui.json");
+        await File.WriteAllTextAsync(connectionSettings, JsonSerializer.Serialize(new { Host = "localhost", Port = port }));
+        var client = new ClientWindow(connectionSettings); Prepare(client); client.Show();
+        var endpointBox = (ComboBox)client.FindName("EndpointBox");
+        if (endpointBox.Text != $"localhost:{port}" || !endpointBox.IsEditable)
+            throw new Exception("可编辑地址下拉框应读取旧版连接设置");
+        foreach (int suffix in new[] { 181, 182, 183 })
+            if (!endpointBox.Items.Contains($"10.100.40.{suffix}:9501") || endpointBox.Items.Contains($"10.100.40.{suffix}:9502"))
+                throw new Exception("三台服务器只能预置 9501 端口");
+        endpointBox.SelectedItem = "10.100.40.183:9501";
+        if (endpointBox.Text != "10.100.40.183:9501") throw new Exception("选择预设应填入完整地址");
+        endpointBox.ApplyTemplate();
+        var endpointInput = (TextBox)endpointBox.Template.FindName("PART_EditableTextBox", endpointBox);
+        endpointInput.Text = $"127.0.0.1:{port}";
+        if (endpointBox.Text != endpointInput.Text) throw new Exception("手动输入应更新待连接的地址和端口");
+        Click(client, "ConnectButton");
         var browser = (ClientBrowser)client.FindName("Browser"); var grid = (DataGrid)browser.FindName("FileGrid");
         var tree = (TreeView)browser.FindName("FolderTree");
         await WaitAsync(() => grid.Items.Count == 4 && ((Button)client.FindName("ConnectButton")).IsEnabled);
+        var reopenedSettings = new ClientWindow(connectionSettings); Prepare(reopenedSettings); reopenedSettings.Show();
+        var reopenedEndpoints = (ComboBox)reopenedSettings.FindName("EndpointBox");
+        if (reopenedEndpoints.Text != $"127.0.0.1:{port}" || !reopenedEndpoints.Items.Contains($"localhost:{port}"))
+            throw new Exception("应保存并恢复最近连接的自定义地址和端口");
+        await CloseAsync(reopenedSettings);
+        endpointBox.Text = "127.0.0.1:65536";
+        Click(client, "ConnectButton");
+        if (!((TextBlock)client.FindName("StatusText")).Text.Contains("65535") || grid.Items.Count != 4)
+            throw new Exception("无效端口应提示范围并保留当前目录");
+        endpointBox.Text = $"127.0.0.1:{port}";
+        Console.WriteLine("通过：可编辑服务端下拉、地址和端口预设、旧配置与最近连接");
         var rootOrder = grid.Items.Cast<RemoteEntry>().ToArray();
         if (rootOrder.SkipWhile(e => e.IsDirectory).Any(e => e.IsDirectory))
             throw new Exception("按名称排序未把文件夹排在文件前");
         if (grid.Columns[0].SortDirection != System.ComponentModel.ListSortDirection.Ascending)
             throw new Exception("初次连接未默认按名称升序排序");
-        CheckNamePresentation(grid);
+        var copyPath = (Button?)browser.FindName("CopyPathButton") ?? throw new Exception("缺少复制完整路径入口");
+        copyPath.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        string expectedPath = $"127.0.0.1:{port}/{Path.GetFileName(root)}";
+        if (Clipboard.GetText() != expectedPath) throw new Exception("复制的完整路径不正确");
+        Clipboard.Clear();
+        grid.UpdateLayout();
+        var nameHeader = FindHeader(grid, "名称") ?? throw new Exception("没有名称表头");
+        if (browser.FindName("ColumnSettingsButton") is not null)
+            throw new Exception("显示列入口不应占用工具栏");
+        var columnMenu = nameHeader.ContextMenu ?? throw new Exception("列设置应由表头右键打开");
+        columnMenu.PlacementTarget = nameHeader;
+        columnMenu.IsOpen = true;
+        await FlushAsync(grid);
+        var createdOption = columnMenu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "创建时间"));
+        var createdColumn = grid.Columns.Single(column => column.SortMemberPath == "CreatedLocal");
+        var modifiedColumn = grid.Columns.Single(column => column.SortMemberPath == "ModifiedLocal");
+        createdOption.IsChecked = false;
+        createdOption.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        if (createdColumn.Visibility != Visibility.Collapsed || modifiedColumn.Visibility != Visibility.Visible)
+            throw new Exception("两个时间列应能分别隐藏");
+        createdOption.IsChecked = true;
+        createdOption.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        columnMenu.IsOpen = false;
+        if (createdColumn.Visibility != Visibility.Visible) throw new Exception("隐藏后的时间列应能恢复显示");
+        Console.WriteLine("通过：复制当前完整路径与单独控制时间列");
         var selectionText = (TextBlock)client.FindName("SelectionText");
+        string rootCountText = $"{grid.Items.Count} 项";
+        if (selectionText.Text != rootCountText || browser.FindName("ItemCountText") is not null)
+            throw new Exception("文件总数应只显示在状态栏");
         grid.SelectedItems.Add(grid.Items[0]);
         grid.SelectedItems.Add(grid.Items[1]);
         await WaitAsync(() => selectionText.Text.Contains("已选择 2 项"));
         grid.SelectedItems.Clear();
-        await WaitAsync(() => selectionText.Text == "");
+        await WaitAsync(() => selectionText.Text == rootCountText);
         Console.WriteLine("通过：状态栏显示已选择数量");
+        CheckNamePresentation(grid);
         await browser.ConnectAsync(new RemoteFileClient("127.0.0.1", port));
         var treeRoot = (TreeViewItem)tree.Items[0];
         var textFolder = treeRoot.Items.Cast<TreeViewItem>().Single(n => ((RemoteEntry)n.Tag).Name == "文本");
@@ -126,17 +181,106 @@ internal static class RemoteWindowChecks
         grid.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = Control.MouseDoubleClickEvent, Source = row });
         await WaitAsync(() => client.OwnedWindows.OfType<TextViewer>().Any());
         var textWindow = client.OwnedWindows.OfType<TextViewer>().Single();
-        textWindow.Editor.Text = "{\"值\":2}";
-        await textWindow.SaveAsync();
-        if (await File.ReadAllTextAsync(Path.Combine(root, "文本", "编辑.json")) != "{\"值\":2}") throw new Exception("文本界面保存内容未落盘：" + ((DockPanel)textWindow.Content).Children.OfType<TextBlock>().Single().Text);
-        textWindow.Close();
-        Console.WriteLine("通过：右侧文件双击打开 JSON 并编辑保存至服务端");
-        // 长文本滚轮步长
-        string longText = string.Join("\n", Enumerable.Range(1, 5000).Select(i => $"line {i}"));
+        string updatedText = "{\r\n  \"值\": 2,\r\n  \"备注\": \"值\"\r\n}";
+        textWindow.Editor.Text = updatedText;
+        textWindow.Editor.CaretIndex = updatedText.IndexOf("备注", StringComparison.Ordinal);
+        await FlushAsync(textWindow);
+        if (FindTextBlock(textWindow, "第 3 行，第 4 列") is null
+            || FindTextBlock(textWindow, "有未保存修改") is null
+            || !FindTextBlocks(textWindow).Any(text => text.Text.Contains("UTF", StringComparison.OrdinalIgnoreCase)))
+            throw new Exception("文本状态栏应同时显示行列、编码及未保存状态：" +
+                string.Join(" | ", FindTextBlocks(textWindow).Where(text => text.IsVisible).Select(text => text.Text)));
+        var wordWrap = FindDescendant<CheckBox>(textWindow) ?? throw new Exception("缺少自动换行");
+        wordWrap.IsChecked = true;
+        await FlushAsync(textWindow);
+        if (textWindow.Editor.TextWrapping != TextWrapping.Wrap || FindTextBlock(textWindow, "第 3 行，第 4 列") is null)
+            throw new Exception("自动换行应保留逻辑行列");
+        wordWrap.IsChecked = false;
+
+        FindButtonByContent(textWindow, "查找")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await FlushAsync(textWindow);
+        if (FindDescendant<TextBox>(textWindow) is not { IsVisible: true } findInput
+            || System.Windows.Automation.AutomationProperties.GetName(findInput) != "查找文本")
+            throw new Exception("查找按钮应显示查找输入框");
+        findInput.Text = "值";
+        if (FindTextBlock(textWindow, "1 / 2") is null) throw new Exception("查找应显示匹配序号与总数");
+        FindButton(textWindow, "下一处 (Enter)")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        if (FindTextBlock(textWindow, "2 / 2") is null) throw new Exception("下一处应更新匹配序号");
+        FindButton(textWindow, "关闭查找 (Esc)")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+        async Task RespondToTextClose(TextViewer viewer, string choice)
+        {
+            var reply = viewer.Dispatcher.InvokeAsync(() =>
+            {
+                var confirmation = viewer.OwnedWindows.Cast<Window>().Single(window => window.IsVisible);
+                try
+                {
+                    foreach (string action in new[] { "保存", "放弃", "取消" })
+                        if (FindButtonByContent(confirmation, action) is null) throw new Exception("关闭提示缺少操作：" + action);
+                    if (choice == "取消") confirmation.DialogResult = false;
+                    else FindButtonByContent(confirmation, choice)!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                }
+                finally { if (confirmation.IsVisible) confirmation.DialogResult = false; }
+            });
+            viewer.Close();
+            await reply;
+        }
+
+        await RespondToTextClose(textWindow, "取消");
+        if (!textWindow.IsVisible || textWindow.Editor.Text != updatedText) throw new Exception("取消关闭应保留文本修改");
+        await RespondToTextClose(textWindow, "保存");
+        await WaitAsync(() => !textWindow.IsVisible);
+        string editedFile = Path.Combine(root, "文本", "编辑.json");
+        if (await File.ReadAllTextAsync(editedFile) != updatedText) throw new Exception("关闭前保存内容未落盘");
+        await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().Single(item => item.Name == "编辑.json"));
+        var discardWindow = client.OwnedWindows.OfType<TextViewer>().Single();
+        discardWindow.Editor.Text = "放弃这次修改";
+        await RespondToTextClose(discardWindow, "放弃");
+        if (discardWindow.IsVisible || await File.ReadAllTextAsync(editedFile) != updatedText)
+            throw new Exception("放弃修改应关闭窗口并保留服务端原内容");
+        await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().Single(item => item.Name == "编辑.json"));
+        var conflictWindow = client.OwnedWindows.OfType<TextViewer>().Single();
+        const string localDraft = "{\"值\":3}";
+        const string externalEdit = "{\"值\":4}";
+        conflictWindow.Editor.Text = localDraft;
+        await File.WriteAllTextAsync(editedFile, externalEdit);
+        await RespondToTextClose(conflictWindow, "保存");
+        await WaitAsync(() => FindTextBlocks(conflictWindow).Any(text => text.Text.StartsWith("保存失败")));
+        if (!conflictWindow.IsVisible || conflictWindow.Editor.IsReadOnly || conflictWindow.Editor.Text != localDraft
+            || await File.ReadAllTextAsync(editedFile) != externalEdit)
+            throw new Exception("保存发生冲突时应保留本地编辑和服务端文件");
+        await RespondToTextClose(conflictWindow, "放弃");
+        Console.WriteLine("通过：文本状态栏、查找和换行，保存、放弃、取消及保存冲突处理");
+        // 使用接近实际日志大小的文件验证等待提示和滚动。
+        string lineSuffix = new('x', 310);
+        string longText = string.Join("\n", Enumerable.Range(1, 25_000).Select(i => $"line {i} {lineSuffix}"));
         await File.WriteAllTextAsync(Path.Combine(root, "文本", "long.txt"), longText);
         await browser.ConnectAsync(new RemoteFileClient("127.0.0.1", port));
         await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "文本"));
-        await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "long.txt"));
+        copyPath.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        if (Clipboard.GetText() != expectedPath + "/文本") throw new Exception("进入子目录后复制的路径未更新");
+        Clipboard.Clear();
+        var textBusyIndicator = (Border)browser.FindName("BusyIndicator");
+        var textBusyMessage = (TextBlock)browser.FindName("BusyText");
+        var busyMessageProperty = DependencyPropertyDescriptor.FromProperty(TextBlock.TextProperty, typeof(TextBlock));
+        bool showedBeforeViewer = false;
+        void ObserveTextLoading(object? sender, EventArgs args)
+        {
+            if (textBusyMessage.Text != "正在准备文本查看器…") return;
+            _ = browser.Dispatcher.InvokeAsync(() =>
+            {
+                showedBeforeViewer = textBusyIndicator.IsVisible && !client.OwnedWindows.OfType<TextViewer>().Any();
+            }, System.Windows.Threading.DispatcherPriority.Render);
+        }
+        busyMessageProperty.AddValueChanged(textBusyMessage, ObserveTextLoading);
+        try
+        {
+            await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "long.txt"));
+        }
+        finally { busyMessageProperty.RemoveValueChanged(textBusyMessage, ObserveTextLoading); }
+        if (!showedBeforeViewer || textBusyIndicator.IsVisible)
+            throw new Exception("打开大文本时应先显示等待提示，查看器打开后应隐藏");
+        Console.WriteLine("通过：打开大文本时等待提示先于查看器显示，打开后隐藏");
         var longWindow = client.OwnedWindows.OfType<TextViewer>().Last();
         await Task.Delay(500);
         var longScroll = FindDescendant<ScrollViewer>(longWindow.Editor) ?? throw new Exception("缺少文本滚动视图");
@@ -223,11 +367,14 @@ internal static class RemoteWindowChecks
         Console.WriteLine("通过：图片真实解码，Right / Left 按创建时间前后切换");
         // 标注模式：三栏布局 + 左栏图片列表 + 已标注角标 + 左栏点击切换大图
         var annotationEntries = images.Where(e => e.IsImage).OrderBy(e => e.Name, StringComparer.Ordinal).ToArray();
+        var oracleTime = new DateTime(2026, 11, 23, 9, 24, 51, DateTimeKind.Unspecified);
+        var utcTime = new DateTime(2026, 11, 22, 16, 12, 34, DateTimeKind.Utc);
         var existing = new RemoteAnnotation("", CategoryName: "外观异常", PlanName: "重新拍摄",
-            ImageName: annotationEntries[0].Name, UpdatedAt: DateTime.UtcNow);
+            Operator: "测试员", ImageName: annotationEntries[0].Name, UpdatedAt: oracleTime);
         string annotationPath = "DS616/A6-DPQG-044/SaveImages/" + new string('长', 140) + "/20261120/34";
         var annotationWindow = new ImageViewer(new RemoteFileClient("127.0.0.1", port), annotationEntries,
-            annotationEntries[0].Path, new AnnotationContext("", annotationPath, [existing, existing with { Note = "旧标注" }, existing with { ImageName = null }]));
+            annotationEntries[0].Path, new AnnotationContext("", annotationPath,
+                [existing, existing with { Note = "旧标注", UpdatedAt = utcTime, Operator = "旧操作人" }, existing with { ImageName = null }]));
         Prepare(annotationWindow);
         annotationWindow.Show();
         await FlushAsync(annotationWindow);
@@ -241,6 +388,51 @@ internal static class RemoteWindowChecks
         if (!FindTextBlocks(annotationWindow).Any(block => block.Text == annotationEntries[0].Name && block.Parent is StackPanel)
             || !FindTextBlocks(annotationWindow).Any(block => block.Text == "最近一次 · 外观异常 / 重新拍摄" && block.IsVisible))
             throw new Exception("当前图片名、标注次数和最近记录应分别显示");
+        if (!FindTextBlocks(annotationWindow).Any(block => block.Text == $"已标注 1 / {annotationEntries.Length} 张"))
+            throw new Exception("进度必须按已标注图片数计算");
+        var historyButton = FindButton(annotationWindow, "查看标注历史") ?? throw new Exception("缺少图片历史入口");
+        historyButton.ApplyTemplate();
+        if (historyButton.FocusVisualStyle is not null
+            || historyButton.Template.FindName("Chrome", historyButton) is not null)
+            throw new Exception("已标注次数应使用不绘制焦点外框的按钮模板");
+        annotationWindow.UpdateLayout();
+        var historyIcon = ((StackPanel)historyButton.Content).Children.OfType<System.Windows.Shapes.Path>().Single();
+        var pen = new Pen(historyIcon.Stroke, historyIcon.StrokeThickness)
+        {
+            LineJoin = historyIcon.StrokeLineJoin,
+            StartLineCap = historyIcon.StrokeStartLineCap,
+            EndLineCap = historyIcon.StrokeEndLineCap
+        };
+        var iconBounds = historyIcon.RenderedGeometry.GetRenderBounds(pen);
+        var iconSlot = new Rect(historyIcon.RenderSize);
+        iconSlot.Inflate(0.01, 0.01);
+        if (iconBounds.IsEmpty || !iconSlot.Contains(iconBounds))
+            throw new Exception($"标注历史箭头必须完整显示在图标范围内。描边 {iconBounds}，布局 {iconSlot}");
+        historyButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        if (historyIcon.RenderTransform is not RotateTransform { Angle: 180 })
+            throw new Exception("展开标注历史后箭头应朝上");
+        const System.Reflection.BindingFlags viewerFields = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var historyPanel = (StackPanel)typeof(ImageViewer).GetField("annotationHistory", viewerFields)!.GetValue(annotationWindow)!;
+        var historyRows = historyPanel.Children.OfType<Border>().Select(record => (Grid)record.Child).ToArray();
+        if (!historyPanel.IsVisible || historyRows.Length != 2)
+            throw new Exception("历史应逐条显示当前图片的有效标注");
+        static void CheckHistoryRecord(Grid fields, params (string Label, string Value)[] expected)
+        {
+            if (fields.RowDefinitions.Count != expected.Length) throw new Exception("标注历史字段行数不对");
+            var textBlocks = fields.Children.OfType<TextBlock>().ToArray();
+            for (int row = 0; row < expected.Length; row++)
+            {
+                var (label, value) = expected[row];
+                if (!textBlocks.Any(text => Grid.GetRow(text) == row && Grid.GetColumn(text) == 0 && text.Text == label)
+                    || !textBlocks.Any(text => Grid.GetRow(text) == row && Grid.GetColumn(text) == 1 && text.Text == value))
+                    throw new Exception($"历史字段「{label}」应与值「{value}」在同一行");
+            }
+        }
+        CheckHistoryRecord(historyRows[0], ("时间", "2026.11.23 09:24:51"), ("操作人", "测试员"),
+            ("归类", "外观异常"), ("处理方案", "重新拍摄"));
+        var localTime = TimeZoneInfo.ConvertTimeFromUtc(utcTime, TimeZoneInfo.Local);
+        CheckHistoryRecord(historyRows[1], ("时间", $"{localTime:yyyy.MM.dd HH:mm:ss}"), ("操作人", "旧操作人"),
+            ("归类", "外观异常"), ("处理方案", "重新拍摄"), ("备注", "旧标注"));
         CheckAnnotationTitle(annotationWindow, annotationEntries[0].Name, annotationPath);
         if (ScrollViewer.GetHorizontalScrollBarVisibility(leftList) != ScrollBarVisibility.Disabled)
             throw new Exception("标注缩略图列表不应横向滚动");
@@ -248,6 +440,52 @@ internal static class RemoteWindowChecks
         if (caption.Text != $"01_{annotationEntries[0].Name}") throw new Exception("图片编号应使用下划线连接文件名");
         if (((SolidColorBrush)caption.Foreground).Color != ((SolidColorBrush)annotationWindow.FindResource("SuccessBrush")).Color)
             throw new Exception("已标注图片的文件名应为绿色");
+        var note = (TextBox)typeof(ImageViewer).GetField("noteBox", viewerFields)!.GetValue(annotationWindow)!;
+        var preview = (Grid)typeof(ImageViewer).GetField("stage", viewerFields)!.GetValue(annotationWindow)!;
+        var source = PresentationSource.FromVisual(annotationWindow);
+        var rightInNote = new KeyEventArgs(Keyboard.PrimaryDevice, source, 0, Key.Right) { RoutedEvent = Keyboard.PreviewKeyDownEvent };
+        note.RaiseEvent(rightInNote);
+        if (rightInNote.Handled || annotationWindow.CurrentPath != annotationEntries[0].Path)
+            throw new Exception("备注框内的方向键不应被拦截或切换图片");
+        preview.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, source, 0, Key.Right) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+        await WaitAsync(() => annotationWindow.CurrentPath == annotationEntries[1].Path);
+        leftList.SelectedIndex = 0;
+        await WaitAsync(() => annotationWindow.CurrentPath == annotationEntries[0].Path);
+        var toggle = FindButton(annotationWindow, "折叠图片列表") ?? throw new Exception("左栏缺少折叠按钮");
+        double previewWidth = preview.ActualWidth;
+        toggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        annotationWindow.UpdateLayout();
+        if (leftList.IsVisible || preview.ActualWidth <= previewWidth || FindButton(annotationWindow, "展开图片列表") != toggle)
+            throw new Exception("折叠后应让出预览空间并保留展开入口");
+        toggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        annotationWindow.UpdateLayout();
+        if (!leftList.IsVisible || leftList.SelectedIndex != 0) throw new Exception("展开后应恢复原图片选择");
+
+        var columns = (Grid)((Border)((DockPanel)leftList.Parent).Parent).Parent;
+        var splitter = columns.Children.OfType<GridSplitter>().Single();
+        splitter.ApplyTemplate();
+        if (splitter.Template.FindName("Line", splitter) is not Border { Background: SolidColorBrush { Color.A: 0 } })
+            throw new Exception("标注侧栏的分隔线在未操作时应隐藏");
+        var form = (Border)columns.Children.Cast<UIElement>().Single(child => Grid.GetColumn(child) > Grid.GetColumn(splitter));
+        double formWidth = form.ActualWidth;
+        splitter.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, source, 0, Key.Left) { RoutedEvent = Keyboard.KeyDownEvent });
+        annotationWindow.UpdateLayout();
+        if (form.ActualWidth <= formWidth) throw new Exception("右栏分隔条应能调宽表单");
+        annotationWindow.Height = annotationWindow.MinHeight;
+        annotationWindow.Width = annotationWindow.MinWidth;
+        annotationWindow.UpdateLayout();
+        var submitAction = FindButtonByContent(annotationWindow, "新增标注") ?? throw new Exception("找不到新增标注按钮");
+        var revokeAction = FindButtonByContent(annotationWindow, "撤销标注") ?? throw new Exception("找不到撤销标注按钮");
+        var formLayout = (DockPanel)form.Child;
+        var formScroll = formLayout.Children.OfType<ScrollViewer>().Single();
+        formScroll.ScrollToTop();
+        annotationWindow.UpdateLayout();
+        var actionPosition = submitAction.TranslatePoint(new Point(0, 0), form);
+        formScroll.ScrollToBottom();
+        annotationWindow.UpdateLayout();
+        if (formScroll.VerticalOffset <= 0 || !revokeAction.IsVisible || submitAction.TranslatePoint(new Point(0, 0), form) != actionPosition
+            || actionPosition.Y + submitAction.ActualHeight > form.ActualHeight)
+            throw new Exception("窄窗口滚动表单时，提交和撤销按钮应固定且可见");
         leftList.SelectedIndex = 1;
         await WaitAsync(() => annotationWindow.CurrentPath == annotationEntries[1].Path);
         await WaitAsync(() => FindTextBlocks(annotationWindow).Any(block => block.Text == "未标注"));
@@ -256,8 +494,34 @@ internal static class RemoteWindowChecks
             throw new Exception("切到未标注图片时应更新文件名并隐藏上一张的标注摘要");
         annotationWindow.Width = annotationWindow.MinWidth;
         CheckAnnotationTitle(annotationWindow, annotationEntries[1].Name, annotationPath);
+        leftList.SelectedIndex = 0;
+        await WaitAsync(() => annotationWindow.CurrentPath == annotationEntries[0].Path);
+        var filter = ((DockPanel)leftList.Parent).Children.OfType<CheckBox>().Single();
+        filter.IsChecked = true;
+        filter.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
+        await WaitAsync(() => leftList.Items.Count == annotationEntries.Length - 1 && annotationWindow.CurrentPath != annotationEntries[0].Path);
+        await annotationWindow.MoveAsync(-1);
+        if (annotationWindow.CurrentPath == annotationEntries[0].Path) throw new Exception("筛选时上一张应跳过已标注图片");
+        filter.IsChecked = false;
+        filter.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
+        if (leftList.Items.Count != annotationEntries.Length) throw new Exception("清除筛选后应显示所有图片");
+        note.Text = "未提交的备注";
+        void AnswerDraftConfirmation(bool discard)
+        {
+            _ = annotationWindow.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                var dialog = annotationWindow.OwnedWindows.OfType<Window>().SingleOrDefault(window => window.Title == "未提交的标注");
+                if (dialog is not null) dialog.DialogResult = discard;
+            }), System.Windows.Threading.DispatcherPriority.Background);
+        }
+        AnswerDraftConfirmation(false);
         annotationWindow.Close();
-        Console.WriteLine("通过：标注模式三栏布局、左栏列表与已标注角标");
+        if (!annotationWindow.IsVisible || note.Text != "未提交的备注")
+            throw new Exception("取消关窗时应保留未提交草稿");
+        AnswerDraftConfirmation(true);
+        annotationWindow.Close();
+        if (annotationWindow.IsVisible) throw new Exception("确认放弃后应关闭标注窗口");
+        Console.WriteLine("通过：标注窗口布局、方向键隔离、标注进度、历史和未标注筛选");
         // 大图默认适应窗口，实际大小按钮应能来回切换而不是点一次就禁用。
         var bigBitmap = BitmapSource.Create(2000, 1500, 96, 96, PixelFormats.Bgra32, null, new byte[2000 * 1500 * 4], 2000 * 4);
         var bigEncoder = new PngBitmapEncoder();
@@ -356,11 +620,61 @@ internal static class RemoteWindowChecks
         scroll.ScrollToBottom();
         await WaitAsync(() => scroll.VerticalOffset > 0);
         var scrollNode = ((TreeViewItem)tree.Items[0]).Items.Cast<TreeViewItem>().Single(n => ((RemoteEntry)n.Tag).Name == "滚动测试");
+        scrollNode.IsExpanded = true;
+        await WaitAsync(() => scrollNode.Items.Count > 50);
+        await FlushAsync(tree);
+        var directoryScroll = FindDescendant<ScrollViewer>(tree) ?? throw new Exception("缺少目录树滚动容器");
+        var directoryBar = FindDescendant<System.Windows.Controls.Primitives.ScrollBar>(directoryScroll)
+            ?? throw new Exception("缺少目录树滚动条");
+        Console.WriteLine($"目录滚动状态：extent={directoryScroll.ExtentHeight}, viewport={directoryScroll.ViewportHeight}, scrollable={directoryScroll.ScrollableHeight}, bar={directoryBar.Visibility}, height={directoryBar.ActualHeight}");
+        if (directoryScroll.ScrollableHeight <= 0 || !directoryBar.IsVisible)
+            throw new Exception("目录内容超过窗口高度后必须显示滚动条");
+        directoryScroll.ScrollToBottom();
+        await FlushAsync(tree);
+        if (directoryScroll.VerticalOffset <= 0) throw new Exception("目录树滚动条无法滚动");
+        directoryScroll.ScrollToTop();
+        await FlushAsync(tree);
+        directoryScroll.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, -120) { RoutedEvent = UIElement.MouseWheelEvent });
+        await FlushAsync(tree);
+        if (directoryScroll.VerticalOffset <= 0) throw new Exception("目录树滚轮无法滚动");
+        var directoryTrack = (System.Windows.Controls.Primitives.Track)directoryBar.Template.FindName("PART_Track", directoryBar);
+        directoryTrack.Thumb.RaiseEvent(new System.Windows.Controls.Primitives.DragDeltaEventArgs(0, 10000)
+            { RoutedEvent = System.Windows.Controls.Primitives.Thumb.DragDeltaEvent });
+        await FlushAsync(tree);
+        if (Math.Abs(directoryScroll.VerticalOffset - directoryScroll.ScrollableHeight) > 1)
+            throw new Exception("目录树拖动滚动条无法到达底部");
+        Console.WriteLine("通过：展开大量子目录后显示滚动条，滚轮和滑块滚动生效");
         scrollNode.IsSelected = true;
         await WaitAsync(() => !browser.IsBusy && grid.Items.Count > 1);
         await FlushAsync(browser);
         await WaitAsync(() => scroll.VerticalOffset == 0);
         Console.WriteLine("通过：切换目录和返回上一级后文件列表回到顶部");
+        scrollNode.ApplyTemplate();
+        var selectedRow = (Border)scrollNode.Template.FindName("Bd", scrollNode);
+        var treeArrow = (FrameworkElement)scrollNode.Template.FindName("Expander", scrollNode);
+        var arrowPosition = treeArrow.TransformToAncestor(selectedRow).Transform(new Point());
+        if (Grid.GetColumnSpan(selectedRow) != 2 || arrowPosition.X < 0
+            || arrowPosition.X + treeArrow.ActualWidth > selectedRow.ActualWidth
+            || selectedRow.CornerRadius.TopLeft != 4)
+            throw new Exception("目录选中背景应包含展开箭头并使用圆角");
+        var overviewScroll = (ScrollViewer)browser.FindName("NgOverviewScroll");
+        if (overviewScroll.FocusVisualStyle is not null || !overviewScroll.Focusable)
+            throw new Exception("进度容器应隐藏外围焦点虚线并保留键盘滚动能力");
+        var browserScrollBar = FindDescendant<System.Windows.Controls.Primitives.ScrollBar>(grid)
+            ?? throw new Exception("缺少资源管理器滚动条");
+        browserScrollBar.ApplyTemplate();
+        var browserTrack = (System.Windows.Controls.Primitives.Track)browserScrollBar.Template.FindName("PART_Track", browserScrollBar);
+        browserTrack.Thumb.ApplyTemplate();
+        var thumbBody = browserTrack.Thumb.Template.FindName("ThumbBody", browserTrack.Thumb) as Border;
+        if (thumbBody is null || thumbBody.Opacity >= 1 || browserScrollBar.Width != 12)
+            throw new Exception("运行时未应用资源管理器细滑块模板");
+        Console.WriteLine($"滑块宽度：列表设定={thumbBody.Width}, 实际={thumbBody.ActualWidth}, 目录设定={((Border)directoryTrack.Thumb.Template.FindName("ThumbBody", directoryTrack.Thumb)).Width}");
+        if (thumbBody.Width is not (3 or 5))
+            throw new Exception("资源管理器滚动滑块可见宽度应为 3 到 5 个逻辑像素");
+        var directoryThumbBody = directoryTrack.Thumb.Template.FindName("ThumbBody", directoryTrack.Thumb) as Border;
+        if (directoryThumbBody is null || directoryThumbBody.Width is not (3 or 5))
+            throw new Exception("目录树与文件列表应使用相同的细滑块宽度");
+        Console.WriteLine("通过：运行时目录高亮覆盖箭头，进度容器无外围焦点框，滚动条使用细滑块模板");
         // 树节点点击切回上级后，树的选中项必须停在当前目录，否则左右两边会指向不同位置。
         if (SelectedTreeEntry(tree) is not { } followedBack || followedBack.Path != "滚动测试")
             throw new Exception("点击树节点切回上级后，树选中项未跟随当前目录：" + (SelectedTreeEntry(tree)?.Path ?? "(无选中)"));
@@ -392,8 +706,7 @@ internal static class RemoteWindowChecks
         await browser.OpenAsync(grid.Items.Cast<RemoteEntry>().Single(e => e.Name == "分页测试"));
         await FlushAsync(browser);
         if (grid.Items.Count != 500) throw new Exception("首屏未按 500 条分页加载：" + grid.Items.Count);
-        var countText = (TextBlock)browser.FindName("ItemCountText");
-        if (countText.Text != "500 / 620 项") throw new Exception("分页计数显示错误：" + countText.Text);
+        if (selectionText.Text != "620 项") throw new Exception("分页目录应显示完整总数：" + selectionText.Text);
         var selectAll = typeof(ClientBrowser).GetMethod("SelectAllAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic) ?? throw new Exception("找不到全选方法");
         await (Task)selectAll.Invoke(browser, null)!;
         await WaitAsync(() => grid.SelectedItems.Count == 620 && grid.Items.Count == 620);
@@ -405,9 +718,10 @@ internal static class RemoteWindowChecks
         await FlushAsync(browser);
         if (grid.Items.Count != 500) throw new Exception("滚动前重新进入目录应只加载分页首屏");
         var pageScroll = FindScrollViewer(grid) ?? throw new Exception("未找到文件列表滚动条");
+        if (pageScroll.VerticalOffset != 0) throw new Exception($"重新进入分页目录必须从顶部开始，实际偏移 {pageScroll.VerticalOffset}");
         pageScroll.ScrollToBottom();
         await WaitAsync(() => grid.Items.Count == 620);
-        if (countText.Text != "620 项") throw new Exception("滚动加载完成后计数错误：" + countText.Text);
+        if (selectionText.Text != "620 项") throw new Exception("滚动加载完成后计数错误：" + selectionText.Text);
         Console.WriteLine("通过：大目录按 500 条分页并在滚动到底部时加载更多");
         ((TreeViewItem)tree.Items[0]).IsSelected = true;
         await WaitAsync(() => !browser.IsBusy && grid.Items.Count > 1);
@@ -450,17 +764,39 @@ internal static class RemoteWindowChecks
         Console.WriteLine("通过：关窗后自动加载分页，选中并滚动到最后查看的图片");
         var execute = typeof(ClientBrowser).GetMethod("ExecuteAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
             null, new[] { typeof(Func<CancellationToken, Task>), typeof(bool) }, null) ?? throw new Exception("找不到可取消操作入口");
+        var busyIndicator = (Border)browser.FindName("BusyIndicator");
+        bool fastIndicatorShown = false;
+        DependencyPropertyChangedEventHandler watchIndicator = (_, e) => fastIndicatorShown |= e.NewValue is true;
+        busyIndicator.IsVisibleChanged += watchIndicator;
+        try
+        {
+            await (Task)execute.Invoke(browser, [new Func<CancellationToken, Task>(async _ => await Task.Yield()), false])!;
+            await Task.Delay(300);
+        }
+        finally { busyIndicator.IsVisibleChanged -= watchIndicator; }
+        if (fastIndicatorShown || busyIndicator.IsVisible) throw new Exception("短操作结束后不应闪现等待提示");
         var slow = (Task)execute.Invoke(browser, new object[]
         {
             new Func<CancellationToken, Task>(async token => await Task.Delay(5000, token)), true
         })!;
         var cancelButton = (Button)browser.FindName("CancelButton");
-        await WaitAsync(() => cancelButton.Visibility == Visibility.Visible);
+        if (busyIndicator.IsVisible) throw new Exception("慢操作开始时应先延迟显示等待提示");
+        await WaitAsync(() => cancelButton.IsVisible);
+        tree.UpdateLayout();
+        var busyTreeRoot = (TreeViewItem)tree.Items[0];
+        var busyTreeChild = busyTreeRoot.Items.OfType<TreeViewItem>().First();
+        if (tree.IsEnabled || busyTreeRoot.Opacity != 1 || busyTreeChild.Opacity != 1)
+            throw new Exception("操作期间目录树应暂停交互，父子节点应保持正常透明度");
+        var treeSurface = tree.Template.FindName("TreeSurface", tree) as Border;
+        if (treeSurface is null || !Equals(treeSurface.Background, tree.Background))
+            throw new Exception("操作期间目录树应保留原底色");
+        if (busyIndicator.HorizontalAlignment != HorizontalAlignment.Right || busyIndicator.VerticalAlignment != VerticalAlignment.Bottom)
+            throw new Exception("慢操作应在文件区域右下角显示等待提示");
         cancelButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await slow;
-        if (((TextBlock)browser.FindName("StatusText")).Text != "已取消" || browser.IsBusy || cancelButton.Visibility != Visibility.Collapsed)
+        if (((TextBlock)browser.FindName("StatusText")).Text != "已取消" || browser.IsBusy || busyIndicator.IsVisible || cancelButton.Visibility != Visibility.Collapsed)
             throw new Exception("取消后状态或界面未恢复");
-        Console.WriteLine("通过：长操作可取消并恢复界面");
+        Console.WriteLine("通过：短操作不闪现等待提示，长操作延迟提示并可取消");
         // 过滤只作用于右侧列表，目录树必须保持完整；重新加载根目录时同样如此。
         var service = (RemoteFileService)typeof(ServerWindow).GetField("service", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(server)!;
         service.ListFilter = (_, _, items) => Task.FromResult(new RemoteFilterResult(items.Where(e => e.Name != "文本").ToArray()));
@@ -518,7 +854,7 @@ internal static class RemoteWindowChecks
             updateProbe.Start(); int updatePort = ((System.Net.IPEndPoint)updateProbe.LocalEndpoint).Port; updateProbe.Stop();
             updateService.Start(updatePort);
             var updateClient = new ClientWindow(Path.Combine(temp, "remote-client-update.json")); Prepare(updateClient); updateClient.Show();
-            ((TextBox)updateClient.FindName("PortBox")).Text = updatePort.ToString();
+            ((ComboBox)updateClient.FindName("EndpointBox")).Text = $"127.0.0.1:{updatePort}";
             Click(updateClient, "ConnectButton");
             await WaitAsync(() => ((Button)updateClient.FindName("UpdateBadge")).Visibility == Visibility.Visible);
             var shownBadge = (Button)updateClient.FindName("UpdateBadge");
@@ -579,9 +915,15 @@ internal static class RemoteWindowChecks
             dictionary = new RemoteDictionary([new("category", "测试归类")], [new("plan", "测试方案")]),
             annotations = Array.Empty<RemoteAnnotation>()
         }));
-        await using var service = new RemoteFileService(root, new JsonAnnotationRepository(repositoryPath))
+        var annotationRepository = new JsonAnnotationRepository(repositoryPath);
+        await annotationRepository.SaveAsync(new RemoteAnnotation(dateFolder + "/1000", "A601",
+            AutoLineDate: new DateTime(2026, 11, 20), BatchNumber: "1000", CategoryName: "测试归类",
+            Operator: "测试员", UpdatedAt: new DateTime(2026, 11, 23, 9, 24, 51, DateTimeKind.Unspecified), ImageName: "sample.png"));
+        await using var service = new RemoteFileService(root, annotationRepository)
         {
-            ListFilter = (_, _, entries) => Task.FromResult(new RemoteFilterResult(entries))
+            ListFilter = (_, _, entries) => Task.FromResult(new RemoteFilterResult(entries)),
+            NgBatchQuery = (_, _, _, _) => Task.FromResult<RemoteBatchKey[]>(
+                [new(new DateTime(2026, 11, 20), "1001"), new(new DateTime(2026, 11, 20), "1004")])
         };
         service.Start(0);
         var endpoint = new RemoteFileClient("127.0.0.1", service.Port);
@@ -604,14 +946,27 @@ internal static class RemoteWindowChecks
             await browser.OpenAsync(dateEntry);
             var grid = (DataGrid)browser.FindName("FileGrid");
             if (grid.SelectionMode != DataGridSelectionMode.Single) throw new Exception("日期目录应限制为单选");
+            var existingTooltip = grid.Items.Cast<RemoteEntry>().Single(item => item.Name == "1000").AnnotationTip;
+            if (!existingTooltip.Contains("2026-11-23 09:24"))
+                throw new Exception("列表的标注提示应保留无时区的 Oracle 时间：" + existingTooltip);
             grid.SelectedIndex = 0;
             var selectAll = typeof(ClientBrowser).GetMethod("SelectAllAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
             await (Task)selectAll.Invoke(browser, null)!;
             if (grid.SelectedItems.Count != 1) throw new Exception("日期目录按全选后应仍为单选");
             var entry = grid.Items.Cast<RemoteEntry>().Single(item => item.Path == batch);
-            grid.SelectedItem = entry;
+            grid.UpdateLayout();
+            var batchRow = (DataGridRow?)grid.ItemContainerGenerator.ContainerFromItem(entry)
+                ?? throw new Exception("未找到日期目录的待标注批次行");
+            if (batchRow.IsSelected) throw new Exception("右键测试需要从另一个批次切换");
+            batchRow.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Right) { RoutedEvent = UIElement.PreviewMouseRightButtonDownEvent });
+            if (!ReferenceEquals(grid.SelectedItem, entry) || grid.SelectedItems.Count != 1)
+                throw new Exception("日期目录右键应只选中被点击的批次");
+            OpenContext(batchRow);
+            if (!batchRow.ContextMenu.Items.OfType<MenuItem>().Any(item => Equals(item.Header, "标注")))
+                throw new Exception("日期目录右键应生成批次标注菜单");
             var trackedEntries = new HashSet<RemoteEntry> { entry };
             var annotate = (Button)browser.FindName("AnnotateButton");
+            CheckRoundedButtonFocus(annotate);
             if (!annotate.IsEnabled) throw new Exception("关闭标注窗口前，标注按钮应可用");
             Click(browser, "AnnotateButton");
             await WaitAsync(() => !browser.IsBusy && host.OwnedWindows.OfType<ImageViewer>().Any());
@@ -627,10 +982,24 @@ internal static class RemoteWindowChecks
             if (FindButtonByContent(viewer, "撤销标注") is { IsVisible: true }) throw new Exception("未标注图片应隐藏撤销按钮");
             string imageName = Path.GetFileName(viewer.CurrentPath);
             var submit = FindButtonByContent(viewer, "提交标注") ?? throw new Exception("找不到提交标注按钮");
-            submit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            if (!viewer.IsVisible || annotate.IsEnabled) throw new Exception("表单验证失败后应保持标注窗口打开");
+            CheckRoundedButtonFocus(submit);
+            const System.Reflection.BindingFlags fieldFlags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            void CheckMissingField(string name)
+            {
+                submit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                if (!viewer.IsVisible || annotate.IsEnabled) throw new Exception("表单验证失败后应保持标注窗口打开");
+                if (FocusManager.GetFocusedElement(viewer) != typeof(ImageViewer).GetField(name, fieldFlags)!.GetValue(viewer))
+                    throw new Exception("表单验证失败后应聚焦第一个缺失字段：" + name);
+            }
+            CheckMissingField("categoryPicker");
             SelectAnnotationOption(viewer, "categoryPicker");
+            CheckMissingField("planPicker");
             SelectAnnotationOption(viewer, "planPicker");
+            var operatorInput = (TextBox)typeof(ImageViewer).GetField("operatorBox", fieldFlags)!.GetValue(viewer)!;
+            var operatorName = operatorInput.Text;
+            operatorInput.Clear();
+            CheckMissingField("operatorBox");
+            operatorInput.Text = operatorName;
             submit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             await WaitAsync(() => !viewer.IsVisible && entry.AnnotationStatus == "已标注" && annotate.IsEnabled);
             if (grid.SelectedItems.Count != 1 || !ReferenceEquals(grid.SelectedItem, entry) || !annotate.IsEnabled)
@@ -658,6 +1027,9 @@ internal static class RemoteWindowChecks
                 throw new Exception("从日期层进入批次后应显示各图片自己的标注状态");
             grid.UpdateLayout();
             var annotatedRow = (DataGridRow)grid.ItemContainerGenerator.ContainerFromItem(annotatedImage);
+            OpenContext(annotatedRow);
+            if (!annotatedRow.ContextMenu.Items.OfType<MenuItem>().Any(item => Equals(item.Header, "标注")))
+                throw new Exception("批次内图片右键菜单应显示标注");
             var imageLabel = FindTextBlocks(annotatedRow).Single(block => block.Text == annotatedImage.Name);
             if (((SolidColorBrush)imageLabel.Foreground).Color != ((SolidColorBrush)browser.FindResource("SuccessBrush")).Color)
                 throw new Exception("批次文件列表的已标注图片名应为绿色");
@@ -679,6 +1051,13 @@ internal static class RemoteWindowChecks
             await WaitAsync(() => !browser.IsBusy && host.OwnedWindows.OfType<ImageViewer>().Any());
             viewer = host.OwnedWindows.OfType<ImageViewer>().Single();
             await WaitAsync(() => FindImage(viewer)?.Source is not null);
+            var allMarkedList = (ListBox)typeof(ImageViewer).GetField("annotationList", fieldFlags)!.GetValue(viewer)!;
+            var filter = ((DockPanel)allMarkedList.Parent).Children.OfType<CheckBox>().Single();
+            filter.IsChecked = true;
+            filter.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
+            if (allMarkedList.Items.Count != 0 || viewer.CurrentPath != unannotatedImage.Path
+                || !FindTextBlocks(viewer).Any(block => block.IsVisible && block.Text == "本批次图片均已标注"))
+                throw new Exception("筛选全部已标注的批次时应显示空状态并保留当前预览");
             if (FindButtonByContent(viewer, "撤销标注") is not { IsVisible: true } revoke)
                 throw new Exception("已标注图片应显示撤销按钮");
             revoke.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -708,19 +1087,161 @@ internal static class RemoteWindowChecks
             if (!(await endpoint.GetAnnotationHistoryAsync(entry.Path)).Any(item => item.ImageName == unannotatedImage.Name
                 && item.CategoryName == "自定义归类" && item.PlanName == "自定义处理方案"))
                 throw new Exception("重新打开下拉框后应能选用并提交新字典项");
+            var overview = (FrameworkElement)browser.FindName("NgOverviewPanel");
+            ((TextBox)browser.FindName("NgStartDate")).Text = "2026-11-20";
+            ((TextBox)browser.FindName("NgEndDate")).Text = "2026-11-20";
+            var machine = (await endpoint.CallAsync(new("list"))).Entries!.Single(item => item.Name == "A601");
+            await browser.OpenAsync(machine);
+            var overviewDays = (ItemsControl)browser.FindName("NgOverviewDays");
+            var pendingFilter = (RadioButton)browser.FindName("NgPendingFilter");
+            void CheckFilterCounts(string all, string pendingCount, string done)
+            {
+                string? Count(string name) => (browser.FindName(name) as System.Windows.Documents.Run)?.Text.Trim();
+                if (Count("NgAllCount") != all || Count("NgPendingCount") != pendingCount || Count("NgDoneCount") != done)
+                    throw new Exception($"状态筛选应显示查询范围内的批次数量（全部 {all}、未标注 {pendingCount}、已标注 {done}）");
+            }
+            await WaitAsync(() => overview.IsVisible && overviewDays.Items.Count == 1);
+            await FlushAsync(overview);
+            CheckFilterCounts("2", "1", "1");
+            static bool HasStatusMark(Panel panel, bool completed)
+            {
+                var mark = panel.Children.OfType<Control>().SingleOrDefault();
+                if (mark is null) return false;
+                mark.ApplyTemplate();
+                return mark.Template.FindName("Dot", mark) is System.Windows.Shapes.Ellipse { Fill: not null, Stroke: null }
+                    && (mark.Template.FindName("Check", mark) is System.Windows.Shapes.Path) == completed;
+            }
+            foreach (var (name, label, count) in new[] { ("NgAllFilter", "全部", 2), ("NgPendingFilter", "未标注", 1), ("NgDoneFilter", "已标注", 1) })
+            {
+                var statusFilter = (RadioButton)browser.FindName(name);
+                if (!Equals(statusFilter.ToolTip, label) || statusFilter.Content is not StackPanel filterContent
+                    || !filterContent.Children.OfType<TextBlock>().Any(text => text.Text == $"{label} {count}")
+                    || (name == "NgAllFilter"
+                        ? !filterContent.Children.OfType<System.Windows.Shapes.Path>().Any()
+                        : !HasStatusMark(filterContent, name == "NgDoneFilter")))
+                    throw new Exception($"「{label}」筛选应同时显示图标、状态文字和数量");
+            }
+            pendingFilter.IsChecked = true;
+            await FlushAsync(overview);
+            CheckFilterCounts("2", "1", "1");
+            var pending = FindTextBlock(overview, "1004") ?? throw new Exception("机台总览应显示未标注的 NG 批次");
+            if (!pending.IsVisible || FindTextBlock(overview, "1001") is not null)
+                throw new Exception("仅看未标注应隐藏已标注批次并展开首个日期");
+            var batchButton = FindButton(overview, "标注批次 1004") ?? throw new Exception("总览应支持点击整个批次卡片");
+            if (batchButton.Content is not DockPanel batchContent
+                || !HasStatusMark(batchContent, completed: false)
+                || System.Windows.Automation.AutomationProperties.GetHelpText(batchButton) != "未标注"
+                || FindTextBlock(batchButton, "1004") is null || FindTextBlock(batchButton, "未标注") is not null
+                || FindButton(overview, "标注") is not null)
+                throw new Exception("批次号和状态应在同一个可点击卡片内，且只有一个标注入口");
+            if (FindTextBlock(overview, "批次") is { IsVisible: true } || FindTextBlock(overview, "操作") is { IsVisible: true })
+                throw new Exception("日期展开后不应显示重复表头");
+            batchButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitAsync(() => !browser.IsBusy && host.OwnedWindows.OfType<ImageViewer>().Any());
+            viewer = host.OwnedWindows.OfType<ImageViewer>().Single();
+            if (viewer.CurrentPath != dateFolder + "/1004/image.png")
+                throw new Exception("从总览应打开对应的 NG 批次");
+            await WaitAsync(() => FindImage(viewer)?.Source is not null);
+            SelectAnnotationOption(viewer, "categoryPicker", "测试归类");
+            SelectAnnotationOption(viewer, "planPicker", "测试方案");
+            FindButtonByContent(viewer, "提交标注")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitAsync(() => !viewer.IsVisible && overviewDays.Items.Count == 0 && overview.IsEnabled);
+            if (pendingFilter.IsChecked != true) throw new Exception("提交标注后应保留未标注筛选");
+            CheckFilterCounts("2", "0", "2");
+            ((RadioButton)browser.FindName("NgAllFilter")).IsChecked = true;
+            await FlushAsync(overview);
+            if (!FindTextBlocks(overview).Any(text => text.IsVisible && text.Text == "2/2")
+                || FindTextBlock(overview, "1004") is not { IsVisible: true })
+                throw new Exception("总览应保留日期的展开状态并更新已标注计数");
+            if (FindButton(overview, "标注批次 1004")?.Content is not DockPanel completedBatch
+                || !HasStatusMark(completedBatch, completed: true))
+                throw new Exception("提交后的卡片应显示实心圆内的对勾");
+            var showProgress = (Button?)browser.FindName("NgOverviewOpenButton") ?? throw new Exception("缺少 NG 标注进度入口");
+            if (showProgress.IsVisible || FindTextBlocks(overview).Any(text => text.IsVisible && text.Text.Contains("NG 标注进度")))
+                throw new Exception("进度页应隐藏重复标题和工具栏入口");
+            var returnButton = (Button)browser.FindName("NgOverviewReturnButton");
+            if (returnButton.Content is not System.Windows.Shapes.Path
+                || System.Windows.Automation.AutomationProperties.GetName(returnButton) != "返回文件列表")
+                throw new Exception("返回文件列表应是有辅助名称的图标按钮");
+            returnButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            if (overview.IsVisible || !grid.IsVisible) throw new Exception("机台总览应能切回文件列表");
+            if (!showProgress.IsVisible || showProgress.Content is not StackPanel progressContent
+                || !progressContent.Children.OfType<TextBlock>().Any(label => label.Text == "进度")
+                || progressContent.Children.OfType<System.Windows.Shapes.Path>().SingleOrDefault()?.Data is null
+                || !Equals(showProgress.Style, annotate.Style)
+                || System.Windows.Automation.AutomationProperties.GetName(showProgress) != "NG 标注进度")
+                throw new Exception("返回文件列表后，进度入口应和标注按钮同样显示图标与短名称");
+            showProgress.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitAsync(() => !browser.IsBusy && overview.IsVisible);
+            var startInput = (TextBox)browser.FindName("NgStartDate");
+            var overviewMessage = (TextBlock)browser.FindName("NgOverviewMessage");
+            startInput.Text = "2026-11-31";
+            var query = FindButtonByContent(overview, "查询") ?? throw new Exception("总览缺少查询入口");
+            query.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            pendingFilter.IsChecked = true;
+            if (overviewDays.Items.Count != 0 || !overviewMessage.Text.Contains("有效日期"))
+                throw new Exception("无效日期查询后切换筛选应保留错误提示并清除旧结果");
+            CheckFilterCounts("", "", "");
+            var today = DateTime.Today;
+            Directory.CreateDirectory(Path.Combine(root, "A601", today.ToString("yyyyMMdd")));
+            async Task CheckDatePreset(string label, DateTime expectedStart)
+            {
+                var observed = new TaskCompletionSource<(DateTime Start, DateTime End)>(TaskCreationOptions.RunContinuationsAsynchronously);
+                service.NgBatchQuery = (_, start, end, _) =>
+                {
+                    observed.TrySetResult((start, end));
+                    return Task.FromResult(Array.Empty<RemoteBatchKey>());
+                };
+                var preset = FindButtonByContent(overview, label) ?? throw new Exception("总览缺少日期快捷筛选：" + label);
+                preset.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                var range = await observed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                await WaitAsync(() => !browser.IsBusy);
+                if (range.Start != expectedStart || range.End != today.AddDays(1)
+                    || startInput.Text != expectedStart.ToString("yyyy-MM-dd")
+                    || ((TextBox)browser.FindName("NgEndDate")).Text != today.ToString("yyyy-MM-dd")
+                    || pendingFilter.IsChecked != true)
+                    throw new Exception("日期快捷筛选应立即查询正确范围，并保留标注状态筛选：" + label);
+            }
+            await CheckDatePreset("今天", today);
+            await CheckDatePreset("近 7 天", today.AddDays(-6));
+            Console.WriteLine("通过：机台 NG 总览、按状态筛选、直接提交标注并刷新日期计数");
             Console.WriteLine("通过：通过两个加号新增字典，自动选中新值并刷新下拉选项");
             Console.WriteLine("通过：已标注图片可一次撤销全部记录，关窗后刷新列表");
             Console.WriteLine("通过：日期目录单选、标注窗口只开一个、显示目录标题、提交后关闭并刷新列表");
         }
         finally { host.Close(); }
     }
+    private static void CheckRoundedButtonFocus(Button button)
+    {
+        button.ApplyTemplate();
+        if (button.FocusVisualStyle is not { } focusStyle
+            || button.Template.FindName("Chrome", button) is not Border { CornerRadius.TopLeft: > 0 }
+            || button.Template.Triggers.OfType<Trigger>().Any(trigger =>
+                trigger.Property == UIElement.IsKeyboardFocusedProperty))
+            throw new Exception("按钮应只在键盘导航时绘制额外焦点提示");
+        var focusCue = new Control { Style = focusStyle };
+        if (focusCue.Template?.LoadContent() is not Border { CornerRadius.TopLeft: > 0, BorderThickness.Left: 1 })
+            throw new Exception("键盘焦点提示应为细圆角框");
+    }
+
     private static void CheckAnnotationInputs(ImageViewer viewer)
     {
         const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         var note = (TextBox)typeof(ImageViewer).GetField("noteBox", flags)!.GetValue(viewer)!;
         var operatorBox = (TextBox)typeof(ImageViewer).GetField("operatorBox", flags)!.GetValue(viewer)!;
+        var singleLineFields = new Control[]
+        {
+            (Button)typeof(ImageViewer).GetField("categoryPicker", flags)!.GetValue(viewer)!,
+            (Button)typeof(ImageViewer).GetField("planPicker", flags)!.GetValue(viewer)!,
+            FindButton(viewer, "新增异常归类")!,
+            FindButton(viewer, "新增异常处理方案")!,
+            operatorBox
+        };
         note.Text = "第一行备注\n第二行备注";
         viewer.UpdateLayout();
+        if (singleLineFields.Any(field => Math.Abs(field.ActualHeight - operatorBox.ActualHeight) > 0.5
+            || field.FocusVisualStyle is not null || field.BorderThickness != operatorBox.BorderThickness))
+            throw new Exception("标注单行控件应等高，并采用无额外外框的焦点样式");
         foreach (var input in new[] { note, operatorBox })
         {
             var first = input.GetRectFromCharacterIndex(0);
@@ -774,7 +1295,7 @@ internal static class RemoteWindowChecks
         var rootNode = (TreeViewItem)tree.Items[0];
         var folder = rootNode.Items.Cast<TreeViewItem>().Single(n => ((RemoteEntry)n.Tag).Name == "文本");
         var folderMenu = folder.ContextMenu?.Items.OfType<MenuItem>().Select(item => item.Header?.ToString()).ToArray() ?? [];
-        if (folderMenu.FirstOrDefault() != "复制" || !folderMenu.Contains("标注此对线…")) throw new Exception("目录树右键菜单应包含复制和标注");
+        if (!folderMenu.SequenceEqual(new[] { "复制" })) throw new Exception("普通目录树节点右键应只显示复制");
         await browser.CopyToClipboardAsync((RemoteEntry)folder.Tag);
         var firstDrop = Clipboard.GetDataObject()?.GetData(DataFormats.FileDrop) as string[];
         if (firstDrop is null || firstDrop.Length != 1) throw new Exception("剪贴板未包含复制内容");
@@ -806,15 +1327,23 @@ internal static class RemoteWindowChecks
         grid.SelectedItem = zip; grid.UpdateLayout();
         var row = (DataGridRow?)grid.ItemContainerGenerator.ContainerFromItem(directory)
             ?? throw new Exception("未找到用于右键点击的目录行");
+        grid.SelectedItems.Add(grid.Items.Cast<RemoteEntry>().First(item => item != zip && item != directory));
+        var selectedRow = (DataGridRow)grid.ItemContainerGenerator.ContainerFromItem(zip);
+        selectedRow.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Right) { RoutedEvent = UIElement.PreviewMouseRightButtonDownEvent });
+        if (grid.SelectedItems.Count != 2 || !grid.SelectedItems.Contains(zip))
+            throw new Exception("多选列表右键已选中的行应保留当前选择");
         string before = $"before={(grid.SelectedItem as RemoteEntry)?.Name ?? "(null)"}/rowSelected={row.IsSelected}";
         row.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Right) { RoutedEvent = UIElement.PreviewMouseRightButtonDownEvent });
         // 实际打开行菜单，确认菜单项对应被右键的文件夹而非原选中的 ZIP。
-        if (!ReferenceEquals(grid.SelectedItem, directory))
+        if (!ReferenceEquals(grid.SelectedItem, directory) || grid.SelectedItems.Count != 1)
             throw new Exception($"列表右键未选中对应行；{before} after={(grid.SelectedItem as RemoteEntry)?.Name ?? "(null)"} rowSelectedNow={row.IsSelected} count={grid.SelectedItems.Count}");
         // 触发框架的 ContextMenuOpening 路由事件，使用用户点击时的处理器。
         OpenContext(row);
         var directoryMenu = row.ContextMenu.Items.OfType<MenuItem>().Select(item => item.Header?.ToString()).ToArray();
-        if (directoryMenu.FirstOrDefault() != "复制" || !directoryMenu.Contains("标注此对线…")) throw new Exception("文件列表目录菜单错误");
+        if (!directoryMenu.SequenceEqual(new[] { "复制" })) throw new Exception("普通文件夹右键应只显示复制");
+        var copyButton = row.ContextMenu.Items.OfType<MenuItem>().First();
+        if (copyButton.Icon is not System.Windows.Shapes.Path || copyButton.InputGestureText != "Ctrl+C")
+            throw new Exception("文件列表的复制菜单应显示图标和快捷键");
         var zipNode = ((TreeViewItem)tree.Items[0]).Items.Cast<TreeViewItem>().Single(n => ((RemoteEntry)n.Tag).Name == "文本.zip");
         if (zipNode.ContextMenu.Items.Count != 3 || ((MenuItem)zipNode.ContextMenu.Items[0]).Header?.ToString() != "复制" || ((MenuItem)zipNode.ContextMenu.Items[2]).Header?.ToString() != "删除服务端文件…") throw new Exception("ZIP 复制或删除菜单错误");
         string output = Path.Combine(temp, "ui-zip-download.zip");
@@ -845,6 +1374,40 @@ internal static class RemoteWindowChecks
             null, new object[] { row, true, 0d, 0d }, null)!;
         row.RaiseEvent(args);
     }
+    private static void CheckLegacyClientSettingsMigration(string temp)
+    {
+        string source = Path.Combine(temp, "legacy-client-settings");
+        string target = Path.Combine(temp, "migrated-client-settings");
+        Directory.CreateDirectory(source);
+        Directory.CreateDirectory(target);
+        var migrate = typeof(RemoteClient::RemoteFiles.Client.App).GetMethod("MigrateLegacySettings",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        void RunMigration() => migrate.Invoke(null, [source, target]);
+
+        foreach (string name in new[] { "remote-client.json", "theme.json", "layout-remote-client.json", "operator.json", "ngfilter.json" })
+            File.WriteAllText(Path.Combine(source, name), name);
+        string localTheme = Path.Combine(target, "theme.json");
+        File.WriteAllText(localTheme, "部署目录已有主题");
+        string legacyOperator = Path.Combine(source, "operator.json");
+        string localOperator = Path.Combine(target, "operator.json");
+        using (File.Open(legacyOperator, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            RunMigration();
+            if (File.Exists(localOperator)) throw new Exception("旧操作人配置被锁定时应留待下次启动重试");
+        }
+        RunMigration();
+        foreach (string name in new[] { "remote-client.json", "layout-remote-client.json", "operator.json" })
+            if (File.ReadAllText(Path.Combine(target, name)) != name) throw new Exception("客户端旧配置未迁移：" + name);
+        if (File.ReadAllText(localTheme) != "部署目录已有主题" || File.Exists(Path.Combine(target, "ngfilter.json")))
+            throw new Exception("迁移应保留已有客户端配置并限制迁移范围");
+        File.Delete(localOperator);
+        RunMigration();
+        if (File.Exists(localOperator) || File.ReadAllText(legacyOperator) != "operator.json"
+            || Directory.EnumerateFiles(target, "*.tmp").Any())
+            throw new Exception("迁移应只成功执行一次，保留旧配置并清理临时文件");
+        Console.WriteLine("通过：旧客户端配置迁移、已有设置保留、失败重试和重复启动");
+    }
+
     private static async Task CheckViewerMinimizeAsync(ImageViewer viewer)
     {
         var owner = viewer.Owner ?? throw new Exception("查看器应从文件列表打开");

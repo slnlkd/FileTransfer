@@ -10,6 +10,12 @@ public sealed class RemoteFileClient(string host, int port)
     public int ServerProtocolVersion { get; private set; }
     public string? ProtocolWarning { get; private set; }
     public void ClearProtocolWarning() => ProtocolWarning = null;
+    public async Task<RemoteNgDay[]> GetNgOverviewAsync(string path, DateTime start, DateTime end, CancellationToken ct = default)
+    {
+        var response = await CallAsync(new("ng-overview", path, StartDate: start.Date, EndDate: end.Date), ct);
+        return response.NgDays ?? [];
+    }
+
     public async Task<RemoteResponse> CallAsync(RemoteRequest request, CancellationToken ct = default)
     {
         request = request with { Protocol = RemoteProtocol.Version };

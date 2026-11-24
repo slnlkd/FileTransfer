@@ -84,6 +84,22 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
         return items.ToArray();
     }
 
+    public async Task<RemoteBatchKey[]> ListAnnotatedBatchesAsync(string equipmentNo, DateTime start, DateTime end, CancellationToken ct)
+    {
+        await using var connection = await OpenAsync(ct);
+        string sql = "SELECT DISTINCT TRUNC(\"AUTOLINE_DATE\"), \"JOB_BATCH_NUMBER\" FROM " + await TableAsync(connection, ct) +
+            " WHERE \"EQP_ID\" = :pEqp AND \"AUTOLINE_DATE\" >= :pStart AND \"AUTOLINE_DATE\" < :pEnd AND \"JOB_BATCH_NUMBER\" IS NOT NULL";
+        await using var command = Create(connection, sql);
+        command.Parameters.Add("pEqp", OracleDbType.NVarchar2, 32).Value = equipmentNo;
+        command.Parameters.Add("pStart", OracleDbType.Date).Value = start;
+        command.Parameters.Add("pEnd", OracleDbType.Date).Value = end;
+        var batches = new List<RemoteBatchKey>();
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            batches.Add(new(reader.GetDateTime(0), reader.GetString(1).Trim()));
+        return batches.ToArray();
+    }
+
     /// <summary>FILE_DIRECTORY 里可能带图片名，读出来时把文件夹和图片名拆开。</summary>
     private static (string Folder, string? Image) SplitFileDirectory(string value)
     {
@@ -99,8 +115,9 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
     {
         await using var connection = await OpenAsync(ct);
         string table = await TableAsync(connection, ct);
-        // EQP_TYPE 是 NOT NULL 列，查不到时给一个可读占位，避免插入直接失败。
-        string equipmentType = await ResolveEquipmentTypeAsync(connection, annotation.EquipmentNo ?? "", ct) ?? "未知";
+        // 优先使用设备主数据；DS616 路径可在主数据缺失时提供机型。
+        string? registeredType = await ResolveEquipmentTypeAsync(connection, annotation.EquipmentNo ?? "", ct);
+        string equipmentType = string.IsNullOrWhiteSpace(registeredType) ? annotation.EquipmentType ?? "未知" : registeredType;
         string sql = "INSERT INTO " + table + " " +
             "(\"ID\",\"EQP_ID\",\"EQP_TYPE\",\"AUTOLINE_DATE\",\"JOB_BATCH_NUMBER\",\"ANALYSIS_USER\",\"ANALYSIS_DATETIME\"," +
             "\"FAIL_TYPE\",\"FAIL_HANDLE_SOLUTION\",\"FILE_DIRECTORY\",\"" + NoteColumn + "\") " +

@@ -14,4 +14,7 @@ public sealed class AnnotationContext(string folderPath, string displayPath, IEn
     public string FolderPath { get; } = folderPath;
     public string DisplayPath { get; } = displayPath;
     public IReadOnlyList<RemoteAnnotation> GetImageHistory(string imageName) => byImage.GetValueOrDefault(imageName) ?? [];
+
+    // Oracle DATE 保留数据库的本地钟面时间，只有明确标记为 UTC 的时间需要转换。
+    public static DateTime? GetDisplayTime(DateTime? time) => time is { Kind: DateTimeKind.Utc } utc ? utc.ToLocalTime() : time;
 }

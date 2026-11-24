@@ -76,4 +76,4 @@ Write-Host ("发布目录：{0}" -f $package)
 Write-Host ("压缩包：  {0}（{1:N1} MB）" -f $zip, ((Get-Item $zip).Length / 1MB))
 Write-Host ("解压后：  {0:N1} MB" -f ($size / 1MB))
 Write-Host ''
-Write-Host '提醒：ngfilter.json 需要单独放到服务端 %LOCALAPPDATA%\FileTransferDemo 下，不要随包分发。'
+Write-Host '提醒：请将 ngfilter.json 放在 FileTransfer.Server.exe 旁边，真实配置不要随包分发。'
