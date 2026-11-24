@@ -29,7 +29,6 @@ public sealed class TextViewer : Window
     {
         Content = "保存",
         ToolTip = "保存到服务端 (Ctrl+S)",
-        Height = 28,
         MinWidth = 58,
         VerticalAlignment = VerticalAlignment.Center
     };
@@ -90,7 +89,7 @@ public sealed class TextViewer : Window
         status.SetBinding(ToolTipProperty, new System.Windows.Data.Binding(nameof(TextBlock.Text)) { Source = status });
         var saveStyle = ThemeStyle("PrimaryButton");
         if (saveStyle is not null) save.Style = saveStyle;
-        save.SetResourceReference(Control.ForegroundProperty, "CanvasBrush");
+        save.SetResourceReference(HeightProperty, "ToolbarControlHeight");
 
         var panel = new DockPanel();
 
@@ -98,8 +97,8 @@ public sealed class TextViewer : Window
         var headerPanel = new DockPanel { Height = 40, LastChildFill = true, Margin = new Thickness(10, 0, 10, 0) };
         var findButton = new Button
         {
-            Content = "查找", Height = 28, VerticalAlignment = VerticalAlignment.Center,
-            Style = ThemeStyle("GhostButton"), ToolTip = "查找 (Ctrl+F)", Margin = new Thickness(0, 0, 10, 0)
+            Content = "查找", VerticalAlignment = VerticalAlignment.Center,
+            Style = ThemeStyle("ToolbarButton"), ToolTip = "查找 (Ctrl+F)", Margin = new Thickness(0, 0, 8, 0)
         };
         findButton.Click += (_, _) => ShowFind();
         var wrap = new CheckBox
@@ -113,12 +112,9 @@ public sealed class TextViewer : Window
         headerPanel.Children.Add(commands);
         var icon = new System.Windows.Shapes.Path
         {
-            Data = Geometry.Parse("M2,1 H9 L14,6 V15 H2 Z M9,1 V6 H14"),
+            Data = (Geometry)FindResource("IconLogsGeometry"),
+            Style = ThemeStyle("IconGlyph"),
             Stroke = iconBrush,
-            StrokeThickness = 1.2,
-            Width = 16,
-            Height = 16,
-            Stretch = Stretch.Uniform,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 8, 0)
         };
@@ -148,8 +144,7 @@ public sealed class TextViewer : Window
         // 查找栏
         findBox = new TextBox
         {
-            Height = 28, MinHeight = 28, Padding = new Thickness(8, 4, 8, 4),
-            Style = ThemeStyle("RoundedTextInput"),
+            Style = ThemeStyle("ToolbarTextInput"),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 8, 0)
         };
@@ -235,7 +230,7 @@ public sealed class TextViewer : Window
         statusPanel.Children.Add(status);
         var statusBar = new Border
         {
-            Height = 30, Padding = new Thickness(10, 0, 10, 0), Background = header,
+            Height = 32, Padding = new Thickness(10, 0, 10, 0), Background = header,
             BorderBrush = line, BorderThickness = new Thickness(0, 1, 0, 0), Child = statusPanel
         };
         DockPanel.SetDock(statusBar, Dock.Bottom);

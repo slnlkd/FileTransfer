@@ -2,6 +2,12 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using Serilog;
 using Transfer.Core.Remote;
 using IDataObject = System.Runtime.InteropServices.ComTypes.IDataObject;
@@ -287,18 +293,22 @@ public sealed class RemoteFileDataObject : IDataObject
 
     [ComVisible(true)]
     [ClassInterface(ClassInterfaceType.None)]
-    internal sealed class DropSource : IOleDropSource
+    internal sealed class DropSource(Action? feedback = null) : IOleDropSource
     {
         public int QueryContinueDrag(bool escapePressed, int keyState)
         {
-            if (escapePressed) return unchecked((int)0x00040101); // DRAGDROP_S_CANCEL
+            if (escapePressed || (keyState & 8 /* MK_CONTROL */) == 0) return unchecked((int)0x00040101); // DRAGDROP_S_CANCEL
             if ((keyState & 1) == 0) return unchecked((int)0x00040100); // DRAGDROP_S_DROP
             return 0;
         }
-        public int GiveFeedback(int effect) => unchecked((int)0x00040102); // DRAGDROP_S_USEDEFAULTCURSORS
+        public int GiveFeedback(int effect)
+        {
+            feedback?.Invoke();
+            return unchecked((int)0x00040102); // DRAGDROP_S_USEDEFAULTCURSORS
+        }
     }
 
-    public static DragDropEffects Start(RemoteFileClient client, IReadOnlyList<RemoteEntry> entries)
+    public static DragDropEffects Start(RemoteFileClient client, IReadOnlyList<RemoteEntry> entries, Action? feedback = null)
     {
         if (entries.Count == 0) return DragDropEffects.None;
         CleanOldSessions();
@@ -306,7 +316,7 @@ public sealed class RemoteFileDataObject : IDataObject
         int effect = 0;
         try
         {
-            int hr = Native.DoDragDrop(data, new DropSource(), 1 /* DROPEFFECT_COPY */, out effect);
+            int hr = Native.DoDragDrop(data, new DropSource(feedback), 1 /* DROPEFFECT_COPY */, out effect);
             Log.Information("远程文件拖拽结束；HRESULT {HResult}，效果 {Effect}，条目 {Count}", hr, effect, entries.Count);
             if (hr < 0) Log.Warning("远程文件拖拽返回失败；HRESULT {HResult}", hr);
             return (DragDropEffects)effect;
@@ -317,5 +327,168 @@ public sealed class RemoteFileDataObject : IDataObject
             return DragDropEffects.None;
         }
         finally { GC.KeepAlive(data); }
+    }
+}
+
+/// <summary>不接收鼠标和焦点的拖动预览，可跨窗口跟随指针。</summary>
+internal sealed class RemoteDragPreview : Window, IDisposable
+{
+    private readonly Image previewImage = new() { Width = 96, Height = 96, Stretch = Stretch.Uniform };
+    private readonly CancellationTokenSource lifetime = new();
+    private readonly DispatcherTimer pointerTimer = new(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(16) };
+    private TaskCompletionSource<bool>? released;
+    private IntPtr handle;
+    private bool closed;
+    private bool disposed;
+    internal Task ThumbnailReady { get; }
+
+    internal RemoteDragPreview(RemoteFileClient client, IReadOnlyList<RemoteEntry> entries, Window? owner, bool clipboardCopy)
+    {
+        ThemeLoader.Apply(this);
+        Owner = owner;
+        Width = 128;
+        Height = 160;
+        WindowStyle = WindowStyle.None;
+        ResizeMode = ResizeMode.NoResize;
+        AllowsTransparency = true;
+        Background = Brushes.Transparent;
+        ShowInTaskbar = false;
+        ShowActivated = false;
+        Focusable = false;
+        IsHitTestVisible = false;
+        Topmost = true;
+        UseLayoutRounding = true;
+        var surface = (Brush)FindResource("SurfaceBrush");
+        var line = (Brush)FindResource("LineBrush");
+        var cards = new Grid { Width = 112, Height = 112 };
+        if (entries.Count > 1)
+            cards.Children.Add(new Border
+            {
+                Background = surface, BorderBrush = line, BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4), Margin = new Thickness(4, 4, 0, 0)
+            });
+        previewImage.Source = FileIconConverter.GetIcon(entries[0], large: true);
+        cards.Children.Add(new Border
+        {
+            Background = surface, BorderBrush = line, BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4), Padding = new Thickness(5),
+            Margin = entries.Count > 1 ? new Thickness(0, 0, 4, 4) : new Thickness(0),
+            Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 5, ShadowDepth = 1, Opacity = 0.18 },
+            Child = previewImage
+        });
+        if (entries.Count > 1)
+            cards.Children.Add(new Border
+            {
+                Background = (Brush)FindResource("UpdateBrush"), CornerRadius = new CornerRadius(10),
+                MinWidth = 20, Height = 20, Padding = new Thickness(5, 0, 5, 0),
+                HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,
+                Child = new TextBlock
+                {
+                    Text = entries.Count.ToString(), Foreground = Brushes.White, FontSize = 11,
+                    HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+                }
+            });
+        var caption = new TextBlock
+        {
+            Text = clipboardCopy ? "松开鼠标复制" : entries.Count > 1 ? $"复制 {entries.Count} 项" : entries[0].Name,
+            Foreground = (Brush)FindResource("InkBrush"), FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis,
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        Content = new StackPanel
+        {
+            Margin = new Thickness(8),
+            Children =
+            {
+                cards,
+                new Border
+                {
+                    Background = surface, CornerRadius = new CornerRadius(4),
+                    Padding = new Thickness(4, 3, 4, 3), Margin = new Thickness(0, 4, 0, 0), Child = caption
+                }
+            }
+        };
+        SourceInitialized += (_, _) =>
+        {
+            handle = new WindowInteropHelper(this).Handle;
+            int style = Native.GetWindowLong(handle, -20);
+            Native.SetWindowLong(handle, -20, style | 0x20 /* TRANSPARENT */ | 0x08000000 /* NOACTIVATE */ | 0x80 /* TOOLWINDOW */);
+            UpdatePosition();
+        };
+        pointerTimer.Tick += (_, _) =>
+        {
+            UpdatePosition();
+            if (Native.KeyDown(0x1B) || !Native.KeyDown(0x11)) Finish(false);
+            else if (!Native.KeyDown(0x01)) Finish(true);
+        };
+        Closed += (_, _) =>
+        {
+            closed = true;
+            Finish(false);
+            lifetime.Cancel();
+        };
+        ThumbnailReady = LoadThumbnailAsync(client, entries[0], lifetime.Token);
+    }
+
+    private async Task LoadThumbnailAsync(RemoteFileClient client, RemoteEntry entry, CancellationToken token)
+    {
+        if (!entry.IsImage) return;
+        try
+        {
+            var bitmap = await Task.Run(async () =>
+            {
+                byte[] bytes = await client.ReadImageAsync(entry.Path, token).ConfigureAwait(false);
+                using var stream = new MemoryStream(bytes);
+                var image = new BitmapImage();
+                image.BeginInit();
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.DecodePixelWidth = 128;
+                image.StreamSource = stream;
+                image.EndInit();
+                image.Freeze();
+                return image;
+            }, token);
+            if (!token.IsCancellationRequested) previewImage.Source = bitmap;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) { Log.Debug(ex, "读取拖动缩略图失败；路径 {RemotePath}", entry.Path); }
+    }
+
+    internal void UpdatePosition()
+    {
+        if (closed || handle == IntPtr.Zero || !Native.GetCursorPos(out var point)) return;
+        Native.SetWindowPos(handle, new IntPtr(-1), point.X + 16, point.Y + 20, 0, 0, 0x1 | 0x10 /* NOSIZE | NOACTIVATE */);
+    }
+
+    internal Task<bool> WaitForReleaseAsync()
+    {
+        released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        pointerTimer.Start();
+        return released.Task;
+    }
+
+    private void Finish(bool copy)
+    {
+        pointerTimer.Stop();
+        released?.TrySetResult(copy);
+    }
+
+    public void Dispose()
+    {
+        if (disposed) return;
+        disposed = true;
+        if (!closed) Close();
+        lifetime.Dispose();
+    }
+
+    private static class Native
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct Point { public int X, Y; }
+        [DllImport("user32.dll")] internal static extern bool GetCursorPos(out Point point);
+        [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
+        internal static bool KeyDown(int key) => (GetAsyncKeyState(key) & 0x8000) != 0;
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] internal static extern int GetWindowLong(IntPtr window, int index);
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongW")] internal static extern int SetWindowLong(IntPtr window, int index, int value);
+        [DllImport("user32.dll")] internal static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
     }
 }

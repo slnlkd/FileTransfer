@@ -34,8 +34,11 @@ public record RemoteAnnotation(string FolderPath,
     string? BatchNumber = null, string? CategoryName = null, string? PlanName = null,
     string? Note = null, string? Operator = null, DateTime? UpdatedAt = null, string? ImageName = null);
 public record RemoteDictionaryItem(string Code, string Name);
-public enum AnnotationDictionaryKind { Category, Plan }
-public record RemoteDictionary(RemoteDictionaryItem[] Categories, RemoteDictionaryItem[] Plans);
+public enum AnnotationDictionaryKind { Category, Plan, Remark }
+public record RemoteDictionary(RemoteDictionaryItem[] Categories, RemoteDictionaryItem[] Plans)
+{
+    public RemoteDictionaryItem[] Remarks { get; init; } = [];
+}
 public record RemoteBatchKey(DateTime Date, string Batch);
 public record RemoteNgBatch(string Name, string Path, bool Annotated);
 public record RemoteNgDay(DateTime Date, RemoteNgBatch[] Batches);

@@ -52,6 +52,7 @@ public partial class RemoteBrowser : UserControl
     private string? ngOverviewPath;
     private RemoteNgDay[] ngDays = [];
     private bool ngOverviewHasResult;
+    private static readonly string[] NgDateFormats = ["yyyy-MM-dd", "yyyy.MM.dd", "yyyyMMdd"];
     private readonly Dictionary<DateTime, bool> ngExpandedDays = [];
     private Func<string, string?>? localEmptyText = null;
     private ScrollViewer? fileScroll;
@@ -59,10 +60,12 @@ public partial class RemoteBrowser : UserControl
     private bool scrollResetPending;
     private Point dragOrigin;
     private bool dragArmed;
+    private RemoteEntry[]? dragSelection;
+    private bool dragInProgress;
     public event Action<string, string>? StatusChanged;
     public event Action<string, double, bool, bool>? ProgressChanged;
     public event Action<int, int?>? SelectionCountChanged;
-    public bool IsBusy => busy;
+    public bool IsBusy => busy || dragInProgress;
     public string? ProtocolWarning { get; private set; }
     private async void Grid_Sorting(object sender, DataGridSortingEventArgs e)
     {
@@ -152,6 +155,8 @@ public partial class RemoteBrowser : UserControl
     }
     public void Disconnect()
     {
+        dragArmed = false;
+        dragSelection = null;
         operationCancel?.Cancel();
         client = null;
         ProtocolWarning = null;
@@ -463,13 +468,13 @@ public partial class RemoteBrowser : UserControl
             if (version == navigationVersion) scrollResetPending = false;
         }
     }
-    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    private static T? FindVisualChild<T>(DependencyObject parent, Predicate<T>? predicate = null) where T : DependencyObject
     {
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
         {
             var child = VisualTreeHelper.GetChild(parent, i);
-            if (child is T match) return match;
-            if (FindVisualChild<T>(child) is { } nested) return nested;
+            if (child is T match && (predicate is null || predicate(match))) return match;
+            if (FindVisualChild<T>(child, predicate) is { } nested) return nested;
         }
         return null;
     }
@@ -702,6 +707,7 @@ public partial class RemoteBrowser : UserControl
     }
     private async void HostWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (dragInProgress) { e.Handled = true; return; }
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && e.Key is Key.A or Key.C)
         {
             // 输入框里的 Ctrl+A/C 继续用于编辑文字。
@@ -759,18 +765,40 @@ public partial class RemoteBrowser : UserControl
     }
     // NG 过滤是否开启（本地个性化过滤器把 listFilter 设为 "ng"）。
     private bool NgFilterEnabled => string.Equals(listFilter, "ng", StringComparison.OrdinalIgnoreCase);
-    private bool CanOpenAnnotation => !busy && client is not null && annotationWindow is null;
+    private bool CanOpenAnnotation => !IsBusy && client is not null && annotationWindow is null;
 
-    private sealed class NgDayRow(RemoteNgDay day, RemoteNgBatch[] visibleBatches, bool expanded)
+    private sealed class NgDayRow(RemoteNgDay day, RemoteNgBatch[] visibleBatches, bool expanded) : INotifyPropertyChanged
     {
+        public event PropertyChangedEventHandler? PropertyChanged;
         public DateTime Date => day.Date;
         private int Total => day.Batches.Length;
-        private int Annotated { get; } = day.Batches.Count(batch => batch.Annotated);
+        private int Annotated => day.Batches.Count(batch => batch.Annotated);
         public bool IsComplete => Annotated == Total;
         public string Progress => $"{Annotated}/{Total}";
         public string ProgressDetails => $"NG {Total} · 已标注 {Annotated} · 未标注 {Total - Annotated}";
-        public RemoteNgBatch[] VisibleBatches { get; } = visibleBatches;
+        public System.Collections.ObjectModel.ObservableCollection<RemoteNgBatch> VisibleBatches { get; } = new(visibleBatches);
         public bool IsExpanded { get; set; } = expanded;
+        public void Update(RemoteNgDay updated, RemoteNgBatch[] visible)
+        {
+            bool countsChanged = Total != updated.Batches.Length || Annotated != updated.Batches.Count(batch => batch.Annotated);
+            day = updated;
+            for (int index = 0; index < visible.Length; index++)
+            {
+                var batch = visible[index];
+                if (index >= VisibleBatches.Count) VisibleBatches.Add(batch);
+                else if (VisibleBatches[index].Path != batch.Path)
+                {
+                    var existing = VisibleBatches.FirstOrDefault(item => item.Path == batch.Path);
+                    if (existing is null) VisibleBatches.Insert(index, batch);
+                    else VisibleBatches.Move(VisibleBatches.IndexOf(existing), index);
+                }
+                if (VisibleBatches[index] != batch) VisibleBatches[index] = batch;
+            }
+            while (VisibleBatches.Count > visible.Length) VisibleBatches.RemoveAt(VisibleBatches.Count - 1);
+            if (countsChanged)
+                foreach (string property in new[] { nameof(IsComplete), nameof(Progress), nameof(ProgressDetails) })
+                    PropertyChanged?.Invoke(this, new(property));
+        }
     }
 
     private async Task UpdateNgOverviewAsync(string path, CancellationToken ct)
@@ -847,8 +875,22 @@ public partial class RemoteBrowser : UserControl
 
     private void NgOverviewDate_TextChanged(object sender, TextChangedEventArgs e)
     {
+        UpdateNgDatePresets();
         if (NgOverviewPanel?.Visibility == Visibility.Visible)
             ClearNgOverviewResult("日期已更改，请点击查询");
+    }
+
+    private void UpdateNgDatePresets()
+    {
+        if (NgTodayButton is null || NgLastWeekButton is null) return;
+        bool validStart = DateTime.TryParseExact(NgStartDate.Text.Trim(), NgDateFormats, CultureInfo.InvariantCulture,
+            DateTimeStyles.None, out var start);
+        bool validEnd = DateTime.TryParseExact(NgEndDate.Text.Trim(), NgDateFormats, CultureInfo.InvariantCulture,
+            DateTimeStyles.None, out var end);
+        bool valid = validStart && validEnd;
+        var today = DateTime.Today;
+        System.Windows.Controls.Primitives.Selector.SetIsSelected(NgTodayButton, valid && start == today && end == today);
+        System.Windows.Controls.Primitives.Selector.SetIsSelected(NgLastWeekButton, valid && start == today.AddDays(-6) && end == today);
     }
 
     private void ClearNgOverviewResult(string message)
@@ -872,11 +914,10 @@ public partial class RemoteBrowser : UserControl
     private async Task RefreshNgOverviewAsync(CancellationToken ct)
     {
         if (ngOverviewPath is not { } path || NgOverviewPanel.Visibility != Visibility.Visible) return;
-        string[] formats = ["yyyy-MM-dd", "yyyy.MM.dd", "yyyyMMdd"];
         string startText = NgStartDate.Text.Trim();
         string endText = NgEndDate.Text.Trim();
-        if (!DateTime.TryParseExact(startText, formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var start)
-            || !DateTime.TryParseExact(endText, formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var end)
+        if (!DateTime.TryParseExact(startText, NgDateFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var start)
+            || !DateTime.TryParseExact(endText, NgDateFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var end)
             || end.Date < start.Date || (end.Date - start.Date).TotalDays >= 31)
         {
             ClearNgOverviewResult("请输入有效日期，格式为 yyyy-MM-dd，范围最多 31 天");
@@ -913,8 +954,9 @@ public partial class RemoteBrowser : UserControl
 
     private void RenderNgOverview(bool keepScroll)
     {
-        if (NgOverviewDays.ItemsSource is IEnumerable<NgDayRow> previous)
-            foreach (var day in previous) ngExpandedDays[day.Date] = day.IsExpanded;
+        var previous = NgOverviewDays.ItemsSource as System.Collections.ObjectModel.ObservableCollection<NgDayRow>;
+        var previousDays = previous?.ToDictionary(day => day.Date) ?? [];
+        foreach (var day in previousDays.Values) ngExpandedDays[day.Date] = day.IsExpanded;
         var rows = new List<NgDayRow>();
         bool? onlyAnnotated = NgPendingFilter.IsChecked == true ? false : NgDoneFilter.IsChecked == true ? true : null;
         foreach (var day in ngDays)
@@ -922,11 +964,31 @@ public partial class RemoteBrowser : UserControl
             var batches = onlyAnnotated is { } annotated ? day.Batches.Where(batch => batch.Annotated == annotated).ToArray() : day.Batches;
             if (batches.Length == 0) continue;
             bool expanded = ngExpandedDays.GetValueOrDefault(day.Date, rows.Count == 0 && ngExpandedDays.Count == 0);
-            rows.Add(new(day, batches, expanded));
+            if (previousDays.TryGetValue(day.Date, out var existing))
+            {
+                existing.Update(day, batches);
+                rows.Add(existing);
+            }
+            else rows.Add(new(day, batches, expanded));
         }
-        double offset = keepScroll ? NgOverviewScroll.VerticalOffset : 0;
-        NgOverviewDays.ItemsSource = rows;
-        NgOverviewScroll.ScrollToVerticalOffset(offset);
+        if (previous is null)
+            NgOverviewDays.ItemsSource = new System.Collections.ObjectModel.ObservableCollection<NgDayRow>(rows);
+        else
+        {
+            for (int index = 0; index < rows.Count; index++)
+            {
+                var row = rows[index];
+                if (index >= previous.Count) previous.Add(row);
+                else if (!ReferenceEquals(previous[index], row))
+                {
+                    int existingIndex = previous.IndexOf(row);
+                    if (existingIndex < 0) previous.Insert(index, row);
+                    else previous.Move(existingIndex, index);
+                }
+            }
+            while (previous.Count > rows.Count) previous.RemoveAt(previous.Count - 1);
+        }
+        if (!keepScroll) NgOverviewScroll.ScrollToTop();
         ShowNgOverviewMessage(rows.Count > 0 ? "" : ngDays.Length == 0 ? "所选日期范围内没有可查看的 NG 批次" : "没有符合筛选条件的 NG 批次");
     }
 
@@ -936,9 +998,44 @@ public partial class RemoteBrowser : UserControl
             await OpenAnnotationAsync(new(batch.Name, batch.Path, true, 0, default, default));
     }
 
+    private async Task FocusNextNgBatchAsync(string completedFolder)
+    {
+        if (!ngOverviewHasResult || NgDoneFilter.IsChecked == true
+            || NgOverviewPanel.Visibility != Visibility.Visible) return;
+        var batches = ngDays.SelectMany(day => day.Batches).ToArray();
+        int current = Array.FindIndex(batches, batch => batch.Path == completedFolder);
+        var next = batches.Skip(current + 1).Concat(batches.Take(current + 1))
+            .FirstOrDefault(batch => !batch.Annotated);
+        if (next is null)
+        {
+            SetStatus("当前查询范围内的 NG 批次均已标注", "SuccessBrush");
+            return;
+        }
+        var rows = NgOverviewDays.ItemsSource as IEnumerable<NgDayRow>;
+        var nextDay = rows?.FirstOrDefault(day => day.VisibleBatches.Any(batch => batch.Path == next.Path));
+        if (nextDay is null) return;
+        NgOverviewDays.UpdateLayout();
+        var dayContainer = NgOverviewDays.ItemContainerGenerator.ContainerFromItem(nextDay);
+        if (dayContainer is null || FindVisualChild<Expander>(dayContainer) is not { } expander) return;
+        expander.IsExpanded = true;
+        ngExpandedDays[nextDay.Date] = true;
+        await Dispatcher.InvokeAsync(() =>
+        {
+            if (!ReferenceEquals(rows, NgOverviewDays.ItemsSource) || annotationWindow is not null
+                || busy || !NgOverviewPanel.IsVisible) return;
+            NgOverviewDays.UpdateLayout();
+            var button = FindVisualChild<Button>(expander,
+                button => button.DataContext is RemoteNgBatch batch && batch.Path == next.Path);
+            if (button is null) return;
+            button.BringIntoView();
+            button.Focus();
+            SetStatus($"下一未标注批次：{nextDay.Date:yyyy.MM.dd} / {next.Name}，按 Enter 打开", "MutedBrush");
+        }, DispatcherPriority.Loaded);
+    }
+
     private void UpdateAnnotateButton()
     {
-        NgOverviewPanel.IsEnabled = !busy && annotationWindow is null;
+        NgOverviewPanel.IsEnabled = !IsBusy && annotationWindow is null;
         var selected = FileGrid.SelectedItems.Cast<RemoteEntry>().ToArray();
         // 标注只针对 NG 的对线：必须勾选「只看NG」，且选中的是日期目录下的批次文件夹。
         bool annotatable = NgFilterEnabled && selected.Length == 1 && IsAnnotatableEntry(selected[0]);
@@ -991,12 +1088,20 @@ public partial class RemoteBrowser : UserControl
         if (!ReferenceEquals(client, endpoint)) return;
         string displayPath = (listing.RootName ?? "共享根目录") + "/" + folder;
         var window = new ImageViewer(endpoint, images, selected, new AnnotationContext(folder, displayPath, history));
-        window.Owner = Window.GetWindow(this);
+        var owner = Window.GetWindow(this);
+        window.Owner = owner;
         string listDirectory = ParentPath(folder);
+        string? openedOverview = NgOverviewPanel.Visibility == Visibility.Visible ? ngOverviewPath : null;
+        int openedVersion = navigationVersion;
         window.Closed += async (_, _) =>
         {
             try
             {
+                if (IsLoaded && owner is { IsVisible: true })
+                {
+                    if (owner.WindowState == WindowState.Minimized) owner.WindowState = WindowState.Normal;
+                    owner.Activate();
+                }
                 if (ReferenceEquals(client, endpoint) && (directory == listDirectory || directory == folder))
                     await RefreshAnnotationStatusAsync(directory, CancellationToken.None);
                 if (ReferenceEquals(client, endpoint) && ngOverviewPath is { } overview
@@ -1008,6 +1113,12 @@ public partial class RemoteBrowser : UserControl
             {
                 annotationWindow = null;
                 UpdateAnnotateButton();
+            }
+            if (window.AnnotationSubmitted && ReferenceEquals(client, endpoint)
+                && openedOverview is not null && openedOverview == ngOverviewPath && openedVersion == navigationVersion)
+            {
+                try { await FocusNextNgBatchAsync(folder); }
+                catch (Exception ex) { Log.Debug(ex, "定位下一未标注批次失败；目录 {RemoteFolder}", folder); }
             }
         };
         annotationWindow = window;
@@ -1159,31 +1270,68 @@ public partial class RemoteBrowser : UserControl
         var source = e.OriginalSource as DependencyObject;
         bool blocked = FindAncestor<System.Windows.Controls.Primitives.ScrollBar>(source) is not null
             || FindAncestor<System.Windows.Controls.Primitives.DataGridColumnHeader>(source) is not null;
-        bool onRow = ItemsControl.ContainerFromElement(FileGrid, source) is DataGridRow;
-        dragArmed = !busy && !blocked && (onRow || (FileGrid.SelectedItems.Count > 0 && FileGrid.IsMouseOver));
+        var row = ItemsControl.ContainerFromElement(FileGrid, source) as DataGridRow;
+        bool control = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
+        dragArmed = !IsBusy && !blocked && control && e.ClickCount < 2 && row?.Item is RemoteEntry;
+        // Ctrl 点击已选中的行会被 DataGrid 切换为未选中，拖动时保留按下前的选择。
+        dragSelection = dragArmed && row?.IsSelected == true ? FileGrid.SelectedItems.Cast<RemoteEntry>().ToArray() : null;
         dragOrigin = e.GetPosition(FileGrid);
-        Log.Debug("拖拽准备；行内 {OnRow}，阻止 {Blocked}，选中 {Count}", onRow, blocked, FileGrid.SelectedItems.Count);
+        Log.Debug("拖拽准备；行内 {OnRow}，Ctrl {Control}，允许 {Armed}，选中 {Count}",
+            row is not null, control, dragArmed, FileGrid.SelectedItems.Count);
     }
-    private void Grid_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) => dragArmed = false;
-    private void Grid_MouseMove(object sender, MouseEventArgs e)
+    private void Grid_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (!dragArmed || busy || client is null || e.LeftButton != MouseButtonState.Pressed) return;
+        dragArmed = false;
+        dragSelection = null;
+        if (dragInProgress) e.Handled = true;
+    }
+    private async void Grid_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (dragInProgress) { e.Handled = true; return; }
+        if (!dragArmed || busy || client is null) return;
+        if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            dragArmed = false;
+            dragSelection = null;
+            return;
+        }
+        if (e.LeftButton != MouseButtonState.Pressed) return;
         Point current = e.GetPosition(FileGrid);
         if (Math.Abs(current.X - dragOrigin.X) < SystemParameters.MinimumHorizontalDragDistance
             && Math.Abs(current.Y - dragOrigin.Y) < SystemParameters.MinimumVerticalDragDistance) return;
         dragArmed = false;
-        var selected = FileGrid.SelectedItems.Cast<RemoteEntry>().ToArray();
+        var selected = dragSelection ?? FileGrid.SelectedItems.Cast<RemoteEntry>().ToArray();
+        dragSelection = null;
         if (selected.Length == 0) return;
-        // Windows 的 UIPI 会阻止管理员进程向普通资源管理器拖放，改用复制更稳妥。
-        if (IsElevated())
+        if (FileGrid.SelectionMode == DataGridSelectionMode.Single) FileGrid.SelectedItem = selected[0];
+        else
+            foreach (var entry in selected)
+                if (!FileGrid.SelectedItems.Contains(entry)) FileGrid.SelectedItems.Add(entry);
+        e.Handled = true;
+        var endpoint = Endpoint;
+        bool copyToClipboard = IsElevated();
+        bool copyOnRelease = false;
+        dragInProgress = true;
+        UpdateAnnotateButton();
+        try
         {
-            SetStatus("以管理员运行时 Windows 禁止拖出，已改为复制，请在本地按 Ctrl+V", "WarningBrush");
-            _ = CopyToClipboardAsync(selected);
-            return;
+            using var preview = new RemoteDragPreview(endpoint, selected, Window.GetWindow(this), copyToClipboard);
+            preview.Show();
+            if (copyToClipboard) copyOnRelease = await preview.WaitForReleaseAsync();
+            else
+            {
+                Log.Information("开始拖出远程文件；数量 {Count}", selected.Length);
+                RemoteFileDataObject.Start(endpoint, selected, preview.UpdatePosition);
+            }
         }
-        Log.Information("开始拖出远程文件；数量 {Count}", selected.Length);
-        try { RemoteFileDataObject.Start(Endpoint, selected); }
         catch (Exception ex) { Log.Error(ex, "发起远程文件拖拽异常"); }
+        finally
+        {
+            dragInProgress = false;
+            FileGrid.ReleaseMouseCapture();
+            UpdateAnnotateButton();
+        }
+        if (copyOnRelease && IsLoaded && ReferenceEquals(client, endpoint)) await CopyToClipboardAsync(selected);
     }
     private static bool IsElevated()
     {
@@ -1522,7 +1670,9 @@ public partial class RemoteBrowser : UserControl
     private Task ExecuteAsync(Func<Task> action) => ExecuteAsync(_ => action(), false);
     private async Task ExecuteAsync(Func<CancellationToken, Task> action, bool cancellable = false)
     {
-        if (busy) return;
+        if (IsBusy) return;
+        dragArmed = false;
+        dragSelection = null;
         busy = true;
         UpdateAnnotateButton();
         FileGrid.IsEnabled = false; FolderTree.IsEnabled = false; FilterHost.IsEnabled = false; FilterRightHost.IsEnabled = false; NavHost.IsEnabled = false;
@@ -1632,17 +1782,53 @@ public sealed class FileIconConverter : IValueConverter
     public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
         if (value is not RemoteEntry entry) return null;
-        string key = entry.IsDirectory ? "<folder>" : Path.GetExtension(entry.Name);
+        return GetIcon(entry);
+    }
+
+    public static ImageSource? GetIcon(RemoteEntry entry, bool large = false)
+    {
+        string extension = entry.IsDirectory ? "<folder>" : Path.GetExtension(entry.Name);
+        string key = extension + (large ? ":large" : ":small");
         if (Cache.TryGetValue(key, out var cached)) return cached;
-        string path = entry.IsDirectory ? "folder" : "file" + key;
+        string path = entry.IsDirectory ? "folder" : "file" + extension;
         const uint useAttributes = 0x10, icon = 0x100, smallIcon = 0x1;
-        if (SHGetFileInfo(path, entry.IsDirectory ? 0x10u : 0x80u, out var info, (uint)Marshal.SizeOf<ShellFileInfo>(), useAttributes | icon | smallIcon) == IntPtr.Zero || info.Icon == IntPtr.Zero) return null;
+        uint flags = useAttributes | icon | (large ? 0x4000u /* SYSICONINDEX */ : smallIcon);
+        if (SHGetFileInfo(path, entry.IsDirectory ? 0x10u : 0x80u, out var info, (uint)Marshal.SizeOf<ShellFileInfo>(), flags) == IntPtr.Zero || info.Icon == IntPtr.Zero) return null;
         try
         {
+            if (large)
+            {
+                IShellImageList? list = null;
+                try
+                {
+                    var iid = typeof(IShellImageList).GUID;
+                    if (SHGetImageList(4 /* SHIL_JUMBO */, ref iid, out list) >= 0
+                        && list.GetIcon(info.IconIndex, 1, out var jumbo) >= 0 && jumbo != IntPtr.Zero)
+                    {
+                        DestroyIcon(info.Icon);
+                        info.Icon = jumbo;
+                    }
+                }
+                catch (Exception ex) { Log.Debug(ex, "读取大文件图标失败；扩展名 {Extension}", extension); }
+                finally { if (list is not null) Marshal.ReleaseComObject(list); }
+            }
             var image = Imaging.CreateBitmapSourceFromHIcon(info.Icon, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
             image.Freeze(); Cache[key] = image; return image;
         }
         finally { DestroyIcon(info.Icon); }
+    }
+    [DllImport("shell32.dll")] private static extern int SHGetImageList(int size, ref Guid iid, out IShellImageList list);
+    [ComImport, Guid("46EB5926-582E-4017-9FDF-E8998DAA0950"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellImageList
+    {
+        [PreserveSig] int Add(IntPtr image, IntPtr mask, out int index);
+        [PreserveSig] int ReplaceIcon(int index, IntPtr icon, out int result);
+        [PreserveSig] int SetOverlayImage(int image, int overlay);
+        [PreserveSig] int Replace(int index, IntPtr image, IntPtr mask);
+        [PreserveSig] int AddMasked(IntPtr image, uint mask, out int index);
+        [PreserveSig] int Draw(IntPtr parameters);
+        [PreserveSig] int Remove(int index);
+        [PreserveSig] int GetIcon(int index, uint flags, out IntPtr icon);
     }
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotSupportedException();
 }

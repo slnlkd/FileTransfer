@@ -67,109 +67,6 @@
         </Setter>
     </Style>
 
-    <Style x:Key="VerticalScrollBarThumbStyle" TargetType="Thumb">
-        <Setter Property="MinHeight" Value="24" />
-        <Setter Property="Template">
-            <Setter.Value>
-                <ControlTemplate TargetType="Thumb">
-                    <Grid Background="Transparent">
-                        <Border x:Name="ThumbBody" Width="3" HorizontalAlignment="Center"
-                                Background="{DynamicResource MutedBrush}" CornerRadius="2" Margin="0,2" Opacity="0.65" />
-                    </Grid>
-                    <ControlTemplate.Triggers>
-                        <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ScrollBar}}" Value="True">
-                            <Setter TargetName="ThumbBody" Property="Width" Value="5" />
-                            <Setter TargetName="ThumbBody" Property="Opacity" Value="0.9" />
-                        </DataTrigger>
-                        <Trigger Property="IsDragging" Value="True">
-                            <Setter TargetName="ThumbBody" Property="Width" Value="5" />
-                            <Setter TargetName="ThumbBody" Property="Opacity" Value="1" />
-                        </Trigger>
-                    </ControlTemplate.Triggers>
-                </ControlTemplate>
-            </Setter.Value>
-        </Setter>
-    </Style>
-    <Style x:Key="HorizontalScrollBarThumbStyle" TargetType="Thumb">
-        <Setter Property="MinWidth" Value="24" />
-        <Setter Property="Template">
-            <Setter.Value>
-                <ControlTemplate TargetType="Thumb">
-                    <Grid Background="Transparent">
-                        <Border x:Name="ThumbBody" Height="3" VerticalAlignment="Center"
-                                Background="{DynamicResource MutedBrush}" CornerRadius="2" Margin="2,0" Opacity="0.65" />
-                    </Grid>
-                    <ControlTemplate.Triggers>
-                        <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ScrollBar}}" Value="True">
-                            <Setter TargetName="ThumbBody" Property="Height" Value="5" />
-                            <Setter TargetName="ThumbBody" Property="Opacity" Value="0.9" />
-                        </DataTrigger>
-                        <Trigger Property="IsDragging" Value="True">
-                            <Setter TargetName="ThumbBody" Property="Height" Value="5" />
-                            <Setter TargetName="ThumbBody" Property="Opacity" Value="1" />
-                        </Trigger>
-                    </ControlTemplate.Triggers>
-                </ControlTemplate>
-            </Setter.Value>
-        </Setter>
-    </Style>
-    <Style x:Key="ScrollBarPageButtonStyle" TargetType="RepeatButton">
-        <Setter Property="Focusable" Value="False" />
-        <Setter Property="IsTabStop" Value="False" />
-        <Setter Property="Template">
-            <Setter.Value>
-                <ControlTemplate TargetType="RepeatButton">
-                    <Border Background="Transparent" />
-                </ControlTemplate>
-            </Setter.Value>
-        </Setter>
-    </Style>
-    <ControlTemplate x:Key="VerticalScrollBarTemplate" TargetType="ScrollBar">
-        <Border Background="{TemplateBinding Background}" CornerRadius="3">
-            <Track x:Name="PART_Track" IsDirectionReversed="True">
-                <Track.DecreaseRepeatButton>
-                    <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}" Style="{StaticResource ScrollBarPageButtonStyle}" />
-                </Track.DecreaseRepeatButton>
-                <Track.Thumb>
-                    <Thumb Style="{StaticResource VerticalScrollBarThumbStyle}" />
-                </Track.Thumb>
-                <Track.IncreaseRepeatButton>
-                    <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}" Style="{StaticResource ScrollBarPageButtonStyle}" />
-                </Track.IncreaseRepeatButton>
-            </Track>
-        </Border>
-    </ControlTemplate>
-    <ControlTemplate x:Key="HorizontalScrollBarTemplate" TargetType="ScrollBar">
-        <Border Background="{TemplateBinding Background}" CornerRadius="3">
-            <Track x:Name="PART_Track">
-                <Track.DecreaseRepeatButton>
-                    <RepeatButton Command="{x:Static ScrollBar.PageLeftCommand}" Style="{StaticResource ScrollBarPageButtonStyle}" />
-                </Track.DecreaseRepeatButton>
-                <Track.Thumb>
-                    <Thumb Style="{StaticResource HorizontalScrollBarThumbStyle}" />
-                </Track.Thumb>
-                <Track.IncreaseRepeatButton>
-                    <RepeatButton Command="{x:Static ScrollBar.PageRightCommand}" Style="{StaticResource ScrollBarPageButtonStyle}" />
-                </Track.IncreaseRepeatButton>
-            </Track>
-        </Border>
-    </ControlTemplate>
-    <Style TargetType="ScrollBar">
-        <Setter Property="Width" Value="12" />
-        <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Template" Value="{StaticResource VerticalScrollBarTemplate}" />
-        <Style.Triggers>
-            <Trigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{DynamicResource HairlineBrush}" />
-            </Trigger>
-            <Trigger Property="Orientation" Value="Horizontal">
-                <Setter Property="Width" Value="Auto" />
-                <Setter Property="Height" Value="12" />
-                <Setter Property="Template" Value="{StaticResource HorizontalScrollBarTemplate}" />
-            </Trigger>
-        </Style.Triggers>
-    </Style>
-
             <local:FileIconConverter x:Key="FileIcon" />
             <local:FileKindConverter x:Key="FileKind" />
             <local:FileSizeConverter x:Key="FileSize" />
@@ -182,11 +79,7 @@
             <Geometry x:Key="BrowserDeleteGeometry">M2.5,4.5 H13.5 M6,4.5 V2.5 H10 V4.5 M4,4.5 L4.75,13.5 H11.25 L12,4.5 M6.5,7 V11 M9.5,7 V11</Geometry>
             <Geometry x:Key="BrowserProgressGeometry">M2.5,3.5 V13 H14 M5.5,10.5 V8.5 M9,10.5 V6 M12.5,10.5 V3.5</Geometry>
             <Geometry x:Key="NgAllGeometry">M3,4 H13 M3,8 H13 M3,12 H13</Geometry>
-            <Style x:Key="BrowserCommand" TargetType="Button" BasedOn="{StaticResource GhostButton}">
-                <Setter Property="Height" Value="30" />
-                <Setter Property="Padding" Value="8,0" />
-                <Setter Property="Foreground" Value="{DynamicResource InkBrush}" />
-            </Style>
+            <Style x:Key="BrowserCommand" TargetType="Button" BasedOn="{StaticResource ToolbarButton}" />
             <Style x:Key="BrowserNavButton" TargetType="Button" BasedOn="{StaticResource BrowserCommand}">
                 <Setter Property="Width" Value="32" />
                 <Setter Property="Padding" Value="0" />
@@ -202,14 +95,19 @@
                     </Trigger>
                 </Style.Triggers>
             </Style>
-            <Style x:Key="NgToolbarCommand" TargetType="Button" BasedOn="{StaticResource BrowserCommand}">
-                <Setter Property="Height" Value="28" />
-                <Setter Property="BorderThickness" Value="0" />
+            <Style x:Key="NgToolbarCommand" TargetType="Button" BasedOn="{StaticResource BrowserCommand}" />
+            <Style x:Key="NgDatePreset" TargetType="Button" BasedOn="{StaticResource NgToolbarCommand}">
+                <Style.Triggers>
+                    <Trigger Property="Selector.IsSelected" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                        <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                    </Trigger>
+                </Style.Triggers>
             </Style>
             <Style x:Key="BrowserToolbarDivider" TargetType="Border">
                 <Setter Property="Width" Value="1" />
                 <Setter Property="Height" Value="16" />
-                <Setter Property="Margin" Value="4,0" />
+                <Setter Property="Margin" Value="6,0" />
                 <Setter Property="VerticalAlignment" Value="Center" />
                 <Setter Property="Background" Value="{DynamicResource LineBrush}" />
             </Style>
@@ -249,15 +147,22 @@
                 </Style.Triggers>
             </Style>
             <Style x:Key="NgBatchButton" TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+                <Setter Property="Height" Value="{StaticResource CompactControlHeight}" />
+                <Setter Property="Background" Value="{DynamicResource HeaderBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource HairlineBrush}" />
+                <Setter Property="KeyboardNavigation.AcceptsReturn" Value="True" />
                 <Setter Property="AutomationProperties.HelpText" Value="未标注" />
                 <Style.Triggers>
+                    <Trigger Property="IsKeyboardFocused" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                    </Trigger>
                     <DataTrigger Binding="{Binding Annotated}" Value="True">
                         <Setter Property="AutomationProperties.HelpText" Value="已标注" />
                     </DataTrigger>
                 </Style.Triggers>
             </Style>
             <Style x:Key="NgStatusFilterOption" TargetType="RadioButton">
-                <Setter Property="Height" Value="28" />
+                <Setter Property="Height" Value="{StaticResource ToolbarControlHeight}" />
                 <Setter Property="Padding" Value="8,0" />
                 <Setter Property="Foreground" Value="{DynamicResource InkBrush}" />
                 <Setter Property="FocusVisualStyle" Value="{StaticResource ButtonFocusVisualStyle}" />
@@ -285,7 +190,7 @@
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="Expander">
-                            <Border CornerRadius="7" Background="{DynamicResource SurfaceBrush}" Padding="4,4,4,0">
+                            <Border CornerRadius="{StaticResource PanelCornerRadius}" Background="{DynamicResource SurfaceBrush}" Padding="4,4,4,0">
                                 <StackPanel>
                                     <ToggleButton Foreground="{DynamicResource InkBrush}" FocusVisualStyle="{x:Null}"
                                                   IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
@@ -341,22 +246,14 @@
                 <Setter Property="ToolTip" Value="右键选择显示列" />
                 <Setter Property="ContextMenu" Value="{StaticResource ColumnSettingsMenu}" />
             </Style>
-            <Style x:Key="FileMenuSeparator" TargetType="Separator">
-                <Setter Property="Template">
-                    <Setter.Value>
-                        <ControlTemplate TargetType="Separator">
-                            <Border Height="1" Margin="8,3" Background="{DynamicResource LineBrush}" />
-                        </ControlTemplate>
-                    </Setter.Value>
-                </Setter>
-            </Style>
+            <Style x:Key="FileMenuSeparator" TargetType="Separator" BasedOn="{StaticResource MenuSeparator}" />
         </ResourceDictionary>
     </UserControl.Resources>
 
     <DockPanel>
         <!-- 路径栏随窗口缩放，文件操作和 NG 操作在右侧分组。 -->
         <Border DockPanel.Dock="Top"
-                Padding="12,4"
+                Padding="{StaticResource BrowserToolbarPadding}"
                 Background="{DynamicResource HeaderBrush}"
                 BorderBrush="{DynamicResource HairlineBrush}"
                 BorderThickness="0,0,0,1">
@@ -391,12 +288,12 @@
                         Margin="6,0,8,0"
                         Padding="8,0"
                         MinWidth="140"
-                        MinHeight="30"
+                        MinHeight="{StaticResource ToolbarControlHeight}"
                         VerticalAlignment="Center"
                         Background="{DynamicResource SurfaceBrush}"
                         BorderBrush="{DynamicResource HairlineBrush}"
                         BorderThickness="1"
-                        CornerRadius="6">
+                        CornerRadius="{StaticResource ControlCornerRadius}">
                     <DockPanel VerticalAlignment="Center">
                         <Path DockPanel.Dock="Left" Data="{StaticResource BrowserFolderGeometry}"
                               Style="{StaticResource IconGlyph}" Stroke="{DynamicResource MutedBrush}"
@@ -425,7 +322,7 @@
                             AutomationProperties.Name="上传"
                             ToolTip="上传文件到当前目录">
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <Path Data="{StaticResource IconUpdateGeometry}" Style="{StaticResource IconGlyph}" Margin="0,0,5,0" />
+                            <Path Data="{StaticResource IconUploadGeometry}" Style="{StaticResource IconGlyph}" Margin="0,0,5,0" />
                             <TextBlock Text="上传" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
@@ -751,32 +648,34 @@
                 <Border x:Name="NgOverviewPanel" Visibility="Collapsed" AutomationProperties.Name="NG 标注进度"
                         Background="{DynamicResource SurfaceBrush}">
                     <DockPanel>
-                        <Border DockPanel.Dock="Top" Background="{DynamicResource HeaderBrush}" Padding="8,7">
+                        <Border DockPanel.Dock="Top" Background="{DynamicResource HeaderBrush}" Padding="12,2">
                             <DockPanel>
                                 <Button x:Name="NgOverviewReturnButton" DockPanel.Dock="Right"
-                                        Width="30" Height="28" Padding="0" Margin="4,2,0,0" VerticalAlignment="Top"
+                                        Width="{StaticResource ToolbarControlHeight}" Padding="0" Margin="6,2,0,0" VerticalAlignment="Top"
                                         Click="NgOverviewReturn_Click" AutomationProperties.Name="返回文件列表" ToolTip="返回文件列表"
                                         Style="{StaticResource NgToolbarCommand}">
                                     <Path Data="{StaticResource BrowserBackGeometry}" Style="{StaticResource IconGlyph}" />
                                 </Button>
                                 <WrapPanel>
                                     <StackPanel Orientation="Horizontal" Margin="0,2" VerticalAlignment="Center">
-                                        <TextBox x:Name="NgStartDate" Width="90" MinHeight="28" Padding="8,3" Margin="0,0,5,0"
-                                                 Background="{DynamicResource SurfaceBrush}"
-                                                 AutomationProperties.Name="开始日期" Style="{StaticResource RoundedTextInput}"
+                                        <TextBox x:Name="NgStartDate" Width="90" Margin="0,0,6,0"
+                                                 AutomationProperties.Name="开始日期" Style="{StaticResource ToolbarTextInput}"
                                                  KeyDown="NgOverviewDate_KeyDown" TextChanged="NgOverviewDate_TextChanged" ToolTip="开始日期，格式 yyyy-MM-dd" />
-                                        <TextBlock Text="至" Margin="0,0,5,0" VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" />
-                                        <TextBox x:Name="NgEndDate" Width="90" MinHeight="28" Padding="8,3" Margin="0,0,6,0"
-                                                 Background="{DynamicResource SurfaceBrush}"
-                                                 AutomationProperties.Name="结束日期" Style="{StaticResource RoundedTextInput}"
+                                        <TextBlock Text="至" Margin="0,0,6,0" VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" />
+                                        <TextBox x:Name="NgEndDate" Width="90" Margin="0,0,6,0"
+                                                 AutomationProperties.Name="结束日期" Style="{StaticResource ToolbarTextInput}"
                                                  KeyDown="NgOverviewDate_KeyDown" TextChanged="NgOverviewDate_TextChanged" ToolTip="结束日期，格式 yyyy-MM-dd" />
                                     </StackPanel>
                                     <StackPanel Orientation="Horizontal" Margin="0,2" VerticalAlignment="Center">
                                         <Button Content="查询" Click="NgOverviewQuery_Click" Style="{StaticResource NgToolbarCommand}" />
                                         <Border Style="{StaticResource BrowserToolbarDivider}" />
-                                        <Button Content="今天" Click="NgOverviewToday_Click" Style="{StaticResource NgToolbarCommand}" />
-                                        <Button Content="近 7 天" Click="NgOverviewLastWeek_Click" Style="{StaticResource NgToolbarCommand}" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,2" VerticalAlignment="Center">
+                                        <Button x:Name="NgTodayButton" Content="今天" Click="NgOverviewToday_Click" Style="{StaticResource NgDatePreset}" />
+                                        <Button x:Name="NgLastWeekButton" Content="近 7 天" Click="NgOverviewLastWeek_Click" Style="{StaticResource NgDatePreset}" />
                                         <Border Style="{StaticResource BrowserToolbarDivider}" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,2" VerticalAlignment="Center">
                                         <RadioButton x:Name="NgAllFilter" GroupName="NgOverviewStatus" IsChecked="True" ToolTip="全部"
                                                      AutomationProperties.Name="全部" Checked="NgOverviewFilter_Changed" Style="{StaticResource NgStatusFilterOption}">
                                             <StackPanel Orientation="Horizontal">
@@ -858,8 +757,7 @@
                                                 </ItemsControl.ItemsPanel>
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate>
-                                                        <Button MinWidth="50" MaxWidth="220" Height="28" Margin="0,0,6,4" Padding="6,0"
-                                                                Background="{DynamicResource HeaderBrush}" BorderBrush="{DynamicResource HairlineBrush}"
+                                                        <Button MinWidth="50" MaxWidth="220" Margin="0,0,6,4" Padding="6,0"
                                                                 HorizontalContentAlignment="Stretch" Click="NgBatch_Click"
                                                                 AutomationProperties.Name="{Binding Name, StringFormat=标注批次 {0}}"
                                                                 Style="{StaticResource NgBatchButton}">

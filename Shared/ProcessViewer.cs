@@ -69,11 +69,8 @@ public sealed class ProcessViewer : Window
         var icon = new System.Windows.Shapes.Path
         {
             Data = Geometry.Parse("M2,3 H14 V13 H2 Z M4,6 H12 M4,9 H9"),
+            Style = ThemeStyle("IconGlyph"),
             Stroke = iconBrush,
-            StrokeThickness = 1.2,
-            Width = 16,
-            Height = 16,
-            Stretch = Stretch.Uniform,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 8, 0)
         };
@@ -127,7 +124,7 @@ public sealed class ProcessViewer : Window
             Background = surface,
             BorderBrush = line,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(2),
+            CornerRadius = (CornerRadius)FindResource("PanelCornerRadius"),
             Padding = new Thickness(16),
             Child = cardStack
         };
@@ -138,9 +135,9 @@ public sealed class ProcessViewer : Window
             var button = new Button { Content = action.Item1, Margin = new Thickness(4, 0, 0, 0) };
             string styleKey = action.Item2 switch
             {
-                "start" => "PrimaryButton",
-                "stop" => "DangerButton",
-                _ => "SecondaryButton"
+                "start" => "FormPrimaryButton",
+                "stop" => "FormDangerButton",
+                _ => "FormButton"
             };
             if (ThemeStyle(styleKey) is Style style) button.Style = style;
             button.Click += async (_, _) => await ExecuteAsync(action.Item2);

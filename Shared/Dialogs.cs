@@ -82,14 +82,14 @@ public static class Dialog
             Content = acceptText,
             MinWidth = 76,
             IsDefault = true,
-            Style = StyleFor(danger ? "DangerButton" : "PrimaryButton")
+            Style = StyleFor(danger ? "FormDangerButton" : "FormPrimaryButton")
         };
         accept.Click += (_, _) => window.DialogResult = true;
         if (discard is not null)
         {
             accept.Margin = new Thickness(0, 0, 8, 0);
             buttons.Children.Add(accept);
-            var discardButton = new Button { Content = "放弃", MinWidth = 76, Margin = new Thickness(0, 0, 8, 0) };
+            var discardButton = new Button { Content = "放弃", MinWidth = 76, Margin = new Thickness(0, 0, 8, 0), Style = StyleFor("FormButton") };
             discardButton.Click += (_, _) => { discard(); window.DialogResult = false; };
             buttons.Children.Add(discardButton);
         }
@@ -99,6 +99,7 @@ public static class Dialog
             buttons.Children.Add(new Button
             {
                 Content = cancelText,
+                Style = StyleFor("FormButton"),
                 MinWidth = 76,
                 IsCancel = true,
                 Margin = discard is null ? new Thickness(0, 0, 8, 0) : new Thickness(0)

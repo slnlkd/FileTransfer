@@ -17,6 +17,7 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
 {
     private const string CategoryItemCode = "ExceptionType";
     private const string PlanItemCode = "ExceptionSol";
+    private const string RemarkItemCode = "ExceptionRemark";
     private const string NoteColumn = "EXTEND_FIELD1";
     private const string TargetTable = "AUTOLINEFAILUREANALYSISLOG";
     private static readonly ConcurrentDictionary<string, string?> equipmentTypes = new(StringComparer.OrdinalIgnoreCase);
@@ -172,15 +173,31 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
 
     public async Task<RemoteDictionary> AddDictionaryItemAsync(AnnotationDictionaryKind kind, string name, CancellationToken ct = default)
     {
-        string code = kind == AnnotationDictionaryKind.Category ? CategoryItemCode : PlanItemCode;
+        string code = kind switch
+        {
+            AnnotationDictionaryKind.Category => CategoryItemCode,
+            AnnotationDictionaryKind.Plan => PlanItemCode,
+            AnnotationDictionaryKind.Remark => RemarkItemCode,
+            _ => throw new IOException("不支持的标注字典分组")
+        };
         await using var connection = await OpenAsync(ct);
         await using var transaction = (OracleTransaction)await connection.BeginTransactionAsync(ct);
-        string groupName = kind == AnnotationDictionaryKind.Category ? "异常归类" : "异常处理方案";
+        string groupName = kind switch
+        {
+            AnnotationDictionaryKind.Category => "异常归类",
+            AnnotationDictionaryKind.Plan => "异常处理方案",
+            _ => "异常备注"
+        };
         byte[] groupId = await LockDictionaryGroupAsync(connection, transaction, code, ct)
             ?? await CreateDictionaryGroupAsync(connection, transaction, code, groupName, ct);
 
         var dictionary = await ReadDictionaryAsync(connection, transaction, ct);
-        var items = kind == AnnotationDictionaryKind.Category ? dictionary.Categories : dictionary.Plans;
+        var items = kind switch
+        {
+            AnnotationDictionaryKind.Category => dictionary.Categories,
+            AnnotationDictionaryKind.Plan => dictionary.Plans,
+            _ => dictionary.Remarks
+        };
         if (!items.Any(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase)))
         {
             const string insert = "INSERT INTO \"RCMDB\".\"RpaDataItemDetails\" " +
@@ -245,15 +262,17 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
     {
         const string sql = "SELECT i.\"ItemCode\", d.\"ItemValue\", d.\"ItemName\" " +
             "FROM \"RCMDB\".\"RpaDataItems\" i JOIN \"RCMDB\".\"RpaDataItemDetails\" d ON d.\"ItemId\" = i.\"Id\" " +
-            "WHERE (UPPER(TRIM(i.\"ItemCode\")) = :pCategory OR UPPER(TRIM(i.\"ItemCode\")) = :pPlan) " +
+            "WHERE (UPPER(TRIM(i.\"ItemCode\")) = :pCategory OR UPPER(TRIM(i.\"ItemCode\")) = :pPlan OR UPPER(TRIM(i.\"ItemCode\")) = :pRemark) " +
             "AND i.\"IsDeleted\" = 0 AND d.\"IsDeleted\" = 0 " +
             "ORDER BY d.\"SortCode\", d.\"ItemName\"";
         await using var command = Create(connection, sql);
         if (transaction is not null) command.Transaction = transaction;
         command.Parameters.Add("pCategory", OracleDbType.NVarchar2, 50).Value = CategoryItemCode.ToUpperInvariant();
         command.Parameters.Add("pPlan", OracleDbType.NVarchar2, 50).Value = PlanItemCode.ToUpperInvariant();
+        command.Parameters.Add("pRemark", OracleDbType.NVarchar2, 50).Value = RemarkItemCode.ToUpperInvariant();
         var categories = new List<RemoteDictionaryItem>();
         var plans = new List<RemoteDictionaryItem>();
+        var remarks = new List<RemoteDictionaryItem>();
         var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         await using (var reader = await command.ExecuteReaderAsync(ct))
         {
@@ -266,12 +285,13 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
                 var item = new RemoteDictionaryItem(Text(reader, 1) is { Length: > 0 } value ? value : name, name);
                 if (itemCode.Equals(CategoryItemCode, StringComparison.OrdinalIgnoreCase)) categories.Add(item);
                 else if (itemCode.Equals(PlanItemCode, StringComparison.OrdinalIgnoreCase)) plans.Add(item);
+                else if (itemCode.Equals(RemarkItemCode, StringComparison.OrdinalIgnoreCase)) remarks.Add(item);
             }
         }
         Log.Information("标注字典加载完成；归类 {CategoryCount} 项，方案 {PlanCount} 项，命中的 ItemCode：{Codes}",
             categories.Count, plans.Count, string.Join(",", seenCodes));
         if (plans.Count == 0 && transaction is null) await LogPlanDiagnosticsAsync(connection, ct);
-        return new RemoteDictionary(categories.ToArray(), plans.ToArray());
+        return new RemoteDictionary(categories.ToArray(), plans.ToArray()) { Remarks = remarks.ToArray() };
     }
 
     /// <summary>解析目标表的实际 owner 和名称（引号内使用真实大小写）。</summary>

@@ -16,11 +16,7 @@
         SnapsToDevicePixels="True">
 
     <Window.Resources>
-        <Style x:Key="ConnectToolbarButton" TargetType="Button" BasedOn="{StaticResource GhostButton}">
-            <Setter Property="Foreground" Value="{DynamicResource InkBrush}" />
-            <Setter Property="Height" Value="30" />
-            <Setter Property="Padding" Value="8,0" />
-        </Style>
+        <Style x:Key="ConnectToolbarButton" TargetType="Button" BasedOn="{StaticResource ToolbarButton}" />
         <Style x:Key="ConnectPrimaryButton" TargetType="Button" BasedOn="{StaticResource ConnectToolbarButton}">
             <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
             <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
@@ -29,8 +25,8 @@
             <Setter Property="AutomationProperties.Name" Value="连接" />
         </Style>
         <Style x:Key="ReconnectIconButton" TargetType="Button" BasedOn="{StaticResource ConnectToolbarButton}">
-            <Setter Property="Width" Value="32" />
-            <Setter Property="MinWidth" Value="32" />
+            <Setter Property="Width" Value="{StaticResource ToolbarControlHeight}" />
+            <Setter Property="MinWidth" Value="{StaticResource ToolbarControlHeight}" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="ToolTip" Value="重新连接所选服务端" />
             <Setter Property="AutomationProperties.Name" Value="重新连接" />
@@ -41,10 +37,6 @@
                     </DataTemplate>
                 </Setter.Value>
             </Setter>
-        </Style>
-        <Style x:Key="ClientToolbarIcon" TargetType="Button" BasedOn="{StaticResource IconButton}">
-            <Setter Property="Width" Value="32" />
-            <Setter Property="Height" Value="30" />
         </Style>
         <Style x:Key="ServerEndpointItem" TargetType="ComboBoxItem">
             <Setter Property="Foreground" Value="{DynamicResource InkBrush}" />
@@ -79,14 +71,14 @@
                     <ControlTemplate TargetType="ComboBox">
                         <Grid>
                             <Border x:Name="Chrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+                                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{StaticResource ControlCornerRadius}">
                                 <DockPanel>
                                     <ToggleButton DockPanel.Dock="Right" Width="28" Focusable="False" ClickMode="Press"
                                                   AutomationProperties.Name="展开服务端列表"
                                                   IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
                                         <ToggleButton.Template>
                                             <ControlTemplate TargetType="ToggleButton">
-                                                <Border x:Name="ArrowBackground" Background="Transparent" CornerRadius="0,5,5,0">
+                                                <Border x:Name="ArrowBackground" Background="Transparent" CornerRadius="0,3,3,0">
                                                     <Path Data="M2,2 L6,6 L10,2" Stroke="{DynamicResource MutedBrush}"
                                                           StrokeThickness="1.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                                           StrokeLineJoin="Round" HorizontalAlignment="Center" VerticalAlignment="Center" />
@@ -106,8 +98,7 @@
                             </Border>
                             <Popup x:Name="PART_Popup" Placement="Bottom" AllowsTransparency="True"
                                    IsOpen="{TemplateBinding IsDropDownOpen}">
-                                <Border MinWidth="{TemplateBinding ActualWidth}" Background="{DynamicResource SurfaceBrush}"
-                                        BorderBrush="{DynamicResource LineBrush}" BorderThickness="1" CornerRadius="6" Padding="3">
+                                <Border MinWidth="{TemplateBinding ActualWidth}" Style="{StaticResource PopupSurface}">
                                     <ScrollViewer MaxHeight="{TemplateBinding MaxDropDownHeight}" VerticalScrollBarVisibility="Auto"
                                                   HorizontalScrollBarVisibility="Disabled" CanContentScroll="True">
                                         <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
@@ -135,7 +126,7 @@
     <DockPanel Background="{DynamicResource CanvasBrush}">
         <!-- 连接设置与窗口级命令。 -->
         <Border DockPanel.Dock="Top"
-                Padding="12,4"
+                Padding="{StaticResource BrowserToolbarPadding}"
                 Background="{DynamicResource HeaderBrush}">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -147,7 +138,7 @@
                                VerticalAlignment="Center"
                                Foreground="{DynamicResource MutedBrush}"
                                Text="服务端" />
-                    <ComboBox x:Name="EndpointBox" Width="196" Height="30" VerticalAlignment="Center"
+                    <ComboBox x:Name="EndpointBox" Width="196" Height="{StaticResource ToolbarControlHeight}" VerticalAlignment="Center"
                               IsEditable="True" IsTextSearchEnabled="False" MaxDropDownHeight="260"
                               Style="{StaticResource ServerEndpointInput}"
                               AutomationProperties.Name="服务端地址和端口"
@@ -167,24 +158,27 @@
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button x:Name="UpdateBadge"
                             Margin="0,0,2,0"
-                            Height="30"
+                            Height="{StaticResource ToolbarControlHeight}"
                             Click="UpdateBadge_Click"
                             Style="{StaticResource UpdateIconButton}"
+                            AutomationProperties.Name="下载并安装更新"
                             ToolTip="发现新版本，点击更新"
                             Visibility="Collapsed">
-                        <Path Data="{StaticResource IconUpdateGeometry}" Style="{StaticResource IconGlyph}" />
+                        <Path Data="{StaticResource IconDownloadGeometry}" Style="{StaticResource IconGlyph}" />
                     </Button>
                     <Button x:Name="ThemeButton"
                             Margin="0,0,2,0"
                             Click="Theme_Click"
-                            Style="{StaticResource ClientToolbarIcon}"
+                            Style="{StaticResource RoundIconButton}"
+                            AutomationProperties.Name="切换日间或夜间模式"
                             ToolTip="切换到夜间模式">
-                        <Path x:Name="ThemeIcon" Data="{StaticResource IconMoonGeometry}" Style="{StaticResource IconGlyph}" />
+                        <Path x:Name="ThemeIcon" Data="{StaticResource IconMoonGeometry}" Style="{StaticResource SmallIconGlyph}" />
                     </Button>
                     <Button Click="Logs_Click"
-                            Style="{StaticResource ClientToolbarIcon}"
+                            Style="{StaticResource RoundIconButton}"
+                            AutomationProperties.Name="打开日志目录"
                             ToolTip="打开日志目录">
-                        <Path Data="{StaticResource IconLogsGeometry}" Style="{StaticResource IconGlyph}" />
+                        <Path Data="{StaticResource IconLogsGeometry}" Style="{StaticResource SmallIconGlyph}" />
                     </Button>
                 </StackPanel>
             </Grid>

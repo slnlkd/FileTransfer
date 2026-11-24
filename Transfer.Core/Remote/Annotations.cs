@@ -29,8 +29,6 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
     public const int OperatorLimit = 100;
     public const int NameLimit = 200;
     private readonly SemaphoreSlim gate = new(1, 1);
-    private RemoteDictionary? dictionary;
-    private DateTime dictionaryAt;
 
     public async Task<RemoteNgDay[]> GetNgOverviewAsync(string path, DateTime? startDate, DateTime? endDate,
         Func<string, DateTime, DateTime, CancellationToken, Task<RemoteBatchKey[]>> query, CancellationToken ct)
@@ -81,10 +79,8 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
         await gate.WaitAsync(ct);
         try
         {
-            if (dictionary is { } fresh && DateTime.UtcNow - dictionaryAt < TimeSpan.FromMinutes(10)) return fresh;
-            dictionary = await repository.GetDictionaryAsync(ct);
-            dictionaryAt = DateTime.UtcNow;
-            return dictionary;
+            // 多台服务端共享字典表；进入标注页面时读取最新数据，避免其他节点新增后仍返回旧缓存。
+            return await repository.GetDictionaryAsync(ct);
         }
         finally { gate.Release(); }
     }
@@ -95,6 +91,7 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
         {
             "category" => AnnotationDictionaryKind.Category,
             "plan" => AnnotationDictionaryKind.Plan,
+            "remark" => AnnotationDictionaryKind.Remark,
             _ => throw new IOException("不支持的标注字典分组")
         };
         string name = (text ?? "").Trim();
@@ -105,10 +102,7 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
         await gate.WaitAsync(ct);
         try
         {
-            dictionary = null;
-            dictionary = await repository.AddDictionaryItemAsync(kind, name, ct);
-            dictionaryAt = DateTime.UtcNow;
-            return dictionary;
+            return await repository.AddDictionaryItemAsync(kind, name, ct);
         }
         finally { gate.Release(); }
     }
@@ -270,11 +264,21 @@ public sealed class JsonAnnotationRepository : IAnnotationRepository
         {
             var document = await ReadAsync(ct);
             var dictionary = document.Dictionary ?? new RemoteDictionary([], []);
-            bool category = kind == AnnotationDictionaryKind.Category;
-            var items = category ? dictionary.Categories : dictionary.Plans;
+            var items = kind switch
+            {
+                AnnotationDictionaryKind.Category => dictionary.Categories,
+                AnnotationDictionaryKind.Plan => dictionary.Plans,
+                AnnotationDictionaryKind.Remark => dictionary.Remarks,
+                _ => throw new IOException("不支持的标注字典分组")
+            };
             if (items.Any(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase))) return dictionary;
             RemoteDictionaryItem[] updated = [.. items, new(name, name)];
-            dictionary = category ? dictionary with { Categories = updated } : dictionary with { Plans = updated };
+            dictionary = kind switch
+            {
+                AnnotationDictionaryKind.Category => dictionary with { Categories = updated },
+                AnnotationDictionaryKind.Plan => dictionary with { Plans = updated },
+                _ => dictionary with { Remarks = updated }
+            };
             await WriteAsync(document with { Dictionary = dictionary }, ct);
             return dictionary;
         }

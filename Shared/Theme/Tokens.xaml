@@ -15,6 +15,9 @@
     <SolidColorBrush x:Key="SelectionBrush" Color="#CFE0EA" />
     <SolidColorBrush x:Key="SelectionBorderBrush" Color="#7FA8BE" />
     <SolidColorBrush x:Key="AccentBrush" Color="#2B5F75" />
+    <SolidColorBrush x:Key="AccentTextBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="UpdateBrush" Color="#1F6FEB" />
+    <SolidColorBrush x:Key="UpdateHoverBrush" Color="#1B61D1" />
     <SolidColorBrush x:Key="AccentHoverBrush" Color="#244E60" />
     <SolidColorBrush x:Key="AccentSoftBrush" Color="#E5EDF2" />
     <SolidColorBrush x:Key="DangerBrush" Color="#B42318" />
@@ -39,6 +42,6 @@
     <Thickness x:Key="ButtonPadding">8,3,8,3</Thickness>
     <Thickness x:Key="InputPadding">8,3,8,3</Thickness>
     <CornerRadius x:Key="ControlCornerRadius">4</CornerRadius>
-    <CornerRadius x:Key="PanelCornerRadius">4</CornerRadius>
+    <CornerRadius x:Key="PanelCornerRadius">6</CornerRadius>
 
 </ResourceDictionary>

@@ -258,6 +258,22 @@ internal static class RemoteChecks
             && persistedDictionary.Plans.Single(item => item.Name == "现场复核").Code == "现场复核", "新字典项的值与名称一致");
         var customAnnotation = await client.SaveAnnotationAsync(batch, "外观复核 A", "现场复核", null, "李明", "a.png");
         check(customAnnotation.CategoryName == "外观复核 A" && customAnnotation.PlanName == "现场复核", "新增字典项可立即用于提交标注");
+        check(persistedDictionary.Remarks.Length == 0, "旧字典数据兼容空备注标签");
+        await client.AddAnnotationDictionaryItemAsync(AnnotationDictionaryKind.Remark, "  已通知设备  ");
+        await client.AddAnnotationDictionaryItemAsync(AnnotationDictionaryKind.Remark, "已通知设备");
+        var remarks = await new JsonAnnotationRepository(repositoryPath).GetDictionaryAsync();
+        check(remarks.Remarks is [{ Code: "已通知设备", Name: "已通知设备" }]
+            && remarks.Categories.Length == persistedDictionary.Categories.Length
+            && remarks.Plans.Length == persistedDictionary.Plans.Length,
+            "备注标签单独持久化、名称和值一致、去重且不影响归类方案");
+        var refreshedRemarks = await client.GetAnnotationDictionaryAsync();
+        check(refreshedRemarks.Remarks.Single().Name == "已通知设备", "新增备注标签后字典缓存立即刷新");
+        await new JsonAnnotationRepository(repositoryPath).AddDictionaryItemAsync(AnnotationDictionaryKind.Remark, "其他节点新增");
+        var externallyUpdated = await client.GetAnnotationDictionaryAsync();
+        check(externallyUpdated.Remarks.Any(item => item.Name == "其他节点新增"),
+            "其他服务端修改字典后重新读取立即可见，不返回十分钟旧缓存");
+        var remarkAnnotation = await client.SaveAnnotationAsync(batch, "外观复核 A", "现场复核", "手写内容；已通知设备", "李明", "a.png");
+        check(remarkAnnotation.Note == "手写内容；已通知设备", "备注标签内容沿用备注字段保存");
         await ExpectRejected(() => client.CallAsync(new("annotation-dictionary-add", "category", Text: "   ")), check, "拒绝空白字典名称");
         await ExpectRejected(() => client.CallAsync(new("annotation-dictionary-add", "other", Text: "不受支持")), check, "拒绝未知字典分组");
     }
