@@ -176,8 +176,8 @@
                     </Button>
                     <Button Click="Logs_Click"
                             Style="{StaticResource RoundIconButton}"
-                            AutomationProperties.Name="打开日志目录"
-                            ToolTip="打开日志目录">
+                            AutomationProperties.Name="查看日志"
+                            ToolTip="查看日志">
                         <Path Data="{StaticResource IconLogsGeometry}" Style="{StaticResource SmallIconGlyph}" />
                     </Button>
                 </StackPanel>

@@ -30,6 +30,7 @@ public partial class MainWindow : Window
     private static readonly string[] PresetEndpoints = Enumerable.Range(181, 3)
         .Select(address => $"10.100.40.{address}:9501").ToArray();
     private RemoteUpdateInfo? pendingUpdate;
+    private LogViewer? logViewer;
     // 连接期间每 30 分钟静默复查一次，发现新版本只显示蓝色提示，不打断使用。
     private readonly DispatcherTimer updateTimer = new() { Interval = TimeSpan.FromMinutes(30) };
     private sealed record Settings(string Host, int Port, string[]? RecentEndpoints = null);
@@ -405,9 +406,28 @@ try {
 """;
     private void Logs_Click(object sender, RoutedEventArgs e)
     {
-        try { Process.Start(new ProcessStartInfo(AppLogging.LogDirectory) { UseShellExecute = true }); }
-        catch (Exception ex) { Log.Error(ex, "打开日志目录失败"); SetStatus(ex.Message, ThemeBrush("DangerBrush")); }
+        try
+        {
+            if (logViewer is { IsVisible: true })
+            {
+                if (logViewer.WindowState == WindowState.Minimized) logViewer.WindowState = WindowState.Normal;
+                logViewer.Activate();
+                return;
+            }
+            var window = new LogViewer(AppLogging.LogDirectory) { Owner = this, Icon = Icon };
+            logViewer = window;
+            window.Closed += (_, _) => { if (ReferenceEquals(logViewer, window)) logViewer = null; };
+            window.Show();
+            SetStatus("已打开日志查看器", ThemeBrush("MutedBrush"));
+        }
+        catch (Exception ex)
+        {
+            logViewer = null;
+            Log.Error(ex, "打开日志查看器失败；目录 {LogDirectory}", AppLogging.LogDirectory);
+            SetStatus("打开日志查看器失败：" + ex.Message, ThemeBrush("DangerBrush"));
+        }
     }
+
     private void SetConnectionState(string text, Brush dot)
     {
         ConnectionText.Text = text;

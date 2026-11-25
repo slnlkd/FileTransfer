@@ -21,9 +21,151 @@ using ProcessViewer = RemoteClient::RemoteFiles.Desktop.ProcessViewer;
 
 internal static class RemoteWindowChecks
 {
+    public static async Task CheckNavigationBusyAsync(string temp)
+    {
+        string root = Path.Combine(temp, "navigation-busy-root");
+        Directory.CreateDirectory(Path.Combine(root, "机台", "日期"));
+        foreach (int number in Enumerable.Range(1, 45)) Directory.CreateDirectory(Path.Combine(root, "机台", "日期", number.ToString()));
+        await using var service = new RemoteFileService(root);
+        service.Start(0);
+        var endpoint = new RemoteFileClient("127.0.0.1", service.Port);
+        var browser = new ClientBrowser();
+        var host = new Window { Content = browser, Width = 1280, Height = 720 };
+        Prepare(host); host.Show();
+        bool keepBackgroundQueued = true;
+        Task? navigation = null;
+        try
+        {
+            await browser.ConnectAsync(endpoint);
+            var dispatcher = browser.Dispatcher;
+            Action? occupyBackground = null;
+            occupyBackground = () =>
+            {
+                if (keepBackgroundQueued) dispatcher.BeginInvoke(occupyBackground!, System.Windows.Threading.DispatcherPriority.Background);
+            };
+            _ = dispatcher.BeginInvoke(occupyBackground, System.Windows.Threading.DispatcherPriority.Background);
+            var execute = typeof(ClientBrowser).GetMethod("ExecuteAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+                null, [typeof(Func<Task>)], null)!;
+            navigation = (Task)execute.Invoke(browser, [new Func<Task>(() => browser.OpenAsync(new("日期", "机台/日期", true, 0, default, default)))])!;
+            await Task.WhenAny(navigation, Task.Delay(1500));
+            if (!navigation.IsCompleted || browser.IsBusy || !((DataGrid)browser.FindName("FileGrid")).IsEnabled
+                || !((TreeView)browser.FindName("FolderTree")).IsEnabled)
+                throw new Exception("列表显示后的导航不能等待 ContextIdle 才解除操作锁");
+            await navigation;
+            keepBackgroundQueued = false;
+            var banner = (Border)browser.FindName("BusyIndicator");
+            if (banner.Visibility != Visibility.Collapsed) throw new Exception("导航完成后不能残留加载提示");
+            var grid = (DataGrid)browser.FindName("FileGrid");
+            if (grid.Items.Count != 45) throw new Exception("目录列表内容错误");
+            await FlushAsync(host);
+            var scroll = FindScrollViewer(grid)!;
+            scroll.ScrollToBottom();
+            await WaitAsync(() => scroll.VerticalOffset > 0);
+            var folder = (RemoteEntry)grid.Items[0];
+            await (Task)execute.Invoke(browser, [new Func<Task>(() => browser.OpenAsync(folder))])!;
+            await FlushAsync(host);
+            typeof(ClientBrowser).GetMethod("Parent_Click", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .Invoke(browser, [browser, new RoutedEventArgs()]);
+            await WaitAsync(() => !browser.IsBusy && grid.SelectedItem is RemoteEntry returned && returned.Path == folder.Path);
+            await (Task)execute.Invoke(browser, [new Func<Task>(() => browser.OpenAsync(new("机台", "机台", true, 0, default, default)))])!;
+            await (Task)execute.Invoke(browser, [new Func<Task>(() => browser.OpenAsync(new("日期", "机台/日期", true, 0, default, default)))])!;
+            await FlushAsync(host);
+            if (scroll.VerticalOffset != 0) throw new Exception("新目录应恢复顶部，旧导航的滚动任务不能覆盖新目录");
+            var show = typeof(ClientBrowser).GetMethod("ShowBusy", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            var display = typeof(ClientBrowser).GetMethod("DisplayBusyIndicator", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            var hide = typeof(ClientBrowser).GetMethod("HideBusy", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            foreach (var size in new[] { new Size(1280, 720), new Size(1920, 1080), new Size(960, 540) })
+            {
+                host.Width = size.Width; host.Height = size.Height;
+                show.Invoke(browser, ["正在读取目录…"]); display.Invoke(browser, null);
+                await FlushAsync(host);
+                var point = banner.TranslatePoint(new Point(), browser);
+                if (banner.HorizontalAlignment != HorizontalAlignment.Center || banner.VerticalAlignment != VerticalAlignment.Top
+                    || point.Y < 16 || point.Y + banner.ActualHeight > browser.ActualHeight / 2
+                    || point.X < 0 || point.X + banner.ActualWidth > browser.ActualWidth
+                    || ((TextBlock)browser.FindName("BusyText")).FontSize < 13)
+                    throw new Exception("投屏尺寸下加载提示应位于上方安全区域、文字清晰且完整可见");
+                if (size.Width == 1280 && Environment.GetEnvironmentVariable("FILETRANSFER_BUSY_PREVIEW") is { Length: > 0 } preview)
+                {
+                    var rendered = new RenderTargetBitmap((int)Math.Ceiling(browser.ActualWidth), (int)Math.Ceiling(browser.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+                    rendered.Render(browser);
+                    var encoder = new PngBitmapEncoder();
+                    encoder.Frames.Add(BitmapFrame.Create(new CroppedBitmap(rendered, new Int32Rect(0, 0, rendered.PixelWidth, Math.Min(220, rendered.PixelHeight)))));
+                    using var output = File.Create(preview); encoder.Save(output);
+                }
+                hide.Invoke(browser, null);
+            }
+            Console.WriteLine("通过：高优先级队列持续繁忙时目录仍及时解锁，提示自动消失，720p/1080p/紧凑尺寸下上方提示可见");
+        }
+        finally
+        {
+            keepBackgroundQueued = false;
+            if (navigation is not null) await navigation;
+            host.Close();
+        }
+    }
+
+    public static async Task CheckLogDirectoryOpeningAsync(string temp)
+    {
+        string folder = Path.Combine(temp, "中文 日志查看");
+        Directory.CreateDirectory(folder);
+        string logFile = Path.Combine(folder, "app-test.log");
+        await File.WriteAllTextAsync(logFile, "HEAD_SENTINEL\n" + string.Concat(Enumerable.Repeat(new string('x', 210) + "\n", 4000)) + "TAIL_SENTINEL\n");
+        await File.WriteAllTextAsync(Path.Combine(folder, "error-test.log"), "错误日志示例");
+        File.SetLastWriteTimeUtc(logFile, DateTime.UtcNow.AddMinutes(1));
+        string original = Transfer.Core.AppLogging.LogDirectory;
+        var client = new ClientWindow(Path.Combine(temp, "log-viewer-client.json"));
+        Prepare(client); client.Show();
+        try
+        {
+            typeof(Transfer.Core.AppLogging).GetProperty("LogDirectory")!.SetValue(null, folder);
+            var logsButton = FindButton(client, "查看日志") ?? throw new Exception("缺少日志按钮");
+            logsButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var viewer = client.OwnedWindows.OfType<Window>().Single(w => w.Title == "客户端日志");
+            var editor = FindDescendant<TextBox>(viewer)!;
+            await WaitAsync(() => editor.Text.Contains("TAIL_SENTINEL"));
+            if (!editor.IsReadOnly || editor.Text.Contains("HEAD_SENTINEL") || editor.Text.Split('\n').Length > 2001)
+                throw new Exception("日志查看应只读并限制大日志内容");
+            logsButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            if (client.OwnedWindows.OfType<Window>().Count(w => w.Title == "客户端日志") != 1)
+                throw new Exception("重复点击日志应复用已有窗口");
+            using (var stream = new FileStream(logFile, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+            using (var writer = new StreamWriter(stream)) await writer.WriteLineAsync("REFRESH_SENTINEL");
+            FindButtonByContent(viewer, "刷新")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await WaitAsync(() => editor.Text.Contains("REFRESH_SENTINEL"));
+            var files = FindDescendant<ListBox>(viewer)!;
+            files.SelectedIndex = 1;
+            await WaitAsync(() => editor.Text == "错误日志示例");
+            FindButtonByContent(viewer, "复制路径")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            if (Clipboard.GetText() != Path.Combine(folder, "error-test.log")) throw new Exception("复制日志路径错误");
+            if (Environment.GetEnvironmentVariable("FILETRANSFER_LOG_VIEWER_PREVIEW") is { Length: > 0 } preview)
+            {
+                await FlushAsync(viewer);
+                var rendered = new RenderTargetBitmap((int)Math.Ceiling(viewer.ActualWidth), (int)Math.Ceiling(viewer.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+                rendered.Render(viewer);
+                var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(rendered));
+                using var output = File.Create(preview); encoder.Save(output);
+            }
+            viewer.Close();
+            var empty = new RemoteClient::RemoteFiles.Client.LogViewer(Path.Combine(temp, "empty-logs"));
+            Prepare(empty); empty.Show(); await FlushAsync(empty);
+            if (FindDescendant<ListBox>(empty)!.Items.Count != 0 || !FindTextBlocks(empty).Any(t => t.Text == "暂无日志文件"))
+                throw new Exception("空日志目录应显示明确的空状态");
+            empty.Close();
+            Console.WriteLine("通过：日志按钮打开内置窗口、复用、文件切换、只读大日志截断、并发追加后刷新及复制路径");
+        }
+        finally
+        {
+            typeof(Transfer.Core.AppLogging).GetProperty("LogDirectory")!.SetValue(null, original);
+            await CloseAsync(client);
+        }
+    }
+
     public static async Task RunAsync(string temp)
     {
         CheckLegacyClientSettingsMigration(temp);
+        await CheckNavigationBusyAsync(temp);
+        await CheckLogDirectoryOpeningAsync(temp);
         await CheckAnnotationReopenAsync(temp);
         await CheckNextNgBatchAsync(temp);
         string root = Path.Combine(temp, "remote-ui"); Directory.CreateDirectory(root);
@@ -890,7 +1032,7 @@ internal static class RemoteWindowChecks
             if (shownBadge.Content is not System.Windows.Shapes.Path) throw new Exception("更新提示应使用图标而不是文字");
             await FlushAsync(updateClient);
             var themeGlyph = (System.Windows.Shapes.Path)updateClient.FindName("ThemeIcon");
-            var logsGlyph = (System.Windows.Shapes.Path)(FindButton(updateClient, "打开日志目录")
+            var logsGlyph = (System.Windows.Shapes.Path)(FindButton(updateClient, "查看日志")
                 ?? throw new Exception("缺少日志按钮")).Content;
             foreach (var glyph in new[] { themeGlyph, logsGlyph })
             {
@@ -1405,7 +1547,8 @@ internal static class RemoteWindowChecks
             }
             await CheckDatePreset("今天", today);
             await CheckDatePreset("近 7 天", today.AddDays(-6));
-            startInput.Text = "2026-11-19";
+            // 用相对日期，避免写死某天时正好落在「近 7 天」的起始日上（原写法在 2026-11-25 会误判）。
+            startInput.Text = today.AddDays(-3).ToString("yyyy-MM-dd");
             if (System.Windows.Controls.Primitives.Selector.GetIsSelected((Button)browser.FindName("NgTodayButton"))
                 || System.Windows.Controls.Primitives.Selector.GetIsSelected((Button)browser.FindName("NgLastWeekButton")))
                 throw new Exception("手动编辑为自定义日期范围后应取消快捷范围高亮");

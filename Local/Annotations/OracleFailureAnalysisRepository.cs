@@ -65,12 +65,17 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
         string sql = "SELECT \"JOB_BATCH_NUMBER\",\"FAIL_TYPE\",\"FAIL_HANDLE_SOLUTION\",\"ANALYSIS_USER\",\"ANALYSIS_DATETIME\"," +
             "\"FILE_DIRECTORY\",\"" + NoteColumn + "\",\"EQP_TYPE\" FROM " + await TableAsync(connection, ct) + " " +
             "WHERE \"EQP_ID\" = :pEqp AND TRUNC(\"AUTOLINE_DATE\") = :pDate" +
-            (batch is null ? "" : " AND \"JOB_BATCH_NUMBER\" = :pBatch") +
+            // 目录名可能是 "181_53"，历史记录里仍是 "53"：两种都匹配，兼容改造前的数据。
+            (batch is null ? "" : " AND (\"JOB_BATCH_NUMBER\" = :pBatch OR \"JOB_BATCH_NUMBER\" = :pBatchSuffix)") +
             " ORDER BY \"ANALYSIS_DATETIME\" DESC NULLS LAST, \"ID\" DESC";
         await using var command = Create(connection, sql);
         command.Parameters.Add("pEqp", OracleDbType.NVarchar2, 32).Value = equipmentNo;
         command.Parameters.Add("pDate", OracleDbType.Date).Value = date;
-        if (batch is not null) command.Parameters.Add("pBatch", OracleDbType.NVarchar2, 32).Value = batch;
+        if (batch is not null)
+        {
+            command.Parameters.Add("pBatch", OracleDbType.NVarchar2, 32).Value = batch;
+            command.Parameters.Add("pBatchSuffix", OracleDbType.NVarchar2, 32).Value = BatchNames.Normalize(batch);
+        }
         var items = new List<RemoteAnnotation>();
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))

@@ -787,27 +787,32 @@
                 </Border>
 
                 <Border x:Name="BusyIndicator"
-                        HorizontalAlignment="Right" VerticalAlignment="Bottom"
-                        Margin="12,8,16,12" Padding="10,5" CornerRadius="6"
-                        Background="{DynamicResource HeaderBrush}"
-                        BorderBrush="{DynamicResource LineBrush}" BorderThickness="1"
+                        HorizontalAlignment="Center" VerticalAlignment="Top" Panel.ZIndex="20"
+                        Margin="16,42,16,0" Padding="12,8" CornerRadius="6" MaxWidth="440"
+                        Background="{DynamicResource AccentSoftBrush}"
+                        BorderBrush="{DynamicResource SelectionBorderBrush}" BorderThickness="1"
                         Visibility="Collapsed">
-                    <StackPanel Orientation="Horizontal">
-                        <ProgressBar x:Name="BusyProgress" Width="56" Height="4" VerticalAlignment="Center" IsIndeterminate="True" />
-                        <TextBlock x:Name="BusyText"
-                                   Margin="8,0,0,0" MaxWidth="225"
-                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
-                                   FontSize="11"
-                                   Foreground="{DynamicResource MutedBrush}"
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ProgressBar x:Name="BusyProgress" Width="64" Height="5" VerticalAlignment="Center" IsIndeterminate="True" />
+                        <TextBlock x:Name="BusyText" Grid.Column="1"
+                                   Margin="10,0,0,0" MaxWidth="280"
+                                   VerticalAlignment="Center" TextWrapping="Wrap"
+                                   FontSize="13" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource InkBrush}"
                                    ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"
                                    Text="正在处理…" />
-                        <Button x:Name="CancelButton"
+                        <Button x:Name="CancelButton" Grid.Column="2"
                                 Margin="8,0,0,0" Padding="6,0"
                                 VerticalAlignment="Center" Style="{StaticResource GhostButton}"
                                 Click="Cancel_Click"
                                 Content="取消"
                                 Visibility="Collapsed" />
-                    </StackPanel>
+                    </Grid>
                 </Border>
             </Grid>
         </Grid>

@@ -276,6 +276,16 @@ internal static class RemoteChecks
         check(remarkAnnotation.Note == "手写内容；已通知设备", "备注标签内容沿用备注字段保存");
         await ExpectRejected(() => client.CallAsync(new("annotation-dictionary-add", "category", Text: "   ")), check, "拒绝空白字典名称");
         await ExpectRejected(() => client.CallAsync(new("annotation-dictionary-add", "other", Text: "不受支持")), check, "拒绝未知字典分组");
+
+        // 存图规则改为「服务器IP末段_编号」（如 181_21），历史记录仍是纯编号（21），两种命名要能互相查到。
+        Directory.CreateDirectory(Path.Combine(root, "A6-DPQG-012", "20261118", "181_21"));
+        Directory.CreateDirectory(Path.Combine(root, "A6-DPQG-012", "20261118", "21"));
+        await client.SaveAnnotationAsync("A6-DPQG-012/20261118/181_21", "外观异常", "重新拍摄", "新命名", "李明", "a.png");
+        check((await client.GetAnnotationHistoryAsync("A6-DPQG-012/20261118/21")).Any(item => item.Note == "新命名"),
+            "新前缀目录写入后可按历史纯编号查询");
+        await client.SaveAnnotationAsync("A6-DPQG-012/20261118/21", "尺寸超差", "人工复检", "旧命名", "王芳", "a.png");
+        check((await client.GetAnnotationHistoryAsync("A6-DPQG-012/20261118/181_21")).Any(item => item.Note == "旧命名"),
+            "历史纯编号记录可按新前缀目录查询");
     }
     private static async Task ExpectRejected(Func<Task> operation, Action<bool, string> check, string description)
     {

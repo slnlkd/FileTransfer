@@ -181,12 +181,14 @@ public partial class RemoteBrowser : UserControl
     private RemoteFileClient Endpoint => client ?? throw new IOException("请先连接服务端");
     private async Task NavigateAsync(string path, bool rebuild = false, CancellationToken ct = default, bool revealReturnedFolder = false)
     {
+        var navigationTime = Stopwatch.StartNew();
         bool ownedBusy = !busy;
         if (ownedBusy) ShowBusy("正在读取目录…");
         else BusyText.Text = "正在读取目录…";
         try
         {
             var response = await Endpoint.CallAsync(new("list", path, Filter: listFilter, Take: PageSize), ct);
+            Log.Debug("目录列表已返回；路径 {RemoteDirectory}，耗时 {ElapsedMs} ms", path, navigationTime.ElapsedMilliseconds);
             if (!string.Equals(directory, path, StringComparison.Ordinal))
             {
                 foreach (var column in FileGrid.Columns) column.SortDirection = null;
@@ -196,6 +198,7 @@ public partial class RemoteBrowser : UserControl
             string previous = directory;
             directory = path;
             navigationVersion++;
+            scrollResetPending = false;
             annotationIndex = null;
             annotationReadError = null;
             FileGrid.SelectionMode = IsDateDirectory(path) ? DataGridSelectionMode.Single : DataGridSelectionMode.Extended;
@@ -203,6 +206,9 @@ public partial class RemoteBrowser : UserControl
             entries = new(page);
             totalCount = response.Total > 0 ? response.Total : page.Length;
             allLoaded = page.Length >= totalCount;
+            // 未过滤且已取全的列表可直接供目录树使用，避免同一路径再请求一次。
+            if (string.IsNullOrEmpty(listFilter) && allLoaded)
+                unfilteredCache[path] = (DateTime.UtcNow, page);
             FileGrid.ItemsSource = entries;
             if (nameDirection is { } direction && CollectionViewSource.GetDefaultView(entries) is ListCollectionView view)
             {
@@ -230,8 +236,7 @@ public partial class RemoteBrowser : UserControl
             }
             UpdatePath(response);
             UpdateItemCount();
-            SetStatus(response.Warning ?? (entries.Count == 0 ? EmptyTextFor(directory) : "就绪"),
-                response.Warning is null ? "MutedBrush" : "WarningBrush");
+            SetStatus(response.Warning ?? "正在更新目录…", response.Warning is null ? "MutedBrush" : "WarningBrush");
             UpdateEmptyState();
             if (rebuild || FolderTree.Items.Count == 0)
             {
@@ -256,8 +261,14 @@ public partial class RemoteBrowser : UserControl
             await RefreshAnnotationStatusAsync(path, ct);
             await UpdateNgOverviewAsync(path, ct);
             if (resetScroll) await ResetFileScrollAsync();
+            if (response.Warning is null && StatusText.Text == "正在更新目录…")
+                SetStatus(entries.Count == 0 ? EmptyTextFor(directory) : "就绪", "MutedBrush");
         }
-        finally { if (ownedBusy) HideBusy(); }
+        finally
+        {
+            if (ownedBusy) HideBusy();
+            Log.Debug("目录导航收尾完成；路径 {RemoteDirectory}，总耗时 {ElapsedMs} ms", path, navigationTime.ElapsedMilliseconds);
+        }
     }
     private void UpdateItemCount()
     {
@@ -445,28 +456,27 @@ public partial class RemoteBrowser : UserControl
             FileGrid.ScrollIntoView(entry);
         }), System.Windows.Threading.DispatcherPriority.Loaded);
     }
-    private async Task ResetFileScrollAsync()
+    private Task ResetFileScrollAsync()
     {
         fileScroll ??= FindVisualChild<ScrollViewer>(FileGrid);
-        if (fileScroll is null) return;
+        if (fileScroll is null) return Task.CompletedTask;
         int version = navigationVersion;
         scrollResetPending = true;
-        try
+        // 滚动定位是界面收尾，不应让整个导航等待 ContextIdle 才解除操作锁。
+        Dispatcher.BeginInvoke(new Action(() =>
         {
-            // 让数据绑定与虚拟化先完成，再把新列表的首行定位到视口顶部。
-            await Dispatcher.InvokeAsync(() =>
+            try
             {
                 if (version != navigationVersion || fileScroll is not { } scroll) return;
                 if (FileGrid.IsVisible && FileGrid.Items.Count > 0)
                     FileGrid.ScrollIntoView(FileGrid.Items[0]);
                 scroll.ScrollToVerticalOffset(0);
                 if (FileGrid.IsVisible) FileGrid.UpdateLayout();
-            }, DispatcherPriority.ContextIdle);
-        }
-        finally
-        {
-            if (version == navigationVersion) scrollResetPending = false;
-        }
+            }
+            catch (Exception ex) { Log.Debug(ex, "目录滚动复位失败；目录 {RemoteDirectory}", directory); }
+            finally { if (version == navigationVersion) scrollResetPending = false; }
+        }), DispatcherPriority.Loaded);
+        return Task.CompletedTask;
     }
     private static T? FindVisualChild<T>(DependencyObject parent, Predicate<T>? predicate = null) where T : DependencyObject
     {
@@ -1152,7 +1162,8 @@ public partial class RemoteBrowser : UserControl
         {
             var items = imageList ? await Endpoint.GetAnnotationHistoryAsync(path, ct) : await Endpoint.ListAnnotationsAsync(path, ct);
             if (version != navigationVersion || !NgFilterEnabled) return;
-            var key = imageList ? (Func<RemoteAnnotation, string?>)(item => item.ImageName) : item => item.BatchNumber;
+            var key = imageList ? (Func<RemoteAnnotation, string?>)(item => item.ImageName)
+                : item => BatchNames.Normalize(item.BatchNumber);
             annotationIndex = items.Where(item => !string.IsNullOrEmpty(key(item)))
                 .GroupBy(item => key(item)!, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
@@ -1182,7 +1193,9 @@ public partial class RemoteBrowser : UserControl
                 entry.AnnotationStatus = entry.AnnotationTip = "";
                 continue;
             }
-            if (annotationIndex is not null && annotationIndex.TryGetValue(entry.Name, out var annotation))
+            // 目录名带服务器前缀（181_53），历史记录是纯编号（53），按编号匹配保证都能点亮。
+            string lookup = imageList ? entry.Name : BatchNames.Normalize(entry.Name);
+            if (annotationIndex is not null && annotationIndex.TryGetValue(lookup, out var annotation))
             {
                 entry.AnnotationStatus = "已标注";
                 entry.AnnotationTip = $"{annotation.CategoryName} / {annotation.PlanName}\n{annotation.Operator} · {AnnotationContext.GetDisplayTime(annotation.UpdatedAt):yyyy-MM-dd HH:mm}";

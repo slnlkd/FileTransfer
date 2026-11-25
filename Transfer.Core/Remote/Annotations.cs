@@ -5,6 +5,20 @@ using System.Text.Json;
 
 namespace Transfer.Core.Remote;
 
+/// <summary>
+/// 对线批次目录名归一化：目录可能叫 "53"，也可能叫 "181_53"（存图规则带上机台前缀），
+/// 数据库里的 Parameter2/JOB_BATCH_NUMBER 目前两种格式都可能存在，统一按最后一个下划线后的编号比较。
+/// </summary>
+public static class BatchNames
+{
+    public static string Normalize(string? value)
+    {
+        string text = (value ?? "").Trim();
+        int index = text.LastIndexOf('_');
+        return index >= 0 && index < text.Length - 1 ? text[(index + 1)..] : text;
+    }
+}
+
 /// <summary>标注仓储：只负责存取，校验、路径解析在 <see cref="AnnotationStore"/>。</summary>
 public interface IAnnotationRepository
 {
@@ -54,9 +68,9 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
             .Where(item => item.Date >= start && item.Date < end).ToArray();
         if (dayFolders.Length == 0) return [];
 
-        var ng = (await query(equipment, start, end, ct)).ToLookup(item => item.Date.Date, item => item.Batch);
+        var ng = (await query(equipment, start, end, ct)).ToLookup(item => item.Date.Date, item => BatchNames.Normalize(item.Batch));
         var annotated = (await repository.ListAnnotatedBatchesAsync(equipment, start, end, ct))
-            .ToLookup(item => item.Date.Date, item => item.Batch);
+            .ToLookup(item => item.Date.Date, item => BatchNames.Normalize(item.Batch));
         var days = new List<RemoteNgDay>();
         foreach (var day in dayFolders.GroupBy(item => item.Date!.Value).OrderByDescending(group => group.Key))
         {
@@ -65,10 +79,10 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
             if (ngNames.Count == 0) continue;
             var annotatedNames = annotated[day.Key].ToHashSet(StringComparer.OrdinalIgnoreCase);
             var batches = day.SelectMany(item => store.List(item.Path))
-                .Where(item => item.IsDirectory && ngNames.Contains(item.Name))
+                .Where(item => item.IsDirectory && ngNames.Contains(BatchNames.Normalize(item.Name)))
                 .DistinctBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
                 .OrderBy(item => item.Name, NaturalComparer.Instance)
-                .Select(item => new RemoteNgBatch(item.Name, item.Path, annotatedNames.Contains(item.Name))).ToArray();
+                .Select(item => new RemoteNgBatch(item.Name, item.Path, annotatedNames.Contains(BatchNames.Normalize(item.Name)))).ToArray();
             if (batches.Length > 0) days.Add(new(day.Key, batches));
         }
         return days.ToArray();
@@ -165,8 +179,27 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
         if (Path.GetExtension(imageName).ToLowerInvariant() is not (".jpg" or ".png")) throw new IOException("仅支持 jpg、png 图片");
     }
 
-    internal static bool SameFolder(string? storedPath, string folderPath) =>
-        string.Equals(storedPath?.Replace('\\', '/').TrimEnd('/'), folderPath, StringComparison.OrdinalIgnoreCase);
+    // 目录名从纯编号（53）改成带服务器前缀（181_53）后，历史记录与新目录要能互相匹配：
+    // 其余层级必须一致，最后一段按编号比较。
+    internal static bool SameFolder(string? storedPath, string folderPath)
+    {
+        string stored = (storedPath ?? "").Replace('\\', '/').Trim('/');
+        string target = (folderPath ?? "").Replace('\\', '/').Trim('/');
+        if (string.Equals(stored, target, StringComparison.OrdinalIgnoreCase)) return true;
+        if (stored.Length == 0 || target.Length == 0) return false;
+        string[] left = stored.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        string[] right = target.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (left.Length != right.Length) return false;
+        for (int i = 0; i < left.Length; i++)
+        {
+            bool last = i == left.Length - 1;
+            bool equal = last
+                ? BatchNames.Normalize(left[i]).Equals(BatchNames.Normalize(right[i]), StringComparison.OrdinalIgnoreCase)
+                : string.Equals(left[i], right[i], StringComparison.OrdinalIgnoreCase);
+            if (!equal) return false;
+        }
+        return true;
+    }
 
     private sealed record FolderKey(string Normalized, string Equipment, DateTime Date, string Batch, string? EquipmentType);
 
@@ -226,7 +259,9 @@ public sealed class JsonAnnotationRepository : IAnnotationRepository
         return document.Annotations.AsEnumerable().Reverse()
             .Where(item => string.Equals(item.EquipmentNo, equipmentNo, StringComparison.OrdinalIgnoreCase)
                 && item.AutoLineDate?.Date == date.Date
-                && (batch is null || string.Equals(item.BatchNumber, batch, StringComparison.OrdinalIgnoreCase)))
+                // 新目录名带服务器前缀（181_53），历史记录是纯编号（53），两种都匹配。
+                && (batch is null || string.Equals(item.BatchNumber, batch, StringComparison.OrdinalIgnoreCase)
+                    || BatchNames.Normalize(item.BatchNumber).Equals(BatchNames.Normalize(batch), StringComparison.OrdinalIgnoreCase)))
             .OrderByDescending(item => item.UpdatedAt)
             .ToArray();
     }

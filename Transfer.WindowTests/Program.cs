@@ -38,6 +38,16 @@ internal static class Program
         {
             try
             {
+                if (Environment.GetEnvironmentVariable("FILETRANSFER_NAVIGATION_ONLY") == "1")
+                {
+                    await RemoteWindowChecks.CheckNavigationBusyAsync(logs);
+                    return;
+                }
+                if (Environment.GetEnvironmentVariable("FILETRANSFER_LOG_OPEN_ONLY") == "1")
+                {
+                    await RemoteWindowChecks.CheckLogDirectoryOpeningAsync(logs);
+                    return;
+                }
                 await CheckAsync(new Transfer.Server.MainWindow(Path.Combine(logs, "server-files.json")), "服务端未启动时关闭", false, false);
                 await CheckAsync(new Transfer.Server.MainWindow(Path.Combine(logs, "server-files.json")), "服务端未启动时连续关闭", true, false);
                 await CheckAsync(new Transfer.Server.MainWindow(Path.Combine(logs, "server-files.json")), "服务端监听后连续关闭", true, true);
@@ -54,7 +64,9 @@ internal static class Program
         app.Run();
         Log.CloseAndFlush();
         string logText = string.Join("\n", Directory.GetFiles(logs, "app-*.log").Select(File.ReadAllText));
-        if (!logText.Contains("应用程序启动") || !logText.Contains("应用程序退出") || !logText.Contains("资源清理已完成"))
+        if (!logText.Contains("应用程序启动") || !logText.Contains("应用程序退出")
+            || (Environment.GetEnvironmentVariable("FILETRANSFER_LOG_OPEN_ONLY") != "1"
+                && Environment.GetEnvironmentVariable("FILETRANSFER_NAVIGATION_ONLY") != "1" && !logText.Contains("资源清理已完成")))
         {
             Console.Error.WriteLine("应用生命周期或关闭过程日志缺失"); result = 1;
         }
