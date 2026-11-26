@@ -29,6 +29,7 @@ internal static partial class RemoteWindowChecks
             case "state": await AnnotationStateChecks.RunAsync(); await BrowserStateChecks.RunNavigationAsync(); await NgProgressStateChecks.RunAsync(); break;
             case "batch-identity": await CheckBatchIdentityAsync(temp); break;
             case "file-operations": await FileOperationChecks.RunAsync(temp); break;
+            case "client-services": await ClientServiceChecks.RunAsync(temp); break;
             case "navigation": await CheckNavigationBusyAsync(temp); break;
             case "images": await CheckImageViewerGroupAsync(temp); break;
             case "logs": await CheckLogDirectoryOpeningAsync(temp); break;
@@ -39,6 +40,9 @@ internal static partial class RemoteWindowChecks
     }
     public static async Task RunAsync(string temp)
     {
+        if (typeof(ClientWindow).Assembly.GetType("RemoteFiles.Client.EndpointSettingsService") is null
+            || typeof(ClientWindow).Assembly.GetType("RemoteFiles.Client.ClientUpdateService") is null)
+            throw new Exception("连接配置和更新应由独立服务负责");
         if (typeof(ClientBrowser).Assembly.GetType("RemoteFiles.Desktop.ClipboardTransferService") is null)
             throw new Exception("远程复制的文件准备应由独立服务负责");
         if (typeof(ClientBrowser).Assembly.GetType("RemoteFiles.Desktop.RemoteFileOperationService") is null)
@@ -47,6 +51,7 @@ internal static partial class RemoteWindowChecks
         await BrowserStateChecks.RunNavigationAsync();
         await NgProgressStateChecks.RunAsync();
         await FileOperationChecks.RunAsync(temp);
+        await ClientServiceChecks.RunAsync(temp);
         await CheckBatchIdentityAsync(temp);
         CheckLegacyClientSettingsMigration(temp);
         await CheckNavigationBusyAsync(temp);

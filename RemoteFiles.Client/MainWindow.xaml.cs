@@ -1,11 +1,4 @@
-using System.Diagnostics;
-using System.Globalization;
-using System.IO;
-using System.IO.Compression;
-using System.Net;
-using System.Net.Sockets;
 using System.Reflection;
-using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -21,23 +14,21 @@ using RemoteFiles.Desktop;
 namespace RemoteFiles.Client;
 public partial class MainWindow : Window
 {
-    private readonly string settings;
+    private readonly EndpointSettingsService endpointSettings;
     private bool connecting;
     private CancellationTokenSource? updateCheck;
     private string connectedHost = "";
     private int connectedPort;
     private string[] recentEndpoints = [];
-    private static readonly string[] PresetEndpoints = Enumerable.Range(181, 3)
-        .Select(address => $"10.100.40.{address}:9501").ToArray();
+    private readonly ClientUpdateService updateService = new();
     private RemoteUpdateInfo? pendingUpdate;
     private LogViewer? logViewer;
     // 连接期间每 30 分钟静默复查一次，发现新版本只显示蓝色提示，不打断使用。
     private readonly DispatcherTimer updateTimer = new() { Interval = TimeSpan.FromMinutes(30) };
-    private sealed record Settings(string Host, int Port, string[]? RecentEndpoints = null);
     public MainWindow() : this(AppLogging.GetSettingsPath("remote-client.json")) { }
     public MainWindow(string settingsPath)
     {
-        settings = settingsPath; InitializeComponent();
+        endpointSettings = new(settingsPath); InitializeComponent();
         var version = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
         Title = $"远程文件管理 · 客户端 v{version.ToString(3)}";
         UpdateThemeButton();
@@ -47,21 +38,8 @@ public partial class MainWindow : Window
         Browser.SelectionCountChanged += UpdateSelection;
         SetConnectionState("未连接", ThemeBrush("MutedBrush"));
         SetStatus("就绪", ThemeBrush("MutedBrush"));
-        string endpoint = PresetEndpoints[0];
-        try
-        {
-            if (File.Exists(settings) && JsonSerializer.Deserialize<Settings>(File.ReadAllText(settings)) is { } saved)
-            {
-                string previous = FormatEndpoint(saved.Host ?? "", saved.Port);
-                if (TryParseEndpoint(previous, out _, out _)) endpoint = previous;
-                recentEndpoints = (saved.RecentEndpoints ?? [])
-                    .Prepend(previous)
-                    .Where(value => TryParseEndpoint(value, out _, out _))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .Take(8).ToArray();
-            }
-        }
-        catch (Exception ex) { Log.Warning(ex, "读取远程文件客户端配置失败"); }
+        var (endpoint, recent) = endpointSettings.Load();
+        recentEndpoints = recent;
         SetEndpointOptions(endpoint);
         updateTimer.Tick += async (_, _) =>
         {
@@ -76,33 +54,8 @@ public partial class MainWindow : Window
     }
     private void SetEndpointOptions(string endpoint)
     {
-        EndpointBox.ItemsSource = recentEndpoints.Concat(PresetEndpoints).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        EndpointBox.ItemsSource = recentEndpoints.Concat(EndpointSettingsService.PresetEndpoints).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         EndpointBox.Text = endpoint;
-    }
-    private static string FormatEndpoint(string host, int port) =>
-        host.Contains(':') ? $"[{host.Trim('[', ']')}]:{port}" : $"{host}:{port}";
-
-    private static bool TryParseEndpoint(string? text, out string host, out int port)
-    {
-        host = "";
-        port = 0;
-        string endpoint = text?.Trim() ?? "";
-        int separator = endpoint.LastIndexOf(':');
-        if (separator <= 0) return false;
-
-        string address = endpoint[..separator].Trim();
-        if (address.StartsWith('[') && address.EndsWith(']'))
-        {
-            host = address[1..^1];
-            if (!IPAddress.TryParse(host, out var ip) || ip.AddressFamily != AddressFamily.InterNetworkV6) return false;
-        }
-        else
-        {
-            host = address;
-            if (Uri.CheckHostName(host) is not (UriHostNameType.Dns or UriHostNameType.IPv4)) return false;
-        }
-        return int.TryParse(endpoint[(separator + 1)..].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out port)
-            && port is >= 1 and <= 65535;
     }
     private void EndpointBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
@@ -117,7 +70,7 @@ public partial class MainWindow : Window
             SetStatus("当前操作进行中，请稍后再连接。", ThemeBrush("WarningBrush"));
             return;
         }
-        if (!TryParseEndpoint(EndpointBox.Text, out string host, out int port))
+        if (!EndpointSettingsService.TryParseEndpoint(EndpointBox.Text, out string host, out int port))
         {
             SetStatus("请输入地址和端口，端口范围为 1～65535，例如 10.100.40.181:9501。", ThemeBrush("WarningBrush"));
             EndpointBox.Focus();
@@ -135,12 +88,12 @@ public partial class MainWindow : Window
         {
             await Browser.ConnectAsync(new RemoteFileClient(host, port));
             connectedHost = host; connectedPort = port;
-            string endpoint = FormatEndpoint(host, port);
+            string endpoint = EndpointSettingsService.FormatEndpoint(host, port);
             recentEndpoints = recentEndpoints.Prepend(endpoint).Distinct(StringComparer.OrdinalIgnoreCase).Take(8).ToArray();
             SetEndpointOptions(endpoint);
             bool settingsSaved = true;
-            try { Directory.CreateDirectory(Path.GetDirectoryName(settings)!); await File.WriteAllTextAsync(settings, JsonSerializer.Serialize(new Settings(host, port, recentEndpoints))); }
-            catch (Exception ex) { settingsSaved = false; Log.Warning(ex, "保存客户端配置失败；路径 {SettingsPath}", settings); }
+            try { await endpointSettings.SaveAsync(host, port, recentEndpoints); }
+            catch (Exception ex) { settingsSaved = false; Log.Warning(ex, "保存客户端配置失败；路径 {SettingsPath}", endpointSettings.Path); }
             ConnectButton.Content = "重新连接";
             SetConnectionState("已连接", ThemeBrush("SuccessBrush"));
             if (Browser.ProtocolWarning is { } protocolWarning)
@@ -175,7 +128,7 @@ public partial class MainWindow : Window
             var latest = await new RemoteFileClient(host, port).CheckUpdateAsync();
             if (connecting || host != connectedHost || port != connectedPort) return;
             var current = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
-            if (!IsNewer(latest.Version, current))
+            if (!ClientUpdateService.IsNewer(latest.Version, current))
             {
                 pendingUpdate = null;
                 UpdateBadge.Visibility = Visibility.Collapsed;
@@ -213,7 +166,7 @@ public partial class MainWindow : Window
             var info = await new RemoteFileClient(connectedHost, connectedPort).CheckUpdateAsync(check.Token);
             if (check.IsCancellationRequested) return;
             var current = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
-            if (!IsNewer(info.Version, current))
+            if (!ClientUpdateService.IsNewer(info.Version, current))
             {
                 pendingUpdate = null; UpdateBadge.Visibility = Visibility.Collapsed;
                 if (!silent) Dialog.Notify(this, $"当前已是最新版本 v{current.ToString(3)}。", "检查更新");
@@ -267,7 +220,7 @@ public partial class MainWindow : Window
             "检查更新")) return;
         try
         {
-            await ApplyUpdateAsync(new RemoteFileClient(connectedHost, connectedPort), info);
+            await updateService.ApplyUpdateAsync(this, new RemoteFileClient(connectedHost, connectedPort), info);
         }
         catch (Exception ex)
         {
@@ -275,135 +228,6 @@ public partial class MainWindow : Window
             Dialog.Notify(this, "更新失败：" + ex.Message, "检查更新", DialogTone.Warning);
         }
     }
-    private static bool IsNewer(string latestText, Version current)
-    {
-        if (!Version.TryParse(latestText, out var latest)) return false;
-        int latestBuild = Math.Max(0, latest.Build), currentBuild = Math.Max(0, current.Build);
-        return latest.Major > current.Major
-            || latest.Major == current.Major && (latest.Minor > current.Minor
-                || latest.Minor == current.Minor && latestBuild > currentBuild);
-    }
-    private async Task ApplyUpdateAsync(RemoteFileClient endpoint, RemoteUpdateInfo info)
-    {
-        string versionTag = string.Concat(info.Version.Select(c => char.IsLetterOrDigit(c) || c == '.' ? c : '_'));
-        string tempRoot = CreateUpdateTempRoot(versionTag);
-        var progressWindow = new UpdateProgressWindow { Owner = this };
-        progressWindow.Show();
-        try
-        {
-            string zip = Path.Combine(tempRoot, info.FileName);
-            var progress = new Progress<double>(value => progressWindow.Report($"正在下载 v{info.Version}… {value:F0}%", value));
-            await endpoint.DownloadUpdateAsync(info, zip, progress);
-            progressWindow.Report("正在解压更新包…", 100);
-            string staging = Path.Combine(tempRoot, "app");
-            Directory.CreateDirectory(staging);
-            ZipFile.ExtractToDirectory(zip, staging, true);
-            string exeName = Path.GetFileName(Process.GetCurrentProcess().MainModule?.FileName ?? "FileTransfer.Client.exe");
-            if (!File.Exists(Path.Combine(staging, exeName)))
-            {
-                var directories = Directory.GetDirectories(staging);
-                if (directories.Length == 1 && File.Exists(Path.Combine(directories[0], exeName))) staging = directories[0];
-                else
-                {
-                    // 兼容发布名调整：RemoteFiles.Client.exe 与 FileTransfer.Client.exe 可以互相迁移。
-                    string renamed = exeName.Equals("RemoteFiles.Client.exe", StringComparison.OrdinalIgnoreCase)
-                        ? "FileTransfer.Client.exe" : "RemoteFiles.Client.exe";
-                    if (File.Exists(Path.Combine(staging, renamed))) exeName = renamed;
-                    else throw new IOException("更新包结构无效，未找到 " + exeName);
-                }
-            }
-            progressWindow.Report("正在准备重启…", 100);
-            string target = Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory);
-            string script = Path.Combine(tempRoot, "apply-update.ps1");
-            // PowerShell 5.1 只有带 BOM 才会按 UTF-8 读取脚本，否则日志中的中文会乱码。
-            File.WriteAllText(script, UpdaterScript, new System.Text.UTF8Encoding(true));
-            var start = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Environment.SystemDirectory };
-            foreach (string argument in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script,
-                "-ProcessId", Environment.ProcessId.ToString(), "-Staging", staging, "-Target", target, "-Exe", exeName, "-TempRoot", tempRoot })
-                start.ArgumentList.Add(argument);
-            Process.Start(start);
-            progressWindow.Close();
-            Application.Current.Shutdown();
-        }
-        catch
-        {
-            progressWindow.Close();
-            try { Directory.Delete(tempRoot, true); }
-            catch (Exception ex) { Log.Debug(ex, "清理更新临时目录失败；路径 {UpdateTemp}", tempRoot); }
-            throw;
-        }
-    }
-    private static string CreateUpdateTempRoot(string versionTag)
-    {
-        string name = versionTag + "-" + Guid.NewGuid().ToString("N");
-        string path = Path.Combine(AppContext.BaseDirectory, "Update", name);
-        Directory.CreateDirectory(path);
-        Log.Information("更新临时目录已创建；路径 {UpdateTemp}", path);
-        return path;
-    }
-    private const string UpdaterScript = """
-param([int]$ProcessId,[string]$Staging,[string]$Target,[string]$Exe,[string]$TempRoot)
-$ErrorActionPreference = 'Stop'
-$updateRoot = Join-Path $Target 'Update'
-$TempRoot = [IO.Path]::GetFullPath($TempRoot)
-$Staging = [IO.Path]::GetFullPath($Staging)
-if ([IO.Path]::GetDirectoryName($TempRoot) -ne $updateRoot -or
-    -not $Staging.StartsWith($TempRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
-    throw '更新暂存目录不在部署目录下。'
-}
-$logDir = Join-Path $Target 'Logs'
-try { [IO.Directory]::CreateDirectory($logDir) | Out-Null } catch { }
-$log = Join-Path $logDir 'update.log'
-function Write-UpdateLog([string]$Message) {
-    try { [IO.File]::AppendAllText($log, "$(Get-Date -Format o) $Message`r`n", (New-Object Text.UTF8Encoding($false))) } catch { }
-}
-$backupRoot = Join-Path $TempRoot 'backup'
-$applied = [Collections.Generic.Stack[object]]::new()
-$keepBackup = $false
-$updateLock = $null
-try {
-    $updateLock = [IO.File]::Open((Join-Path $updateRoot 'update.lock'), 'OpenOrCreate', 'Write', 'None')
-    Write-UpdateLog "等待客户端退出：$ProcessId"
-    $runningClient = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-    if ($runningClient -and -not $runningClient.WaitForExit(120000)) { throw '等待客户端退出超时。' }
-    foreach ($source in [IO.Directory]::GetFiles($Staging, '*', 'AllDirectories')) {
-        $relative = $source.Substring($Staging.Length + 1)
-        $destination = Join-Path $Target $relative
-        if ($relative -eq 'logging.json' -and [IO.File]::Exists($destination)) { continue }
-        [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination)) | Out-Null
-        $backup = $null
-        if ([IO.File]::Exists($destination)) {
-            $backup = Join-Path $backupRoot $relative
-            [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($backup)) | Out-Null
-            [IO.File]::Replace($source, $destination, $backup)
-        } else {
-            [IO.File]::Move($source, $destination)
-        }
-        $applied.Push(@{ Destination = $destination; Backup = $backup })
-    }
-    Start-Process -FilePath (Join-Path $Target $Exe) -WorkingDirectory $Target
-    Write-UpdateLog "更新完成并已重启"
-} catch {
-    Write-UpdateLog "更新失败：$_"
-    while ($applied.Count -gt 0) {
-        $file = $applied.Pop()
-        try {
-            if ($file.Backup) { [IO.File]::Copy($file.Backup, $file.Destination, $true) }
-            else { [IO.File]::Delete($file.Destination) }
-        } catch {
-            $keepBackup = $true
-            Write-UpdateLog "恢复文件失败，保留更新备份：$($file.Destination)：$_"
-        }
-    }
-    if ($updateLock -and -not $keepBackup -and -not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) -and
-        (Test-Path -LiteralPath (Join-Path $Target $Exe))) {
-        Start-Process -FilePath (Join-Path $Target $Exe) -WorkingDirectory $Target
-    }
-} finally {
-    if ($updateLock) { $updateLock.Dispose() }
-    if (-not $keepBackup) { Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue }
-}
-""";
     private void Logs_Click(object sender, RoutedEventArgs e)
     {
         try
