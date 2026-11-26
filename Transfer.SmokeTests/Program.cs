@@ -35,6 +35,12 @@ async Task Verify(string path, SharedFile file)
 }
 try
 {
+    await BatchIdentityChecks.RunAsync(root, Check);
+    if (args.Contains("--batch-identity-only"))
+    {
+        Console.WriteLine($"批次身份专项通过，共 {passed} 项检查。");
+        return;
+    }
     Check(AppLogging.GetSettingsPath("ngfilter.json") == Path.Combine(AppContext.BaseDirectory, "ngfilter.json"),
         "NG 配置从部署根目录读取");
     string source = Path.Combine(root, "中文测试文件.bin");

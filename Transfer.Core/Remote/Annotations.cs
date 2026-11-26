@@ -6,16 +6,16 @@ using System.Text.Json;
 namespace Transfer.Core.Remote;
 
 /// <summary>
-/// 对线批次目录名归一化：目录可能叫 "53"，也可能叫 "181_53"（存图规则带上机台前缀），
-/// 数据库里的 Parameter2/JOB_BATCH_NUMBER 目前两种格式都可能存在，统一按最后一个下划线后的编号比较。
+/// 批次号只清理首尾空白，保留完整服务器前缀；53、181_53 与 182_53 是不同批次。
 /// </summary>
 public static class BatchNames
 {
-    public static string Normalize(string? value)
+    public static string Normalize(string? value) => (value ?? "").Trim();
+
+    public static RemoteEntry[] FilterDirectories(IEnumerable<RemoteEntry> entries, IEnumerable<string> batches)
     {
-        string text = (value ?? "").Trim();
-        int index = text.LastIndexOf('_');
-        return index >= 0 && index < text.Length - 1 ? text[(index + 1)..] : text;
+        var matches = batches.Select(Normalize).Where(name => name.Length > 0).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return entries.Where(entry => entry.IsDirectory && matches.Contains(Normalize(entry.Name))).ToArray();
     }
 }
 
@@ -78,8 +78,7 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
             var ngNames = ng[day.Key].ToHashSet(StringComparer.OrdinalIgnoreCase);
             if (ngNames.Count == 0) continue;
             var annotatedNames = annotated[day.Key].ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var batches = day.SelectMany(item => store.List(item.Path))
-                .Where(item => item.IsDirectory && ngNames.Contains(BatchNames.Normalize(item.Name)))
+            var batches = BatchNames.FilterDirectories(day.SelectMany(item => store.List(item.Path)), ngNames)
                 .DistinctBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
                 .OrderBy(item => item.Name, NaturalComparer.Instance)
                 .Select(item => new RemoteNgBatch(item.Name, item.Path, annotatedNames.Contains(BatchNames.Normalize(item.Name)))).ToArray();
@@ -179,8 +178,7 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
         if (Path.GetExtension(imageName).ToLowerInvariant() is not (".jpg" or ".png")) throw new IOException("仅支持 jpg、png 图片");
     }
 
-    // 目录名从纯编号（53）改成带服务器前缀（181_53）后，历史记录与新目录要能互相匹配：
-    // 其余层级必须一致，最后一段按编号比较。
+    // 允许路径分隔符格式差异，但每个目录层级必须完整一致，不能丢弃批次前缀。
     internal static bool SameFolder(string? storedPath, string folderPath)
     {
         string stored = (storedPath ?? "").Replace('\\', '/').Trim('/');
@@ -192,11 +190,7 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
         if (left.Length != right.Length) return false;
         for (int i = 0; i < left.Length; i++)
         {
-            bool last = i == left.Length - 1;
-            bool equal = last
-                ? BatchNames.Normalize(left[i]).Equals(BatchNames.Normalize(right[i]), StringComparison.OrdinalIgnoreCase)
-                : string.Equals(left[i], right[i], StringComparison.OrdinalIgnoreCase);
-            if (!equal) return false;
+            if (!string.Equals(left[i], right[i], StringComparison.OrdinalIgnoreCase)) return false;
         }
         return true;
     }
@@ -259,9 +253,7 @@ public sealed class JsonAnnotationRepository : IAnnotationRepository
         return document.Annotations.AsEnumerable().Reverse()
             .Where(item => string.Equals(item.EquipmentNo, equipmentNo, StringComparison.OrdinalIgnoreCase)
                 && item.AutoLineDate?.Date == date.Date
-                // 新目录名带服务器前缀（181_53），历史记录是纯编号（53），两种都匹配。
-                && (batch is null || string.Equals(item.BatchNumber, batch, StringComparison.OrdinalIgnoreCase)
-                    || BatchNames.Normalize(item.BatchNumber).Equals(BatchNames.Normalize(batch), StringComparison.OrdinalIgnoreCase)))
+                && (batch is null || BatchNames.Normalize(item.BatchNumber).Equals(BatchNames.Normalize(batch), StringComparison.OrdinalIgnoreCase)))
             .OrderByDescending(item => item.UpdatedAt)
             .ToArray();
     }
@@ -329,7 +321,7 @@ public sealed class JsonAnnotationRepository : IAnnotationRepository
             var remaining = Array.FindAll(document.Annotations, item => !(
                 string.Equals(item.EquipmentNo, equipmentNo, StringComparison.OrdinalIgnoreCase)
                 && item.AutoLineDate?.Date == date.Date
-                && string.Equals(item.BatchNumber, batch, StringComparison.OrdinalIgnoreCase)
+                && BatchNames.Normalize(item.BatchNumber).Equals(BatchNames.Normalize(batch), StringComparison.OrdinalIgnoreCase)
                 && string.Equals(item.ImageName, imageName, StringComparison.OrdinalIgnoreCase)
                 && AnnotationStore.SameFolder(item.FolderPath, folderPath)));
             int removed = document.Annotations.Length - remaining.Length;

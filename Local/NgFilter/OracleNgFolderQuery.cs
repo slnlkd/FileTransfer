@@ -45,10 +45,8 @@ internal sealed class OracleNgFolderQuery
             part => part.StartsWith("A6", StringComparison.OrdinalIgnoreCase));
         if (index < 0) return new(entries);
         string equipmentNo = parts[index];
-        var matches = (await FindBatchesAsync(equipmentNo, date.Date, date.Date.AddDays(1), CancellationToken.None))
-            .Select(item => BatchNames.Normalize(item.Batch)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        // 目录名可能是 "181_53"，数据库里可能存 "53"（或反过来），按编号比较避免过渡期匹配不到。
-        return new(entries.Where(e => e.IsDirectory && matches.Contains(BatchNames.Normalize(e.Name))).ToArray());
+        var matches = await FindBatchesAsync(equipmentNo, date.Date, date.Date.AddDays(1), CancellationToken.None);
+        return new(BatchNames.FilterDirectories(entries, matches.Select(item => item.Batch)));
     }
 
     public async Task<RemoteBatchKey[]> FindBatchesAsync(string equipmentNo, DateTime start, DateTime end, CancellationToken ct)

@@ -65,8 +65,7 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
         string sql = "SELECT \"JOB_BATCH_NUMBER\",\"FAIL_TYPE\",\"FAIL_HANDLE_SOLUTION\",\"ANALYSIS_USER\",\"ANALYSIS_DATETIME\"," +
             "\"FILE_DIRECTORY\",\"" + NoteColumn + "\",\"EQP_TYPE\" FROM " + await TableAsync(connection, ct) + " " +
             "WHERE \"EQP_ID\" = :pEqp AND TRUNC(\"AUTOLINE_DATE\") = :pDate" +
-            // 目录名可能是 "181_53"，历史记录里仍是 "53"：两种都匹配，兼容改造前的数据。
-            (batch is null ? "" : " AND (\"JOB_BATCH_NUMBER\" = :pBatch OR \"JOB_BATCH_NUMBER\" = :pBatchSuffix)") +
+            (batch is null ? "" : " AND TRIM(\"JOB_BATCH_NUMBER\") = :pBatch") +
             " ORDER BY \"ANALYSIS_DATETIME\" DESC NULLS LAST, \"ID\" DESC";
         await using var command = Create(connection, sql);
         command.Parameters.Add("pEqp", OracleDbType.NVarchar2, 32).Value = equipmentNo;
@@ -74,7 +73,6 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
         if (batch is not null)
         {
             command.Parameters.Add("pBatch", OracleDbType.NVarchar2, 32).Value = batch;
-            command.Parameters.Add("pBatchSuffix", OracleDbType.NVarchar2, 32).Value = BatchNames.Normalize(batch);
         }
         var items = new List<RemoteAnnotation>();
         await using var reader = await command.ExecuteReaderAsync(ct);
@@ -160,7 +158,7 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
     {
         await using var connection = await OpenAsync(ct);
         string sql = "DELETE FROM " + await TableAsync(connection, ct) +
-            " WHERE \"EQP_ID\" = :pEqp AND TRUNC(\"AUTOLINE_DATE\") = :pDate AND \"JOB_BATCH_NUMBER\" = :pBatch" +
+            " WHERE \"EQP_ID\" = :pEqp AND TRUNC(\"AUTOLINE_DATE\") = :pDate AND TRIM(\"JOB_BATCH_NUMBER\") = :pBatch" +
             " AND LOWER(RTRIM(REPLACE(\"FILE_DIRECTORY\", CHR(92), '/'), '/')) = LOWER(:pDir)";
         await using var command = Create(connection, sql);
         command.Parameters.Add("pEqp", OracleDbType.NVarchar2, 32).Value = equipmentNo;

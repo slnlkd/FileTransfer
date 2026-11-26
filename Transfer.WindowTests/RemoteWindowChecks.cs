@@ -27,6 +27,7 @@ internal static partial class RemoteWindowChecks
         switch (group)
         {
             case "state": await AnnotationStateChecks.RunAsync(); await BrowserStateChecks.RunNavigationAsync(); await NgProgressStateChecks.RunAsync(); break;
+            case "batch-identity": await CheckBatchIdentityAsync(temp); break;
             case "navigation": await CheckNavigationBusyAsync(temp); break;
             case "images": await CheckImageViewerGroupAsync(temp); break;
             case "logs": await CheckLogDirectoryOpeningAsync(temp); break;
@@ -40,6 +41,7 @@ internal static partial class RemoteWindowChecks
         await AnnotationStateChecks.RunAsync();
         await BrowserStateChecks.RunNavigationAsync();
         await NgProgressStateChecks.RunAsync();
+        await CheckBatchIdentityAsync(temp);
         CheckLegacyClientSettingsMigration(temp);
         await CheckNavigationBusyAsync(temp);
         await CheckLogDirectoryOpeningAsync(temp);

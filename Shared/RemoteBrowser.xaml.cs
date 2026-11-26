@@ -1130,7 +1130,7 @@ public partial class RemoteBrowser : UserControl
                 entry.AnnotationStatus = entry.AnnotationTip = "";
                 continue;
             }
-            // 目录名带服务器前缀（181_53），历史记录是纯编号（53），按编号匹配保证都能点亮。
+            // 保留完整批次号，避免同后缀的旧目录和不同服务器目录共享标注状态。
             string lookup = imageList ? entry.Name : BatchNames.Normalize(entry.Name);
             if (annotationIndex is not null && annotationIndex.TryGetValue(lookup, out var annotation))
             {
