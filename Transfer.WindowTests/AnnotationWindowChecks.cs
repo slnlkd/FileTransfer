@@ -143,6 +143,8 @@ internal static partial class RemoteWindowChecks
 
     private static async Task CheckAnnotationReopenAsync(string temp)
     {
+        if (typeof(ClientBrowser).Assembly.GetType("RemoteFiles.Desktop.ViewerCoordinator") is null)
+            throw new Exception("查看窗口生命周期应由独立协调器管理");
         const string dateFolder = "A601/20261120";
         const string batch = dateFolder + "/1001";
         string root = Path.Combine(temp, "annotation-ui");

@@ -29,7 +29,8 @@ public partial class RemoteBrowser : UserControl
     private string directory => navigation.Path;
     private string? fullDirectoryPath;
     private bool busy;
-    private ImageViewer? annotationWindow;
+    private readonly ViewerCoordinator viewers = new();
+    private ImageViewer? annotationWindow => viewers.AnnotationWindow;
     private Dictionary<string, RemoteAnnotation>? annotationIndex;
     private string? annotationReadError;
     private bool rebuilding;
@@ -89,6 +90,7 @@ public partial class RemoteBrowser : UserControl
     public RemoteBrowser()
     {
         InitializeComponent();
+        viewers.AnnotationWindowChanged += UpdateAnnotateButton;
         navigation.PageReceived += ApplyAnnotationStatuses;
         busyIndicatorTimer.Tick += (_, _) => DisplayBusyIndicator();
         ((ContextMenu)FindResource("ColumnSettingsMenu")).Opened += ColumnSettings_Opened;
@@ -685,16 +687,13 @@ public partial class RemoteBrowser : UserControl
                 string parent = ParentPath(entry.Path);
                 var siblings = (await endpoint.CallAsync(new("list", parent))).Entries ?? [];
                 var imageViewer = new ImageViewer(endpoint, siblings.Where(e => e.IsImage).OrderBy(e => e.CreatedUtc).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToArray(), entry.Path);
-                imageViewer.Closed += async (_, _) =>
-                {
-                    try { await RestoreViewedImageAsync(endpoint, parent, imageViewer.CurrentPath); }
-                    catch (Exception ex) { Log.Debug(ex, "关闭查看器后定位图片失败；路径 {RemotePath}", imageViewer.CurrentPath); }
-                };
-                viewer = imageViewer;
+                viewers.ShowImage(imageViewer, Window.GetWindow(this), path => RestoreViewedImageAsync(endpoint, parent, path));
+                SetStatus("已打开 " + entry.Name, "MutedBrush");
+                return;
             }
             else if (entry.IsExe) viewer = new ProcessViewer(endpoint, entry.Path);
             else { SetStatus("此文件类型暂不提供预览或编辑：" + entry.Kind, "MutedBrush"); return; }
-            viewer.Owner = Window.GetWindow(this); viewer.Show();
+            viewers.Show(viewer, Window.GetWindow(this));
             SetStatus("已打开 " + entry.Name, "MutedBrush");
         }
         finally { if (ownsIndicator) HideBusy(); }
@@ -1036,45 +1035,22 @@ public partial class RemoteBrowser : UserControl
         string displayPath = (listing.RootName ?? "共享根目录") + "/" + folder;
         var window = new ImageViewer(endpoint, images, selected, new AnnotationContext(folder, displayPath, history));
         var owner = Window.GetWindow(this);
-        window.Owner = owner;
         string listDirectory = ParentPath(folder);
         string? openedOverview = NgOverviewPanel.Visibility == Visibility.Visible ? ngOverviewPath : null;
         int openedVersion = navigationVersion;
-        window.Closed += async (_, _) =>
+        viewers.ShowAnnotation(window, owner, () => IsLoaded, async () =>
         {
-            try
-            {
-                if (IsLoaded && owner is { IsVisible: true })
-                {
-                    if (owner.WindowState == WindowState.Minimized) owner.WindowState = WindowState.Normal;
-                    owner.Activate();
-                }
                 if (ReferenceEquals(client, endpoint) && (directory == listDirectory || directory == folder))
                     await RefreshAnnotationStatusAsync(directory, CancellationToken.None);
                 if (ReferenceEquals(client, endpoint) && ngOverviewPath is { } overview
                     && folder.StartsWith(overview + "/", StringComparison.OrdinalIgnoreCase))
                     await RefreshNgOverviewAsync(CancellationToken.None);
-            }
-            catch (Exception ex) { Log.Debug(ex, "标注窗口关闭后刷新状态失败"); }
-            finally
-            {
-                annotationWindow = null;
-                UpdateAnnotateButton();
-            }
-            if (window.AnnotationSubmitted && ReferenceEquals(client, endpoint)
-                && openedOverview is not null && openedOverview == ngOverviewPath && openedVersion == navigationVersion)
-            {
-                try { await FocusNextNgBatchAsync(folder); }
-                catch (Exception ex) { Log.Debug(ex, "定位下一未标注批次失败；目录 {RemoteFolder}", folder); }
-            }
-        };
-        annotationWindow = window;
-        try { window.Show(); }
-        catch
+        }, async () =>
         {
-            annotationWindow = null;
-            throw;
-        }
+            if (ReferenceEquals(client, endpoint)
+                && openedOverview is not null && openedOverview == ngOverviewPath && openedVersion == navigationVersion)
+                await FocusNextNgBatchAsync(folder);
+        });
         Log.Information("打开标注窗口；对线文件夹 {RemoteFolder}，图片数 {ImageCount}，标注记录数 {AnnotationCount}",
             folder, images.Length, history.Length);
         SetStatus("标注：" + (Path.GetFileName(folder.Replace('/', '\\'))), "MutedBrush");
