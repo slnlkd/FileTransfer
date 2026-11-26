@@ -23,6 +23,7 @@ internal static class RemoteWindowChecks
 {
     public static async Task CheckNavigationBusyAsync(string temp)
     {
+        await CheckSlowTreeResponsivenessAsync();
         string root = Path.Combine(temp, "navigation-busy-root");
         Directory.CreateDirectory(Path.Combine(root, "机台", "日期"));
         foreach (int number in Enumerable.Range(1, 45)) Directory.CreateDirectory(Path.Combine(root, "机台", "日期", number.ToString()));
@@ -37,6 +38,20 @@ internal static class RemoteWindowChecks
         try
         {
             await browser.ConnectAsync(endpoint);
+            // 展开树节点不能进入全局操作锁，否则紧接着的目录点击会被吞掉。
+            var tree = (TreeView)browser.FindName("FolderTree");
+            var rootNode = (TreeViewItem)tree.Items[0];
+            var machineNode = rootNode.Items.OfType<TreeViewItem>().Single();
+            machineNode.IsExpanded = true;
+            if (browser.IsBusy || !((DataGrid)browser.FindName("FileGrid")).IsEnabled || !tree.IsEnabled)
+                throw new Exception("目录树展开只能加载当前节点，不能锁住整个资源管理器");
+            await WaitAsync(() => machineNode.Items.OfType<TreeViewItem>().Any());
+            var children = machineNode.Items.Cast<object>().ToArray();
+            machineNode.IsExpanded = false;
+            machineNode.IsExpanded = true;
+            await FlushAsync(host);
+            if (!children.SequenceEqual(machineNode.Items.Cast<object>()))
+                throw new Exception("重复展开已加载节点不应重建子项并丢失选中或展开状态");
             var dispatcher = browser.Dispatcher;
             Action? occupyBackground = null;
             occupyBackground = () =>
@@ -74,17 +89,62 @@ internal static class RemoteWindowChecks
             var show = typeof(ClientBrowser).GetMethod("ShowBusy", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
             var display = typeof(ClientBrowser).GetMethod("DisplayBusyIndicator", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
             var hide = typeof(ClientBrowser).GetMethod("HideBusy", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var slowOperation = (Task)execute.Invoke(browser, [new Func<Task>(() => release.Task)])!;
+            try
+            {
+                if (((TextBlock)browser.FindName("StatusText")).Text != "正在处理…")
+                    throw new Exception("操作开始必须立即反馈状态，不能只依靠延迟提示");
+                await Task.Delay(220);
+                if (!banner.IsVisible) throw new Exception("耗时操作应在 150ms 后显示顶部加载提示");
+            }
+            finally { release.TrySetResult(); await slowOperation; }
+            if (banner.IsVisible || browser.IsBusy || ((TextBlock)browser.FindName("StatusText")).Text != "就绪")
+                throw new Exception("操作结束必须恢复就绪并移除加载提示");
+            var executeCancellable = typeof(ClientBrowser).GetMethod("ExecuteAsync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+                null, [typeof(Func<CancellationToken, Task>), typeof(bool)], null)!;
+            var cancellable = (Task)executeCancellable.Invoke(browser,
+                [new Func<CancellationToken, Task>(token => Task.Delay(Timeout.Infinite, token)), true])!;
+            try
+            {
+                var cancel = (Button)browser.FindName("CancelButton");
+                await WaitAsync(() => cancel.IsVisible);
+                if (!((Border)browser.FindName("PathBar")).IsAncestorOf(cancel))
+                    throw new Exception("取消入口应随等待提示显示在路径栏内");
+                typeof(ClientBrowser).GetMethod("SetBusyProgress", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .Invoke(browser, [65d, "正在下载 65%"]);
+                await FlushAsync(host);
+                var progress = (ProgressBar)browser.FindName("BusyProgress");
+                var indicator = (FrameworkElement)progress.Template.FindName("PART_Indicator", progress);
+                if (progress.IsIndeterminate || progress.Value != 65 || indicator.ActualWidth <= 0 || indicator.ActualWidth >= progress.ActualWidth)
+                    throw new Exception("路径栏进度线必须支持实际百分比显示");
+                cancel.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                await cancellable;
+                if (browser.IsBusy || banner.IsVisible || ((TextBlock)browser.FindName("StatusText")).Text != "已取消")
+                    throw new Exception("路径栏取消操作后应恢复交互并保留取消状态");
+            }
+            finally
+            {
+                if (!cancellable.IsCompleted) ((Button)browser.FindName("CancelButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                await cancellable;
+            }
             foreach (var size in new[] { new Size(1280, 720), new Size(1920, 1080), new Size(960, 540) })
             {
                 host.Width = size.Width; host.Height = size.Height;
                 show.Invoke(browser, ["正在读取目录…"]); display.Invoke(browser, null);
                 await FlushAsync(host);
+                var pathBar = browser.FindName("PathBar") as Border ?? throw new Exception("加载反馈应集成到路径栏");
+                var pathOrigin = pathBar.TranslatePoint(new Point(), browser);
                 var point = banner.TranslatePoint(new Point(), browser);
-                if (banner.HorizontalAlignment != HorizontalAlignment.Center || banner.VerticalAlignment != VerticalAlignment.Top
-                    || point.Y < 16 || point.Y + banner.ActualHeight > browser.ActualHeight / 2
-                    || point.X < 0 || point.X + banner.ActualWidth > browser.ActualWidth
-                    || ((TextBlock)browser.FindName("BusyText")).FontSize < 13)
-                    throw new Exception("投屏尺寸下加载提示应位于上方安全区域、文字清晰且完整可见");
+                var line = (System.Windows.Controls.ProgressBar)browser.FindName("BusyProgress");
+                var lineOrigin = line.TranslatePoint(new Point(), browser);
+                var text = (TextBlock)browser.FindName("BusyText");
+                if (point.Y < pathOrigin.Y || point.Y + banner.ActualHeight > pathOrigin.Y + pathBar.ActualHeight
+                    || point.X < pathOrigin.X || point.X + banner.ActualWidth > pathOrigin.X + pathBar.ActualWidth
+                    || line.Height != 2 || lineOrigin.Y + line.ActualHeight > pathOrigin.Y + pathBar.ActualHeight
+                    || line.ActualWidth < pathBar.ActualWidth - 8 || text.FontSize > 12 || text.FontWeight != FontWeights.Normal
+                    || banner.BorderThickness != new Thickness(0))
+                    throw new Exception("加载文字和 2px 进度线应完整位于路径栏内，不能覆盖表头或使用粗体边框");
                 if (size.Width == 1280 && Environment.GetEnvironmentVariable("FILETRANSFER_BUSY_PREVIEW") is { Length: > 0 } preview)
                 {
                     var rendered = new RenderTargetBitmap((int)Math.Ceiling(browser.ActualWidth), (int)Math.Ceiling(browser.ActualHeight), 96, 96, PixelFormats.Pbgra32);
@@ -95,13 +155,84 @@ internal static class RemoteWindowChecks
                 }
                 hide.Invoke(browser, null);
             }
-            Console.WriteLine("通过：高优先级队列持续繁忙时目录仍及时解锁，提示自动消失，720p/1080p/紧凑尺寸下上方提示可见");
+            Console.WriteLine("通过：树节点独立加载及复用、操作立即反馈、耗时提示及时出现并自动结束、导航及时解锁及投屏尺寸顶部提示可见");
         }
         finally
         {
             keepBackgroundQueued = false;
             if (navigation is not null) await navigation;
             host.Close();
+        }
+    }
+
+    private static async Task CheckSlowTreeResponsivenessAsync()
+    {
+        using var stop = new CancellationTokenSource();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        int slowRequests = 0;
+        var connections = new System.Collections.Concurrent.ConcurrentBag<Task>();
+        async Task RespondAsync(System.Net.Sockets.TcpClient socket)
+        {
+            using (socket)
+            {
+                var stream = socket.GetStream();
+                var request = await Transfer.Core.Wire.ReadAsync<RemoteRequest>(stream, stop.Token);
+                if (request.Path == "慢目录")
+                {
+                    Interlocked.Increment(ref slowRequests);
+                    started.TrySetResult();
+                    await release.Task.WaitAsync(stop.Token);
+                }
+                string[] names = request.Path.Length == 0 ? ["慢目录", "快目录"] : ["子目录"];
+                var rows = names.Select(name => new RemoteEntry(name,
+                    request.Path.Length == 0 ? name : request.Path + "/" + name, true, 0, default, default)).ToArray();
+                await Transfer.Core.Wire.WriteAsync(stream, new RemoteResponse(true, Entries: rows, RootName: "测试目录", Total: rows.Length), stop.Token);
+            }
+        }
+        var serving = Task.Run(async () =>
+        {
+            try
+            {
+                while (!stop.IsCancellationRequested)
+                    connections.Add(RespondAsync(await listener.AcceptTcpClientAsync(stop.Token)));
+            }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+        });
+        var browser = new ClientBrowser();
+        var host = new Window { Content = browser, Width = 1280, Height = 720 };
+        Prepare(host); host.Show();
+        try
+        {
+            await browser.ConnectAsync(new("127.0.0.1", ((System.Net.IPEndPoint)listener.LocalEndpoint).Port));
+            var tree = (TreeView)browser.FindName("FolderTree");
+            var nodes = ((TreeViewItem)tree.Items[0]).Items.OfType<TreeViewItem>().ToArray();
+            var slow = nodes.Single(node => ((RemoteEntry)node.Tag).Path == "慢目录");
+            slow.IsExpanded = true;
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            slow.IsExpanded = false; slow.IsExpanded = true;
+            if (browser.IsBusy || !tree.IsEnabled) throw new Exception("慢目录展开不能阻止其他目录操作");
+            nodes.Single(node => ((RemoteEntry)node.Tag).Path == "快目录").IsSelected = true;
+            var grid = (DataGrid)browser.FindName("FileGrid");
+            await WaitAsync(() => !browser.IsBusy && grid.Items.OfType<RemoteEntry>().Any(row => row.Path == "快目录/子目录"));
+            if (release.Task.IsCompleted || slowRequests != 1) throw new Exception("慢节点请求期间应能打开其他目录，且不能重复发起展开请求");
+            release.TrySetResult();
+            await WaitAsync(() => slow.Items.OfType<TreeViewItem>().Any());
+            if (!grid.Items.OfType<RemoteEntry>().Any(row => row.Path == "快目录/子目录"))
+                throw new Exception("后台树节点返回不能覆盖当前目录列表");
+            Console.WriteLine("通过：慢节点请求未返回时仍可打开其他目录，重复展开请求合并，晚到结果不覆盖当前列表");
+        }
+        finally
+        {
+            release.TrySetResult();
+            host.Close();
+            stop.Cancel();
+            await serving;
+            listener.Stop();
+            try { await Task.WhenAll(connections); }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
         }
     }
 
@@ -952,8 +1083,8 @@ internal static class RemoteWindowChecks
         var treeSurface = tree.Template.FindName("TreeSurface", tree) as Border;
         if (treeSurface is null || !Equals(treeSurface.Background, tree.Background))
             throw new Exception("操作期间目录树应保留原底色");
-        if (busyIndicator.HorizontalAlignment != HorizontalAlignment.Right || busyIndicator.VerticalAlignment != VerticalAlignment.Bottom)
-            throw new Exception("慢操作应在文件区域右下角显示等待提示");
+        if (!((Border)browser.FindName("PathBar")).IsAncestorOf(busyIndicator))
+            throw new Exception("慢操作应在路径栏内显示轻量等待提示");
         cancelButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         await slow;
         if (((TextBlock)browser.FindName("StatusText")).Text != "已取消" || browser.IsBusy || busyIndicator.IsVisible || cancelButton.Visibility != Visibility.Collapsed)
@@ -1662,6 +1793,7 @@ internal static class RemoteWindowChecks
         var grid = (DataGrid)browser.FindName("FileGrid");
         var rootNode = (TreeViewItem)tree.Items[0];
         var folder = rootNode.Items.Cast<TreeViewItem>().Single(n => ((RemoteEntry)n.Tag).Name == "文本");
+        OpenContext(folder);
         var folderMenu = folder.ContextMenu?.Items.OfType<MenuItem>().Select(item => item.Header?.ToString()).ToArray() ?? [];
         if (!folderMenu.SequenceEqual(new[] { "复制" })) throw new Exception("普通目录树节点右键应只显示复制");
         await browser.CopyToClipboardAsync((RemoteEntry)folder.Tag);
@@ -1713,6 +1845,7 @@ internal static class RemoteWindowChecks
         if (copyButton.Icon is not System.Windows.Shapes.Path || copyButton.InputGestureText != "Ctrl+C")
             throw new Exception("文件列表的复制菜单应显示图标和快捷键");
         var zipNode = ((TreeViewItem)tree.Items[0]).Items.Cast<TreeViewItem>().Single(n => ((RemoteEntry)n.Tag).Name == "文本.zip");
+        OpenContext(zipNode);
         if (zipNode.ContextMenu.Items.Count != 3 || ((MenuItem)zipNode.ContextMenu.Items[0]).Header?.ToString() != "复制" || ((MenuItem)zipNode.ContextMenu.Items[2]).Header?.ToString() != "删除服务端文件…") throw new Exception("ZIP 复制或删除菜单错误");
         string output = Path.Combine(temp, "ui-zip-download.zip");
         await browser.DownloadEntryAsync(zip, output);
@@ -1735,7 +1868,7 @@ internal static class RemoteWindowChecks
         if (File.Exists(Path.Combine(root, extra.Path)) || grid.Items.Cast<RemoteEntry>().Any(e => e.Path == extra.Path) || !File.Exists(Path.Combine(root, "ignored.dat"))) throw new Exception("界面删除 ZIP 或刷新失败");
         Console.WriteLine("通过：普通文件生成 ZIP，删除多余 ZIP 后刷新列表且保留源文件");
     }
-    private static void OpenContext(DataGridRow row)
+    private static void OpenContext(FrameworkElement row)
     {
         // ContextMenuEventArgs 构造器非公开，使用框架事件参数触发相同的路由处理。
         var args = (ContextMenuEventArgs)Activator.CreateInstance(typeof(ContextMenuEventArgs), System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,

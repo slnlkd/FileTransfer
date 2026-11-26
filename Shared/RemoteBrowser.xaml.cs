@@ -40,9 +40,10 @@ public partial class RemoteBrowser : UserControl
     private bool allLoaded = true;
     private Task pageLoad = Task.CompletedTask;
     private readonly Dictionary<string, (DateTime At, RemoteEntry[] Entries)> unfilteredCache = [];
+    private readonly HashSet<TreeViewItem> loadingTreeNodes = [];
     private int navigationVersion;
     private CancellationTokenSource? operationCancel;
-    private static readonly TimeSpan BusyIndicatorDelay = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan BusyIndicatorDelay = TimeSpan.FromMilliseconds(150);
     private const int LargeTextThreshold = 1024 * 1024;
     private readonly DispatcherTimer busyIndicatorTimer = new(DispatcherPriority.Normal) { Interval = BusyIndicatorDelay };
     private Window? hostWindow;
@@ -183,11 +184,15 @@ public partial class RemoteBrowser : UserControl
     {
         var navigationTime = Stopwatch.StartNew();
         bool ownedBusy = !busy;
-        if (ownedBusy) ShowBusy("正在读取目录…");
-        else BusyText.Text = "正在读取目录…";
+        string progress = "正在打开 " + (path.Split('/').LastOrDefault(part => part.Length > 0) ?? "共享目录") + "…";
+        if (ownedBusy) ShowBusy(progress);
+        else { BusyText.Text = progress; SetStatus(progress); }
         try
         {
-            var response = await Endpoint.CallAsync(new("list", path, Filter: listFilter, Take: PageSize), ct);
+            var endpoint = Endpoint;
+            var request = new RemoteRequest("list", path, Filter: listFilter, Take: PageSize);
+            var response = await Task.Run(() => endpoint.CallAsync(request, ct), ct);
+            if (!ReferenceEquals(client, endpoint)) return;
             Log.Debug("目录列表已返回；路径 {RemoteDirectory}，耗时 {ElapsedMs} ms", path, navigationTime.ElapsedMilliseconds);
             if (!string.Equals(directory, path, StringComparison.Ordinal))
             {
@@ -238,6 +243,7 @@ public partial class RemoteBrowser : UserControl
             UpdateItemCount();
             SetStatus(response.Warning ?? "正在更新目录…", response.Warning is null ? "MutedBrush" : "WarningBrush");
             UpdateEmptyState();
+            Log.Debug("目录首屏已绑定；路径 {RemoteDirectory}，累计耗时 {ElapsedMs} ms", path, navigationTime.ElapsedMilliseconds);
             if (rebuild || FolderTree.Items.Count == 0)
             {
                 rebuilding = true;
@@ -257,8 +263,11 @@ public partial class RemoteBrowser : UserControl
                 SetChildren(node, await UnfilteredEntriesAsync(path, ct));
             }
             // 双击文件夹、点面包屑、退格或“上一级”切换目录后，把树的选中项同步到当前目录。
+            BusyText.Text = "正在同步目录位置…";
             await SyncTreeSelectionAsync(path);
+            BusyText.Text = "正在读取标注状态…";
             await RefreshAnnotationStatusAsync(path, ct);
+            BusyText.Text = "正在读取 NG 进度…";
             await UpdateNgOverviewAsync(path, ct);
             if (resetScroll) await ResetFileScrollAsync();
             if (response.Warning is null && StatusText.Text == "正在更新目录…")
@@ -280,9 +289,10 @@ public partial class RemoteBrowser : UserControl
     private async Task<RemoteEntry[]> UnfilteredEntriesAsync(string path, CancellationToken ct)
     {
         if (unfilteredCache.TryGetValue(path, out var cached) && DateTime.UtcNow - cached.At < TimeSpan.FromSeconds(10)) return cached.Entries;
-        var response = await Endpoint.CallAsync(new("list", path), ct);
+        var endpoint = Endpoint;
+        var response = await Task.Run(() => endpoint.CallAsync(new("list", path), ct), ct);
         var all = response.Entries ?? [];
-        unfilteredCache[path] = (DateTime.UtcNow, all);
+        if (ReferenceEquals(client, endpoint)) unfilteredCache[path] = (DateTime.UtcNow, all);
         return all;
     }
     private Task LoadMoreAsync(CancellationToken ct = default)
@@ -556,7 +566,15 @@ public partial class RemoteBrowser : UserControl
     private TreeViewItem MakeNode(RemoteEntry entry)
     {
         var node = new TreeViewItem { Header = CreateNodeHeader(entry), Tag = entry };
-        node.ContextMenu = BuildMenu(entry);
+        // 菜单按需创建，避免每次加载数百节点时在 UI 线程预建所有菜单。
+        node.ContextMenu = new ContextMenu();
+        node.ContextMenuOpening += (_, e) =>
+        {
+            var target = e.OriginalSource as TreeViewItem ?? ItemsControl.ContainerFromElement(null, e.OriginalSource as DependencyObject);
+            if (!ReferenceEquals(target, node)) return;
+            node.ContextMenu = BuildMenu(entry);
+            if (node.ContextMenu is null) e.Handled = true;
+        };
         node.PreviewMouseRightButtonDown += (_, e) =>
         {
             // 菜单绑定点击节点，保持当前目录，避免弹出菜单前触发异步目录导航。
@@ -569,7 +587,33 @@ public partial class RemoteBrowser : UserControl
             node.Expanded += async (sender, e) =>
             {
                 if (!ReferenceEquals(e.OriginalSource, node) || rebuilding || syncingTree) return;
-                await ExecuteAsync(async () => SetChildren(node, await UnfilteredEntriesAsync(entry.Path, CancellationToken.None)));
+                if (node.Items.Count != 1 || node.Items[0] is not string || !loadingTreeNodes.Add(node)) return;
+                var endpoint = client;
+                string progress = "正在展开 " + entry.Name + "…";
+                node.Items[0] = "正在读取目录…";
+                if (!IsBusy) SetStatus(progress);
+                var elapsed = Stopwatch.StartNew();
+                try
+                {
+                    var children = await UnfilteredEntriesAsync(entry.Path, CancellationToken.None);
+                    if (ReferenceEquals(client, endpoint) && ReferenceEquals(FindNode(FolderTree.Items, entry.Path), node))
+                        SetChildren(node, children);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "展开目录失败；路径 {RemoteDirectory}", entry.Path);
+                    if (ReferenceEquals(client, endpoint) && ReferenceEquals(FindNode(FolderTree.Items, entry.Path), node))
+                    {
+                        node.Items.Clear(); node.Items.Add("加载失败，折叠后重试");
+                        if (!IsBusy) SetStatus("展开目录失败：" + ex.Message, "WarningBrush");
+                    }
+                }
+                finally
+                {
+                    loadingTreeNodes.Remove(node);
+                    if (StatusText.Text == progress) SetStatus("就绪");
+                    Log.Debug("目录树展开结束；路径 {RemoteDirectory}，耗时 {ElapsedMs} ms", entry.Path, elapsed.ElapsedMilliseconds);
+                }
             };
         }
         return node;
@@ -602,8 +646,12 @@ public partial class RemoteBrowser : UserControl
     }
     private void SetChildren(TreeViewItem node, IEnumerable<RemoteEntry> children)
     {
+        var existing = node.Items.OfType<TreeViewItem>().Where(item => item.Tag is RemoteEntry)
+            .ToDictionary(item => ((RemoteEntry)item.Tag).Path, StringComparer.Ordinal);
+        var next = children.Select(child => existing.TryGetValue(child.Path, out var item) && Equals(item.Tag, child) ? item : MakeNode(child)).ToArray();
+        if (next.SequenceEqual(node.Items.Cast<object>())) return;
         node.Items.Clear();
-        foreach (var child in children) node.Items.Add(MakeNode(child));
+        foreach (var child in next) node.Items.Add(child);
     }
     private async void Tree_Selected(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
@@ -1703,6 +1751,7 @@ public partial class RemoteBrowser : UserControl
         catch (Exception ex) { Log.Error(ex, "远程浏览器操作失败；当前目录 {RemoteDirectory}", directory); SetStatus(ex.Message, "DangerBrush"); }
         finally
         {
+            if (StatusText.Text == BusyText.Text) SetStatus("就绪");
             UploadProgress.IsIndeterminate = false;
             HideProgress();
             HideBusy();
@@ -1732,6 +1781,7 @@ public partial class RemoteBrowser : UserControl
         BusyProgress.IsIndeterminate = true;
         BusyProgress.Value = 0;
         BusyText.Text = text;
+        SetStatus(text);
         busyIndicatorTimer.Start();
     }
     private void SetBusyProgress(double percent, string text)
