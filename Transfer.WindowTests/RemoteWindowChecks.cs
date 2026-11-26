@@ -38,6 +38,8 @@ internal static partial class RemoteWindowChecks
     }
     public static async Task RunAsync(string temp)
     {
+        if (typeof(ClientBrowser).Assembly.GetType("RemoteFiles.Desktop.ClipboardTransferService") is null)
+            throw new Exception("远程复制的文件准备应由独立服务负责");
         await AnnotationStateChecks.RunAsync();
         await BrowserStateChecks.RunNavigationAsync();
         await NgProgressStateChecks.RunAsync();
