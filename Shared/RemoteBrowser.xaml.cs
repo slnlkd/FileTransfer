@@ -1170,22 +1170,14 @@ public partial class RemoteBrowser : UserControl
         {
             BusyText.Text = "正在上传…";
             ShowProgress("准备上传");
-            int uploaded = 0;
-            foreach (string local in dialog.FileNames)
-            {
-                string name = Path.GetFileName(local);
-                bool exists = entries.Any(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-                if (exists && !Dialog.Confirm(Window.GetWindow(this), $"服务端已存在 {name}，是否覆盖？", "上传覆盖")) continue;
-                string target = targetDirectory.Length == 0 ? name : targetDirectory + "/" + name;
-                ShowProgress(name);
-                var progress = new Progress<double>(value =>
+            int uploaded = await fileOperations.UploadFilesAsync(endpoint, dialog.FileNames, targetDirectory,
+                name => entries.Any(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)),
+                name => Dialog.Confirm(Window.GetWindow(this), $"服务端已存在 {name}，是否覆盖？", "上传覆盖"),
+                (name, value) =>
                 {
-                    SetProgress(value, $"{name} {value:F1}%");
-                    SetStatus("正在上传 " + name, "MutedBrush");
-                });
-                await endpoint.UploadAsync(local, target, exists, progress, ct);
-                uploaded++;
-            }
+                    if (value is null) ShowProgress(name);
+                    else { SetProgress(value.Value, $"{name} {value:F1}%"); SetStatus("正在上传 " + name, "MutedBrush"); }
+                }, ct);
             navigation.InvalidateCache();
             await NavigateAsync(targetDirectory, false, ct);
             SetProgress(100, "上传完成");
@@ -1295,79 +1287,18 @@ public partial class RemoteBrowser : UserControl
         e.Handled = true;
         var endpoint = Endpoint;
         string targetDirectory = directory;
-        long total = paths.Sum(PathSize);
-        long completedBytes = 0;
-        var remoteEntries = new Dictionary<string, Dictionary<string, bool>>(StringComparer.OrdinalIgnoreCase);
         await ExecuteAsync(async ct =>
         {
             BusyText.Text = paths.Length == 1 ? "正在上传拖入的内容…" : $"正在上传 {paths.Length} 项…";
             SetBusyProgress(0, "准备上传…");
-            async Task<Dictionary<string, bool>> NamesAsync(string remoteDir)
-            {
-                if (remoteEntries.TryGetValue(remoteDir, out var cached)) return cached;
-                var entries = (await endpoint.CallAsync(new("list", remoteDir), ct)).Entries ?? [];
-                var names = entries.ToDictionary(e => e.Name, e => e.IsDirectory, StringComparer.OrdinalIgnoreCase);
-                remoteEntries[remoteDir] = names;
-                return names;
-            }
-            async Task UploadPathAsync(string local, string remoteDir)
-            {
-                ct.ThrowIfCancellationRequested();
-                if (Directory.Exists(local))
-                {
-                    string name = Path.GetFileName(local.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-                    string target = JoinRemote(remoteDir, name);
-                    var names = await NamesAsync(remoteDir);
-                    if (names.TryGetValue(name, out bool isDirectory))
-                    {
-                        if (!isDirectory) throw new IOException("同名文件已存在，无法创建文件夹：" + name);
-                    }
-                    else
-                    {
-                        await endpoint.CallAsync(new("mkdir", target), ct);
-                        names[name] = true;
-                    }
-                    foreach (string child in Directory.EnumerateFileSystemEntries(local)) await UploadPathAsync(child, target);
-                    return;
-                }
-                string fileName = Path.GetFileName(local);
-                var listing = await NamesAsync(remoteDir);
-                bool exists = listing.TryGetValue(fileName, out bool targetIsDirectory);
-                if (exists && targetIsDirectory) throw new IOException("同名文件夹已存在，无法上传文件：" + fileName);
-                if (exists && !Dialog.Confirm(Window.GetWindow(this), $"服务端已存在 {fileName}，是否覆盖？", "拖入上传")) return;
-                long length = new FileInfo(local).Length;
-                BusyText.Text = $"正在上传 {fileName}…";
-                var progress = new Progress<double>(value =>
-                {
-                    double overall = total == 0 ? 100 : (completedBytes + length * value / 100d) * 100d / total;
-                    SetBusyProgress(overall, $"上传 {fileName} {overall:F0}%");
-                });
-                await endpoint.UploadAsync(local, JoinRemote(remoteDir, fileName), exists, progress, ct);
-                completedBytes += length;
-                listing[fileName] = false;
-            }
-            foreach (string path in paths) await UploadPathAsync(path, targetDirectory);
+            await fileOperations.UploadPathsAsync(endpoint, paths, targetDirectory,
+                name => Dialog.Confirm(Window.GetWindow(this), $"服务端已存在 {name}，是否覆盖？", "拖入上传"),
+                name => BusyText.Text = $"正在上传 {name}…", SetBusyProgress, ct);
             navigation.InvalidateCache();
             await NavigateAsync(targetDirectory, false, ct);
             SetStatus($"已拖入 {paths.Length} 项", "SuccessBrush");
             Toast.Show(Window.GetWindow(this), $"已拖入 {paths.Length} 项");
         }, cancellable: true);
-    }
-    private static string JoinRemote(string directory, string name) => directory.Length == 0 ? name : directory + "/" + name;
-    private static long PathSize(string path)
-    {
-        try
-        {
-            if (File.Exists(path)) return new FileInfo(path).Length;
-            if (!Directory.Exists(path)) return 0;
-            long total = 0;
-            foreach (string file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
-            {
-                try { total += new FileInfo(file).Length; } catch (Exception ex) { Log.Debug(ex, "统计拖入文件大小失败；路径 {Path}", file); }
-            }
-            return total;
-        }
-        catch (Exception ex) { Log.Debug(ex, "统计拖入路径大小失败；路径 {Path}", path); return 0; }
     }
     private void Row_RightClick(object sender, MouseButtonEventArgs e)
     {
@@ -1438,7 +1369,7 @@ public partial class RemoteBrowser : UserControl
     {
         BusyText.Text = "正在压缩…";
         SetProgress(0, "准备压缩");
-        string archive = await Endpoint.CompressAsync(entry.Path, ArchiveProgress(), ct);
+        string archive = await fileOperations.CompressAsync(Endpoint, entry, ArchiveProgress(), ct);
         // 刷新 ZIP 所在目录，根目录压缩的结果放在根目录内。
         string parent = ParentPath(entry.Path);
         navigation.InvalidateCache();
@@ -1449,24 +1380,23 @@ public partial class RemoteBrowser : UserControl
     // 界面菜单确认后调用；公开方法便于同一界面流程的自动化验证。
     public Task DeleteEntryAsync(RemoteEntry entry) => ExecuteAsync(async () =>
     {
-        await Endpoint.DeleteFileAsync(entry);
+        await fileOperations.DeleteAsync(Endpoint, entry, CancellationToken.None);
         string parent = ParentPath(entry.Path);
         navigation.InvalidateCache();
         await NavigateAsync(parent, parent.Length == 0);
         SetStatus("已删除：" + entry.Path, "SuccessBrush");
     });
     public Task DownloadEntryAsync(RemoteEntry entry, string destination) => ExecuteAsync(async ct =>
-    {        if (!entry.IsDirectory && !entry.IsZip) throw new IOException("请选择文件夹或 ZIP");
-        if (File.Exists(destination) || Directory.Exists(destination)) throw new IOException("本地目标已存在，请更换保存名称");
+    {
         BusyText.Text = "正在下载…";
         var endpoint = Endpoint; var progress = ArchiveProgress(); SetProgress(0, "准备下载");
-        string archive = entry.IsDirectory ? await endpoint.CompressAsync(entry.Path, progress, ct) : entry.Path;
-        await endpoint.DownloadZipAsync(archive, destination, progress, ct);
+        await fileOperations.DownloadAsync(endpoint, entry, destination, progress, ct);
         if (entry.IsDirectory) { navigation.InvalidateCache(); await NavigateAsync(ParentPath(entry.Path), ParentPath(entry.Path).Length == 0, ct); }
         SetProgress(100, "下载完成");
         SetStatus("下载完成，SHA-256 校验通过", "SuccessBrush");
     }, cancellable: true);
     private readonly ClipboardTransferService clipboardTransfer = new();
+    private readonly RemoteFileOperationService fileOperations = new();
     // 准备文件后由 UI 线程写入系统剪贴板。
     public Task CopyToClipboardAsync(RemoteEntry entry) => CopyToClipboardAsync([entry]);
     public Task CopyToClipboardAsync(IReadOnlyList<RemoteEntry> selected) => ExecuteAsync(async ct =>
