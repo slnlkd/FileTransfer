@@ -2,6 +2,8 @@
 
 NG 过滤已纳入版本控制，发布包同样包含该功能；但只有在服务端配置 `ngfilter.json` 后才生效。
 
+客户端项目直接引用 NG 界面源码；服务端项目直接引用 NG 查询、标注仓储及 Oracle 驱动。全新检出后运行 `dotnet restore FileTransfer.sln` 和 `dotnet build FileTransfer.sln -c Release` 即可构建，`Directory.Build.local.props` 仅用于可选本机覆盖。
+
 ## 部署步骤
 
 1. 使用发布包中的 `FileTransfer.Server` 目录部署服务端，确保包含 `Oracle.ManagedDataAccess.dll`。

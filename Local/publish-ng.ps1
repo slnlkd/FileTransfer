@@ -3,8 +3,7 @@
   发布带本机个性化 NG 过滤的 RemoteFiles 客户端和服务端。
 
 .DESCRIPTION
-  Local/ 和 Directory.Build.local.props 不纳入版本控制；本脚本调用 dotnet publish，
-  由 Directory.Build.local.props 自动把 Oracle 驱动和 NG 过滤代码编译进去。
+  Oracle 驱动和 NG 过滤代码由客户端及服务端项目显式引用。
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File .\Local\publish-ng.ps1
@@ -20,9 +19,6 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-if (-not (Test-Path 'Directory.Build.local.props')) {
-    throw '缺少 Directory.Build.local.props，无法编译 NG 过滤。'
-}
 if (-not (Test-Path 'Local\NgFilter\RemoteBrowser.NgFilter.cs')) {
     throw '缺少 Local\NgFilter 下的 NG 过滤源码。'
 }
@@ -45,18 +41,18 @@ foreach ($app in $apps) {
 }
 
 if (-not (Test-Path (Join-Path $package 'FileTransfer.Server\Oracle.ManagedDataAccess.dll'))) {
-    throw '服务端发布结果缺少 Oracle.ManagedDataAccess.dll，请检查 Directory.Build.local.props。'
+    throw '服务端发布结果缺少 Oracle.ManagedDataAccess.dll，请检查客户端或服务端项目引用。'
 }
 # 确认 NG 过滤实现确实编译进了客户端（未实现时 partial 方法会被完全移除）。
 $clientDll = Join-Path $package 'FileTransfer.Client\FileTransfer.Client.dll'
 $clientText = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($clientDll))
 if (-not $clientText.Contains('BuildLocalFilters')) {
-    throw '客户端未包含 NG 过滤控件，请检查 Directory.Build.local.props。'
+    throw '客户端未包含 NG 过滤控件，请检查客户端或服务端项目引用。'
 }
 $serverDll = Join-Path $package 'FileTransfer.Server\FileTransfer.Server.dll'
 $serverText = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($serverDll))
 if (-not $serverText.Contains('OracleNgFolderQuery')) {
-    throw '服务端未包含 NG 过滤实现，请检查 Directory.Build.local.props。'
+    throw '服务端未包含 NG 过滤实现，请检查客户端或服务端项目引用。'
 }
 
 Copy-Item 'Local\NgFilter\ngfilter.example.json' $package

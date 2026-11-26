@@ -12,7 +12,7 @@ internal sealed record NgFilterSettings(string ConnectionString, int CommandTime
 
 /// <summary>
 /// 个性化 NG 截图过滤：按机台编号和日期查询 Oracle，只保留 NG 对应的文件夹。
-/// 该文件属于本机配置，不纳入版本控制。
+/// 源码纳入版本控制；数据库连接配置单独部署。
 /// </summary>
 internal sealed class OracleNgFolderQuery
 {
