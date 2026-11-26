@@ -102,23 +102,34 @@ public sealed class AnnotationViewModel(
         if (name.Length > AnnotationStore.NameLimit) return Invalid($"字典项名称不能超过 {AnnotationStore.NameLimit} 个字符");
         if (name.Any(char.IsControl)) return Invalid("字典项名称不能包含控制字符");
         int selectedVersion = imageVersion;
-        int version = ++dictionaryVersion;
         IsAddingDictionary = true;
         try
         {
             var words = await client.AddDictionaryItemAsync(kind, name, lifetime.Token);
             if (disposed) return false;
-            if (version == dictionaryVersion) { Dictionary = words; Changed(nameof(Dictionary)); }
+            // 仅成功的新增才能使旧读取失效；失败不能丢弃首次加载的有效结果。
+            dictionaryVersion++;
+            Dictionary = words; Changed(nameof(Dictionary));
             if (selectedVersion == imageVersion)
             {
-                if (kind == AnnotationDictionaryKind.Category) Category = name;
-                else if (kind == AnnotationDictionaryKind.Plan) Plan = name;
+                var items = kind switch
+                {
+                    AnnotationDictionaryKind.Category => words.Categories,
+                    AnnotationDictionaryKind.Plan => words.Plans,
+                    _ => words.Remarks
+                };
+                var item = items.FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase));
+                if (item is not null)
+                {
+                    if (kind == AnnotationDictionaryKind.Category) Category = item.Name;
+                    else if (kind == AnnotationDictionaryKind.Plan) Plan = item.Name;
+                }
             }
             ClearError();
             return true;
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return false; }
-        catch (Exception ex) { return disposed ? false : Invalid(ex.Message); }
+        catch (Exception ex) { return disposed || selectedVersion != imageVersion ? false : Invalid(ex.Message); }
         finally { IsAddingDictionary = false; }
     }
 

@@ -1,8 +1,6 @@
 using System.IO;
 using System.Diagnostics;
 using System.Collections.Specialized;
-using System.Text;
-using System.Text.Json;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Windows;
@@ -16,7 +14,6 @@ using System.Windows.Media.Imaging;
 using System.Windows.Shell;
 using System.Windows.Threading;
 using Serilog;
-using Transfer.Core;
 using Transfer.Core.Remote;
 
 namespace RemoteFiles.Desktop;
@@ -76,34 +73,11 @@ public sealed class ImageViewer : Window
     };
     private readonly AnnotationContext? annotation;
     private ListBox? annotationList;
-    private bool annotationDirty;
-    private bool annotationWriting;
+    private AnnotationPanel? annotationPanel;
+    private bool annotationDirty => annotationPanel?.Model.IsDirty == true;
+    private bool annotationWriting => annotationPanel?.Model.IsWriting == true;
     private bool imageActionBusy;
-    private bool dictionaryAdding;
-    private bool loadingAnnotation;
-    private RemoteDictionary? dictionary;
-    private WrapPanel? remarkTags;
-    private string categoryCode = "";
-    private string planCode = "";
-    private readonly string operatorName = LoadOperatorName();
-    private Button? categoryPicker;
-    private Button? planPicker;
-    private Button? submitButton;
-    private Button? revokeButton;
-    private TextBlock? categoryLabel;
-    private TextBlock? planLabel;
-    private TextBlock? annotationStatus;
-    private Button? annotationHistoryButton;
-    private RotateTransform? annotationHistoryChevron;
-    private StackPanel? annotationHistory;
     private bool onlyAnnotated;
-    private TextBlock? annotationImageName;
-    private TextBlock? annotationSummary;
-    private TextBlock? annotationError;
-    private TextBlock? annotationHint;
-    private TextBox? noteBox;
-    private TextBox? operatorBox;
-    private System.Windows.Controls.Primitives.Popup? pickerPopup;
     private readonly Button previousArrow;
     private readonly Button nextArrow;
     private readonly Border titleBar;
@@ -448,7 +422,17 @@ public sealed class ImageViewer : Window
             System.Windows.Automation.AutomationProperties.SetName(splitter, "调整标注面板宽度");
             Grid.SetColumn(splitter, 2);
             columns.Children.Add(splitter);
-            var annotationSide = BuildAnnotationSide(panelLine);
+            annotationPanel = new AnnotationPanel(new AnnotationViewModel(new RemoteAnnotationClient(client), annotation,
+                AnnotationOperatorSettings.Load(), AnnotationOperatorSettings.Save), Resources);
+            annotationPanel.WriteSucceeded += kind =>
+            {
+                if (lifetime.IsCancellationRequested) return;
+                AnnotationSubmitted = kind == AnnotationWriteKind.Submit;
+                var owner = Owner;
+                Close();
+                Toast.Show(owner, kind == AnnotationWriteKind.Submit ? "标注已提交" : "该图片的标注已撤销", ToastKind.Success);
+            };
+            var annotationSide = annotationPanel;
             Grid.SetColumn(annotationSide, 3);
             columns.Children.Add(annotationSide);
             shell.Children.Add(columns);
@@ -473,7 +457,7 @@ public sealed class ImageViewer : Window
             if (annotation is not null && IsActive) stage.Focus();
             FitToWindow();
             await LoadAnnotationDictionaryAsync();
-            await ShowCurrentAsync();
+            if (!lifetime.IsCancellationRequested) await ShowCurrentAsync();
         };
         previousArrow.Click += async (_, _) => await MoveAsync(-1);
         nextArrow.Click += async (_, _) => await MoveAsync(1);
@@ -499,7 +483,7 @@ public sealed class ImageViewer : Window
             else if (ctrl && e.Key is Key.OemMinus or Key.Subtract) { e.Handled = true; ZoomAtCenter(zoom / 1.15); }
         };
         Closing += (_, e) => { e.Cancel = annotationWriting || !ConfirmDiscard("关闭窗口"); };
-        Closed += (_, _) => { lifetime.Cancel(); loadCancel?.Cancel(); thumbScrollTimer.Stop(); if (pickerPopup is not null) pickerPopup.IsOpen = false; };
+        Closed += (_, _) => { lifetime.Cancel(); loadCancel?.Cancel(); thumbScrollTimer.Stop(); annotationPanel?.Dispose(); };
         UpdateZoomUi();
     }
 
@@ -674,6 +658,11 @@ public sealed class ImageViewer : Window
         };
         filter.Click += async (_, _) =>
         {
+            if (annotationWriting)
+            {
+                filter.IsChecked = onlyAnnotated;
+                return;
+            }
             bool enabled = filter.IsChecked == true;
             var firstAnnotated = enabled && !thumbs[index].Annotated ? thumbs.FirstOrDefault(item => item.Annotated) : null;
             if (firstAnnotated is not null && !ConfirmDiscard("切图"))
@@ -806,660 +795,12 @@ public sealed class ImageViewer : Window
         return style;
     }
 
-    private Border BuildAnnotationSide(Brush line)
-    {
-        var stack = new StackPanel { Margin = new Thickness(14) };
-        var title = new TextBlock { Text = "异常标注", FontSize = 15, FontWeight = FontWeights.SemiBold };
-        title.SetResourceReference(TextBlock.ForegroundProperty, "InkBrush");
-        stack.Children.Add(title);
-
-        stack.Children.Add(BuildAnnotationStatusCard(line));
-
-        stack.Children.Add(FieldLabel("异常归类", 16));
-        (categoryPicker, categoryLabel) = CreatePicker("请选择异常归类");
-        stack.Children.Add(CreatePickerRow(categoryPicker, categoryLabel, AnnotationDictionaryKind.Category, "异常归类"));
-
-        stack.Children.Add(FieldLabel("异常处理方案", 12));
-        (planPicker, planLabel) = CreatePicker("请选择异常处理方案");
-        stack.Children.Add(CreatePickerRow(planPicker, planLabel, AnnotationDictionaryKind.Plan, "异常处理方案"));
-
-        stack.Children.Add(FieldLabel("备注（可选）", 12));
-        var addRemark = new Button
-        {
-            Content = new System.Windows.Shapes.Path { Data = (Geometry)FindResource("IconAddGeometry"), Style = ThemeStyle("IconGlyph") },
-            Style = ThemeStyle("AnnotationFieldButton"),
-            Padding = new Thickness(0), Margin = new Thickness(6, 0, 0, 0),
-            ToolTip = "新增备注标签", VerticalAlignment = VerticalAlignment.Top
-        };
-        addRemark.SetResourceReference(WidthProperty, "FormControlHeight");
-        System.Windows.Automation.AutomationProperties.SetName(addRemark, "新增备注标签");
-        addRemark.Click += (_, _) => ShowDictionaryEditor(addRemark, null, AnnotationDictionaryKind.Remark, "备注标签");
-        remarkTags = new WrapPanel();
-        stack.Children.Add(new ScrollViewer
-        {
-            Content = remarkTags, MaxHeight = 100, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
-        });
-        noteBox = new TextBox
-        {
-            Height = 72,
-            Style = ThemeStyle("AnnotationFieldInput"),
-            Margin = new Thickness(0),
-            AcceptsReturn = true,
-            TextWrapping = TextWrapping.Wrap,
-            VerticalContentAlignment = VerticalAlignment.Top,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            MaxLength = AnnotationStore.NoteLimit
-        };
-        System.Windows.Automation.AutomationProperties.SetName(noteBox, "备注");
-        noteBox.TextChanged += (_, _) => MarkDirty();
-        var remarkRow = new Grid { Margin = new Thickness(0, 6, 0, 0) };
-        remarkRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        remarkRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        remarkRow.Children.Add(noteBox);
-        Grid.SetColumn(addRemark, 1);
-        remarkRow.Children.Add(addRemark);
-        stack.Children.Add(remarkRow);
-
-        stack.Children.Add(FieldLabel("操作人", 12));
-        operatorBox = new TextBox
-        {
-            Style = ThemeStyle("AnnotationFieldInput"),
-            Margin = new Thickness(0, 6, (double)FindResource("FormControlHeight") + 6, 0),
-            Text = operatorName
-        };
-        System.Windows.Automation.AutomationProperties.SetName(operatorBox, "操作人");
-        operatorBox.TextChanged += (_, _) => MarkDirty();
-        stack.Children.Add(operatorBox);
-
-        submitButton = new Button
-        {
-            Content = "提交标注",
-            MinWidth = 112,
-            Style = ThemeStyle("FormPrimaryButton")
-        };
-        submitButton.Click += async (_, _) => await SubmitAnnotationAsync();
-        revokeButton = new Button
-        {
-            Content = "撤销标注",
-            ToolTip = "删除当前图片的全部标注记录",
-            MinWidth = 96,
-            Margin = new Thickness(0, 0, 8, 0),
-            Style = ThemeStyle("FormDangerButton"),
-            Visibility = Visibility.Collapsed
-        };
-        revokeButton.Click += async (_, _) => await RevokeAnnotationAsync();
-        var actions = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Children = { revokeButton, submitButton }
-        };
-
-        annotationError = new TextBlock
-        {
-            FontSize = 11,
-            Margin = new Thickness(0, 0, 0, 8),
-            MaxHeight = 60,
-            TextWrapping = TextWrapping.Wrap,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            Visibility = Visibility.Collapsed
-        };
-        annotationError.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");
-
-        annotationHint = new TextBlock { FontSize = 10, Margin = new Thickness(0, 10, 0, 0), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
-        annotationHint.SetResourceReference(TextBlock.ForegroundProperty, "SubtleBrush");
-        stack.Children.Add(annotationHint);
-
-        var scroll = new ScrollViewer
-        {
-            Content = stack,
-            FocusVisualStyle = null,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
-        };
-        var footer = new Border
-        {
-            BorderBrush = line,
-            BorderThickness = new Thickness(0, 1, 0, 0),
-            Padding = new Thickness(14, 10, 14, 12),
-            Child = new StackPanel { Children = { annotationError, actions } }
-        };
-        DockPanel.SetDock(footer, Dock.Bottom);
-        var layout = new DockPanel { Children = { footer, scroll } };
-        var side = new Border { BorderBrush = line, BorderThickness = new Thickness(1), CornerRadius = (CornerRadius)FindResource("PanelCornerRadius"), Child = layout };
-        side.SetResourceReference(Border.BackgroundProperty, "SurfaceBrush");
-        return side;
-    }
-
-    private Border BuildAnnotationStatusCard(Brush line)
-    {
-        annotationStatus = new TextBlock { FontSize = 11, FontWeight = FontWeights.SemiBold };
-        annotationHistoryButton = new Button
-        {
-            Style = ThemeStyle("AnnotationHistoryButton"),
-            IsEnabled = false
-        };
-        annotationHistoryChevron = new RotateTransform();
-        var chevron = new System.Windows.Shapes.Path
-        {
-            Data = (Geometry)FindResource("IconChevronGeometry"),
-            Style = ThemeStyle("IconGlyph"),
-            Width = 10,
-            Height = 6,
-            Stretch = Stretch.Uniform,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(4, 0, 0, 0),
-            RenderTransform = annotationHistoryChevron,
-            RenderTransformOrigin = new Point(0.5, 0.5)
-        };
-        chevron.SetBinding(VisibilityProperty, new Binding(nameof(IsEnabled))
-        {
-            Source = annotationHistoryButton,
-            Converter = new BooleanToVisibilityConverter()
-        });
-        annotationHistoryButton.Content = new StackPanel { Orientation = Orientation.Horizontal, Children = { annotationStatus, chevron } };
-        annotationHistoryButton.Click += (_, _) => ToggleAnnotationHistory();
-        var header = new DockPanel();
-        DockPanel.SetDock(annotationHistoryButton, Dock.Right);
-        header.Children.Add(annotationHistoryButton);
-        var caption = FieldLabel("当前图片", 0);
-        caption.VerticalAlignment = VerticalAlignment.Center;
-        header.Children.Add(caption);
-
-        annotationImageName = new TextBlock
-        {
-            FontSize = 12, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 6, 0, 0)
-        };
-        annotationSummary = new TextBlock
-        {
-            FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 5, 0, 0), Visibility = Visibility.Collapsed
-        };
-        annotationSummary.SetResourceReference(TextBlock.ForegroundProperty, "MutedBrush");
-        annotationHistory = new StackPanel
-        {
-            Margin = new Thickness(0, 6, 0, 0),
-            Visibility = Visibility.Collapsed
-        };
-        var card = new Border
-        {
-            Child = new StackPanel { Children = { header, annotationImageName, annotationSummary, annotationHistory } },
-            Margin = new Thickness(0, 10, 0, 0), Padding = new Thickness(10, 8, 10, 8),
-            CornerRadius = new CornerRadius(6), BorderBrush = line, BorderThickness = new Thickness(1)
-        };
-        card.SetResourceReference(Border.BackgroundProperty, "HeaderBrush");
-        return card;
-    }
-
-    private void ToggleAnnotationHistory()
-    {
-        if (annotationHistory is null || annotation is null) return;
-        if (annotationHistory.Visibility == Visibility.Visible)
-        {
-            annotationHistory.Visibility = Visibility.Collapsed;
-            annotationSummary!.Visibility = Visibility.Visible;
-            annotationHistoryChevron!.Angle = 0;
-            return;
-        }
-        var history = annotation.GetImageHistory(images[index].Name);
-        if (history.Count == 0) return;
-        annotationHistory.Children.Clear();
-        foreach (var record in history) annotationHistory.Children.Add(BuildHistoryRecord(record));
-        annotationSummary!.Visibility = Visibility.Collapsed;
-        annotationHistory.Visibility = Visibility.Visible;
-        annotationHistoryChevron!.Angle = 180;
-    }
-
-    private Border BuildHistoryRecord(RemoteAnnotation record)
-    {
-        var fields = new Grid();
-        fields.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(60) });
-        fields.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-        void AddField(string name, string? value)
-        {
-            int row = fields.RowDefinitions.Count;
-            fields.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            var label = FieldLabel(name, 0);
-            var text = new TextBlock
-            {
-                Text = string.IsNullOrWhiteSpace(value) ? "未记录" : value,
-                TextWrapping = TextWrapping.Wrap,
-                FontSize = 11,
-                Margin = new Thickness(0, 0, 0, 3)
-            };
-            text.SetResourceReference(TextBlock.ForegroundProperty, "InkBrush");
-            Grid.SetRow(label, row);
-            Grid.SetRow(text, row);
-            Grid.SetColumn(text, 1);
-            fields.Children.Add(label);
-            fields.Children.Add(text);
-        }
-
-        AddField("时间", AnnotationContext.GetDisplayTime(record.UpdatedAt)?.ToString("yyyy.MM.dd HH:mm:ss"));
-        AddField("操作人", record.Operator);
-        AddField("归类", record.CategoryName);
-        AddField("处理方案", record.PlanName);
-        if (!string.IsNullOrWhiteSpace(record.Note)) AddField("备注", record.Note);
-
-        var item = new Border
-        {
-            Child = fields,
-            BorderThickness = new Thickness(0, 1, 0, 0),
-            Padding = new Thickness(0, 8, 0, 5)
-        };
-        item.SetResourceReference(Border.BorderBrushProperty, "HairlineBrush");
-        return item;
-    }
-
-    private TextBlock FieldLabel(string text, double top)
-    {
-        var label = new TextBlock { Text = text, FontSize = 11, Margin = new Thickness(0, top, 0, 0) };
-        label.SetResourceReference(TextBlock.ForegroundProperty, "MutedBrush");
-        return label;
-    }
-
-    // 用按钮 + 主题化菜单代替 ComboBox：暗色下原生 ComboBox 会露出浅色弹层。
-    private (Button Button, TextBlock Label) CreatePicker(string placeholder)
-    {
-        var label = new TextBlock
-        {
-            Text = placeholder,
-            VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            Margin = new Thickness(0, 0, 18, 0)
-        };
-        var chevron = new System.Windows.Shapes.Path
-        {
-            Data = (Geometry)FindResource("IconChevronGeometry"),
-            Style = ThemeStyle("IconGlyph"),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Center,
-            IsHitTestVisible = false
-        };
-        chevron.SetResourceReference(System.Windows.Shapes.Shape.StrokeProperty, "MutedBrush");
-        var content = new Grid();
-        content.Children.Add(label);
-        content.Children.Add(chevron);
-        var button = new Button
-        {
-            Content = content,
-            Style = ThemeStyle("AnnotationFieldButton"),
-            Padding = new Thickness(10, 0, 10, 0),
-            HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            ToolTip = placeholder
-        };
-        button.Click += (_, _) => ShowPickerMenu(button, label, placeholder);
-        return (button, label);
-    }
-
-    private Grid CreatePickerRow(Button picker, TextBlock label, AnnotationDictionaryKind kind, string fieldName)
-    {
-        System.Windows.Automation.AutomationProperties.SetName(picker, fieldName);
-        var row = new Grid { Margin = new Thickness(0, 6, 0, 0) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var add = new Button
-        {
-            Content = new System.Windows.Shapes.Path { Data = (Geometry)FindResource("IconAddGeometry"), Style = ThemeStyle("IconGlyph") },
-            Style = ThemeStyle("AnnotationFieldButton"),
-            Padding = new Thickness(0),
-            Margin = new Thickness(6, 0, 0, 0),
-            ToolTip = "新增" + fieldName
-        };
-        add.SetResourceReference(WidthProperty, "FormControlHeight");
-        System.Windows.Automation.AutomationProperties.SetName(add, "新增" + fieldName);
-        add.Click += (_, _) => ShowDictionaryEditor(picker, label, kind, fieldName);
-        row.Children.Add(picker);
-        Grid.SetColumn(add, 1);
-        row.Children.Add(add);
-        return row;
-    }
-
-    private void ShowDictionaryEditor(Button anchor, TextBlock? label, AnnotationDictionaryKind kind, string fieldName)
-    {
-        if (dictionary is null || annotationWriting || dictionaryAdding) return;
-        var input = new TextBox { MaxLength = AnnotationStore.NameLimit, Margin = new Thickness(0, 6, 0, 0), Style = ThemeStyle("AnnotationFieldInput") };
-        System.Windows.Automation.AutomationProperties.SetName(input, fieldName + "名称");
-        var error = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0), Visibility = Visibility.Collapsed };
-        error.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");
-        var save = new Button { Content = "保存", MinWidth = 64, Style = ThemeStyle("FormPrimaryButton") };
-        var cancel = new Button { Content = "取消", MinWidth = 64, Margin = new Thickness(0, 0, 8, 0), Style = ThemeStyle("FormButton") };
-        var buttons = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 10, 0, 0),
-            Children = { cancel, save }
-        };
-        var editor = new StackPanel { Margin = new Thickness(8), Children = { FieldLabel("新增" + fieldName, 0), input, error, buttons } };
-        var popup = CreateAnnotationPopup(anchor, editor);
-        cancel.Click += (_, _) => popup.IsOpen = false;
-        popup.Opened += (_, _) => input.Focus();
-        editor.PreviewKeyDown += async (_, e) =>
-        {
-            if (e.Key == Key.Enter) { e.Handled = true; await SaveAsync(); }
-            else if (e.Key == Key.Escape && !dictionaryAdding) { e.Handled = true; popup.IsOpen = false; }
-        };
-        save.Click += async (_, _) => await SaveAsync();
-        popup.IsOpen = true;
-
-        async Task SaveAsync()
-        {
-            if (dictionaryAdding || annotationWriting) return;
-            string name = input.Text.Trim();
-            error.Visibility = Visibility.Collapsed;
-            if (name.Length == 0)
-            {
-                error.Text = "请输入名称";
-                error.Visibility = Visibility.Visible;
-                input.Focus();
-                return;
-            }
-
-            string imagePath = CurrentPath;
-            dictionaryAdding = true;
-            editor.IsEnabled = false;
-            try
-            {
-                dictionary = await client.AddAnnotationDictionaryItemAsync(kind, name, lifetime.Token);
-                if (lifetime.IsCancellationRequested) return;
-                RefreshRemarkTags();
-                var items = kind switch
-                {
-                    AnnotationDictionaryKind.Category => dictionary.Categories,
-                    AnnotationDictionaryKind.Plan => dictionary.Plans,
-                    _ => dictionary.Remarks
-                };
-                var item = items.FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase));
-                if (item is not null && label is not null && CurrentPath == imagePath) SetPickerValue(anchor, label, item.Name);
-                annotationHint!.Visibility = Visibility.Collapsed;
-                popup.IsOpen = false;
-                Toast.Show(this, "字典已保存");
-            }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "保存标注字典失败；分组 {Kind}", kind);
-                error.Text = ex.Message;
-                error.Visibility = Visibility.Visible;
-                if (!popup.IsOpen && !lifetime.IsCancellationRequested) Toast.Show(this, "字典保存失败：" + ex.Message, ToastKind.Danger);
-            }
-            finally
-            {
-                dictionaryAdding = false;
-                editor.IsEnabled = true;
-            }
-        }
-    }
-
-    private void SetPickerValue(Button picker, TextBlock label, string name)
-    {
-        label.Text = name;
-        if (ReferenceEquals(picker, categoryPicker)) categoryCode = name;
-        else planCode = name;
-        MarkDirty();
-    }
-
-    private void RefreshRemarkTags()
-    {
-        if (remarkTags is null) return;
-        remarkTags.Children.Clear();
-        foreach (var item in dictionary?.Remarks ?? [])
-        {
-            var tag = new Button
-            {
-                Content = new TextBlock { Text = item.Name, TextWrapping = TextWrapping.Wrap },
-                Style = ThemeStyle("FormButton"), MinHeight = 26, Height = double.NaN,
-                Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(0, 6, 6, 0),
-                MaxWidth = 220, ToolTip = "添加到备注：" + item.Name
-            };
-            System.Windows.Automation.AutomationProperties.SetName(tag, "备注标签：" + item.Name);
-            tag.Click += (_, _) =>
-            {
-                if (noteBox is null || annotationWriting || dictionaryAdding) return;
-                if (noteBox.Text.Split(['；', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-                    .Any(text => string.Equals(text.Trim(), item.Name, StringComparison.Ordinal))) return;
-                string existing = noteBox.Text.TrimEnd();
-                string updated = existing.Length == 0 ? item.Name : existing + "；" + item.Name;
-                if (updated.Length > AnnotationStore.NoteLimit)
-                {
-                    Toast.Show(this, $"备注不能超过 {AnnotationStore.NoteLimit} 个字符", ToastKind.Danger);
-                    return;
-                }
-                noteBox.Text = updated;
-                noteBox.CaretIndex = updated.Length;
-            };
-            remarkTags.Children.Add(tag);
-        }
-    }
-
-    // 自绘下拉：弹出层里放一列按钮，避开 ContextMenu/MenuItem 原生模板的勾选列白条。
-    private void ShowPickerMenu(Button button, TextBlock label, string placeholder)
-    {
-        var items = ReferenceEquals(button, categoryPicker) ? dictionary?.Categories : dictionary?.Plans;
-        if (items is null || items.Length == 0)
-        {
-            annotationHint!.Text = "服务端未配置标注字典，暂时无法选择。";
-            annotationHint.Visibility = Visibility.Visible;
-            return;
-        }
-        var stack = new StackPanel();
-        var ghost = ThemeStyle("GhostButton");
-        foreach (var item in items)
-        {
-            var option = new Button
-            {
-                Content = new TextBlock { Text = item.Name, TextTrimming = TextTrimming.CharacterEllipsis },
-                HorizontalContentAlignment = HorizontalAlignment.Left,
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                Padding = new Thickness(10, 5, 10, 5),
-                Margin = new Thickness(2, 1, 2, 1),
-                MinHeight = 28
-            };
-            if (ghost is not null) option.Style = ghost;
-            option.Click += (_, _) =>
-            {
-                SetPickerValue(button, label, item.Name);
-                if (pickerPopup is not null) pickerPopup.IsOpen = false;
-            };
-            stack.Children.Add(option);
-        }
-        var scroll = new ScrollViewer
-        {
-            Content = stack,
-            MaxHeight = 320,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
-        };
-        CreateAnnotationPopup(button, scroll).IsOpen = true;
-    }
-
-    private Popup CreateAnnotationPopup(Button anchor, UIElement content)
-    {
-        if (pickerPopup is not null) pickerPopup.IsOpen = false;
-        var border = new Border
-        {
-            Style = ThemeStyle("PopupSurface"),
-            Child = content
-        };
-        var popup = new Popup
-        {
-            PlacementTarget = anchor,
-            Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom,
-            StaysOpen = false,
-            AllowsTransparency = true,
-            Child = border,
-            Width = Math.Max(anchor.ActualWidth, 240)
-        };
-        pickerPopup = popup;
-        return popup;
-    }
-
-    private void MarkDirty()
-    {
-        if (loadingAnnotation || annotation is null) return;
-        annotationDirty = true;
-        if (annotationError is not null) annotationError.Visibility = Visibility.Collapsed;
-    }
-
-    private async Task LoadAnnotationDictionaryAsync()
-    {
-        if (annotation is null) return;
-        try { dictionary = await client.GetAnnotationDictionaryAsync(); }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "读取标注字典失败");
-            dictionary = new RemoteDictionary([], []);
-        }
-        RefreshRemarkTags();
-        Log.Information("标注字典加载完成；归类 {Categories}，方案 {Plans}，备注标签 {Remarks}",
-            dictionary.Categories.Length, dictionary.Plans.Length, dictionary.Remarks.Length);
-        if (dictionary.Categories.Length == 0 && dictionary.Plans.Length == 0)
-        {
-            annotationHint!.Text = "服务端未配置标注字典（RpaDataItems / RpaDataItemDetails），下拉暂时为空。";
-            annotationHint.Visibility = Visibility.Visible;
-        }
-    }
-
+    private Task LoadAnnotationDictionaryAsync() => annotationPanel?.LoadAsync() ?? Task.CompletedTask;
     private Task LoadAnnotationForCurrentAsync()
     {
-        if (annotation is null || categoryLabel is null) return Task.CompletedTask;
-        loadingAnnotation = true;
-        try
-        {
-            categoryCode = planCode = "";
-            categoryLabel.Text = "请选择异常归类";
-            planLabel!.Text = "请选择异常处理方案";
-            noteBox!.Clear();
-            operatorBox!.Text = operatorName;
-            UpdateCurrentAnnotationStatus();
-            annotationError!.Visibility = Visibility.Collapsed;
-        }
-        finally
-        {
-            loadingAnnotation = false;
-            annotationDirty = false;
-        }
+        annotationPanel?.SelectImage(images[index].Name);
         return Task.CompletedTask;
     }
-
-    private void UpdateCurrentAnnotationStatus()
-    {
-        string imageName = images[index].Name;
-        var history = annotation!.GetImageHistory(imageName);
-        var latest = history.FirstOrDefault();
-        bool annotated = latest is not null;
-        annotationImageName!.Text = imageName;
-        annotationStatus!.Text = annotated ? $"已标注 {history.Count} 次" : "未标注";
-        annotationHistoryButton!.IsEnabled = annotated;
-        annotationHistoryButton.ToolTip = annotated ? "查看标注历史" : null;
-        System.Windows.Automation.AutomationProperties.SetName(annotationHistoryButton,
-            annotated ? $"{annotationStatus.Text}，查看标注历史" : annotationStatus.Text);
-        annotationHistory!.Visibility = Visibility.Collapsed;
-        annotationHistory.Children.Clear();
-        annotationHistoryChevron!.Angle = 0;
-        annotationSummary!.Text = latest is null ? "" : $"最近一次 · {latest.CategoryName} / {latest.PlanName}";
-        annotationSummary.Visibility = annotated ? Visibility.Visible : Visibility.Collapsed;
-        submitButton!.Content = annotated ? "新增标注" : "提交标注";
-        revokeButton!.Visibility = annotated ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private async Task SubmitAnnotationAsync()
-    {
-        if (annotation is null || annotationWriting || dictionaryAdding) return;
-        annotationError!.Visibility = Visibility.Collapsed;
-        string operatorText = (operatorBox?.Text ?? "").Trim();
-        if (string.IsNullOrEmpty(categoryCode)) { ShowAnnotationError("请选择异常归类", categoryPicker); return; }
-        if (string.IsNullOrEmpty(planCode)) { ShowAnnotationError("请选择异常处理方案", planPicker); return; }
-        if (operatorText.Length == 0) { ShowAnnotationError("请填写操作人", operatorBox); return; }
-        string imageName = images[index].Name;
-        await RunAnnotationWriteAsync("正在提交…", "提交失败", "标注已提交", async () =>
-        {
-            await client.SaveAnnotationAsync(annotation.FolderPath, categoryCode, planCode,
-                noteBox?.Text, operatorText, imageName);
-            AnnotationSubmitted = true;
-            SaveOperatorName(operatorText);
-        });
-    }
-
-    private async Task RevokeAnnotationAsync()
-    {
-        if (annotation is null || annotationWriting || dictionaryAdding) return;
-        string imageName = images[index].Name;
-        if (annotation.GetImageHistory(imageName).Count == 0) return;
-        await RunAnnotationWriteAsync("正在撤销…", "撤销失败", "该图片的标注已撤销",
-            () => client.DeleteImageAnnotationsAsync(annotation.FolderPath, imageName));
-    }
-
-    private async Task RunAnnotationWriteAsync(string progress, string failure, string success, Func<Task> write)
-    {
-        string path = CurrentPath;
-        annotationWriting = true;
-        submitButton!.IsEnabled = false;
-        revokeButton!.IsEnabled = false;
-        annotationError!.Visibility = Visibility.Collapsed;
-        annotationStatus!.Text = progress;
-        try
-        {
-            await write();
-            annotationDirty = false;
-        }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "{Operation}；图片 {Path}", failure, path);
-            ShowAnnotationError(ex.Message);
-            UpdateCurrentAnnotationStatus();
-            Toast.Show(this, failure + "：" + ex.Message, ToastKind.Danger, 3200);
-            return;
-        }
-        finally
-        {
-            annotationWriting = false;
-            submitButton.IsEnabled = true;
-            revokeButton.IsEnabled = true;
-        }
-        if (lifetime.IsCancellationRequested) return;
-        var owner = Owner;
-        Close();
-        Toast.Show(owner, success, ToastKind.Success);
-    }
-
-    private void ShowAnnotationError(string message, FrameworkElement? field = null)
-    {
-        annotationError!.Text = message;
-        annotationError.ToolTip = message;
-        annotationError.Visibility = Visibility.Visible;
-        field?.BringIntoView();
-        field?.Focus();
-    }
-
-    private static string LoadOperatorName()
-    {
-        try
-        {
-            string path = AppLogging.GetSettingsPath("operator.json");
-            if (File.Exists(path) && JsonSerializer.Deserialize<OperatorSettings>(File.ReadAllText(path)) is { } saved)
-                return saved.Name;
-        }
-        catch (Exception ex) { Log.Debug(ex, "读取操作人失败"); }
-        return Environment.UserName;
-    }
-
-    private static void SaveOperatorName(string name)
-    {
-        try
-        {
-            string path = AppLogging.GetSettingsPath("operator.json");
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllText(path, JsonSerializer.Serialize(new OperatorSettings(name)), new UTF8Encoding(false));
-        }
-        catch (Exception ex) { Log.Debug(ex, "保存操作人失败"); }
-    }
-
-    private sealed record OperatorSettings(string Name);
 
     private void LoadAnnotationThumbs()
     {
@@ -1923,7 +1264,7 @@ public sealed class ImageViewer : Window
     {
         if (annotation is null || !annotationDirty) return true;
         if (!Dialog.Confirm(this, $"当前图片的标注尚未提交，{action}后填写的内容会丢失。是否继续？", "未提交的标注")) return false;
-        annotationDirty = false;
+        annotationPanel?.Model.DiscardDraft();
         return true;
     }
 
@@ -1951,6 +1292,7 @@ public sealed class ImageViewer : Window
 
     public async Task MoveToAsync(int target)
     {
+        if (annotationWriting) { SyncAnnotationSelection(); SyncThumbSelection(); return; }
         if (target < 0 || target >= images.Length) return;
         if (target == index) { SyncThumbSelection(); return; }
         if (!ConfirmDiscard("切图")) { SyncAnnotationSelection(); SyncThumbSelection(); return; }

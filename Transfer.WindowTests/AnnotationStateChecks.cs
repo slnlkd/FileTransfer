@@ -77,6 +77,44 @@ internal static class AnnotationStateChecks
             await loading;
             Check(model.Dictionary.Remarks.Any(item => item.Name == "新备注"), "晚到的旧字典不能覆盖新增结果");
         }
+        foreach (bool loadFirst in new[] { false, true })
+        {
+            using var model = Model(client = new FakeClient { DictionaryGate = new(), AddGate = new(), AddError = new IOException("新增失败") });
+            model.SelectImage("new.png");
+            var loading = model.LoadDictionaryAsync();
+            var adding = model.AddDictionaryItemAsync(AnnotationDictionaryKind.Category, "新增归类");
+            if (loadFirst) { client.DictionaryGate.SetResult(); await loading; }
+            client.AddGate.SetResult();
+            Check(!await adding, "失败的字典新增不能报成功");
+            if (!loadFirst) { client.DictionaryGate.SetResult(); await loading; }
+            Check(model.Dictionary.Categories.Length > 0 && model.Dictionary.Plans.Length > 0,
+                "新增失败不能丢弃有效的首次字典加载，无论返回先后顺序");
+        }
+        using (var model = Model(client = new FakeClient { CanonicalName = "Defect" }))
+        {
+            model.SelectImage("new.png");
+            Check(await model.AddDictionaryItemAsync(AnnotationDictionaryKind.Category, "defect") && model.Category == "Defect",
+                "新增已有字典项时应选中服务端返回的标准名称");
+        }
+        using (var model = Model(client = new FakeClient { AddGate = new(), AddError = new IOException("旧图片请求失败") }))
+        {
+            model.SelectImage("first.png");
+            var adding = model.AddDictionaryItemAsync(AnnotationDictionaryKind.Plan, "方案");
+            model.SelectImage("second.png"); model.Note = "新图片备注";
+            client.AddGate.SetResult();
+            Check(!await adding && model.Error.Length == 0 && model.Note == "新图片备注",
+                "旧图片字典请求失败不能把错误写入新图片");
+        }
+        using (var model = Model(client = new FakeClient { SaveGate = new() }))
+        {
+            model.SelectImage("first.png"); Fill(model);
+            int completed = 0; model.WriteSucceeded += _ => completed++;
+            var pendingWrite = model.SubmitAsync();
+            model.SelectImage("second.png"); model.Note = "第二张";
+            client.SaveGate.SetResult();
+            Check(!await pendingWrite && completed == 0 && model.Note == "第二张" && model.IsDirty,
+                "过期提交返回不能清除新图片草稿或关闭宿主");
+        }
         client = new FakeClient { SaveGate = new() };
         var disposed = Model(client); disposed.SelectImage("new.png"); Fill(disposed);
         int afterClose = 0; disposed.WriteSucceeded += _ => afterClose++;
@@ -99,7 +137,8 @@ internal static class AnnotationStateChecks
         public int Saves, Deletes;
         public RemoteAnnotation? LastSaved;
         public string? LastDeleted;
-        public Exception? SaveError;
+        public string? CanonicalName;
+        public Exception? SaveError, AddError;
         public CancellationToken SaveToken;
         public TaskCompletionSource? SaveGate, AddGate, DictionaryGate;
         public RemoteDictionary Words = new([new("图像异常", "图像异常")], [new("厂内处理", "厂内处理")]);
@@ -112,7 +151,8 @@ internal static class AnnotationStateChecks
         public async Task<RemoteDictionary> AddDictionaryItemAsync(AnnotationDictionaryKind kind, string name, CancellationToken ct)
         {
             if (AddGate is not null) await AddGate.Task;
-            var item = new RemoteDictionaryItem(name, name);
+            if (AddError is not null) throw AddError;
+            var item = new RemoteDictionaryItem(CanonicalName ?? name, CanonicalName ?? name);
             Words = kind switch
             {
                 AnnotationDictionaryKind.Category => Words with { Categories = [.. Words.Categories, item] },

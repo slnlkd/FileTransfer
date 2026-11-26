@@ -16,6 +16,7 @@ using ClientBrowser = RemoteClient::RemoteFiles.Desktop.RemoteBrowser;
 using TextViewer = RemoteClient::RemoteFiles.Desktop.TextViewer;
 using ImageViewer = RemoteClient::RemoteFiles.Desktop.ImageViewer;
 using AnnotationContext = RemoteClient::RemoteFiles.Desktop.AnnotationContext;
+using AnnotationPanel = RemoteClient::RemoteFiles.Desktop.AnnotationPanel;
 using ImageThumbItem = RemoteClient::RemoteFiles.Desktop.ImageThumbItem;
 using ProcessViewer = RemoteClient::RemoteFiles.Desktop.ProcessViewer;
 
@@ -223,8 +224,10 @@ internal static partial class RemoteWindowChecks
             if (host.OwnedWindows.OfType<ImageViewer>().Single() != viewer) throw new Exception("重复标注打开了另一个窗口");
             await WaitAsync(() => FindImage(viewer)?.Source is not null);
             CheckAnnotationInputs(viewer);
+            if (FindDescendant<AnnotationPanel>(viewer) is null)
+                throw new Exception("标注表单应由独立 AnnotationPanel 承担");
             await WaitAsync(() => FindButton(viewer, "添加到备注：预置备注") is not null);
-            var initialNote = (TextBox)typeof(ImageViewer).GetField("noteBox", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(viewer)!;
+            var initialNote = (TextBox)AnnotationField(viewer, "noteBox");
             FindButton(viewer, "添加到备注：预置备注")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             if (initialNote.Text != "预置备注") throw new Exception("默认进入应加载字典为可点击备注标签");
             initialNote.Clear();
@@ -250,14 +253,14 @@ internal static partial class RemoteWindowChecks
             {
                 submit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 if (!viewer.IsVisible || annotate.IsEnabled) throw new Exception("表单验证失败后应保持标注窗口打开");
-                if (FocusManager.GetFocusedElement(viewer) != typeof(ImageViewer).GetField(name, fieldFlags)!.GetValue(viewer))
+                if (FocusManager.GetFocusedElement(viewer) != AnnotationField(viewer, name))
                     throw new Exception("表单验证失败后应聚焦第一个缺失字段：" + name);
             }
             CheckMissingField("categoryPicker");
             SelectAnnotationOption(viewer, "categoryPicker");
             CheckMissingField("planPicker");
             SelectAnnotationOption(viewer, "planPicker");
-            var operatorInput = (TextBox)typeof(ImageViewer).GetField("operatorBox", fieldFlags)!.GetValue(viewer)!;
+            var operatorInput = (TextBox)AnnotationField(viewer, "operatorBox");
             var operatorName = operatorInput.Text;
             operatorInput.Clear();
             CheckMissingField("operatorBox");
@@ -343,7 +346,7 @@ internal static partial class RemoteWindowChecks
             await AddAnnotationOptionAsync(viewer, "新增异常处理方案", "自定义处理方案");
             await AddAnnotationOptionAsync(viewer, "新增备注标签", "已通知设备");
             await AddAnnotationOptionAsync(viewer, "新增备注标签", "等待复核");
-            var remarkNote = (TextBox)typeof(ImageViewer).GetField("noteBox", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(viewer)!;
+            var remarkNote = (TextBox)AnnotationField(viewer, "noteBox");
             remarkNote.Text = "手写内容";
             var remarkTag = FindButton(viewer, "添加到备注：已通知设备") ?? throw new Exception("新增备注后未刷新标签");
             remarkTag.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -516,13 +519,12 @@ internal static partial class RemoteWindowChecks
 
     private static void CheckAnnotationInputs(ImageViewer viewer)
     {
-        const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var note = (TextBox)typeof(ImageViewer).GetField("noteBox", flags)!.GetValue(viewer)!;
-        var operatorBox = (TextBox)typeof(ImageViewer).GetField("operatorBox", flags)!.GetValue(viewer)!;
+        var note = (TextBox)AnnotationField(viewer, "noteBox");
+        var operatorBox = (TextBox)AnnotationField(viewer, "operatorBox");
         var singleLineFields = new Control[]
         {
-            (Button)typeof(ImageViewer).GetField("categoryPicker", flags)!.GetValue(viewer)!,
-            (Button)typeof(ImageViewer).GetField("planPicker", flags)!.GetValue(viewer)!,
+            (Button)AnnotationField(viewer, "categoryPicker"),
+            (Button)AnnotationField(viewer, "planPicker"),
             FindButton(viewer, "新增异常归类")!,
             FindButton(viewer, "新增异常处理方案")!,
             FindButton(viewer, "新增备注标签")!,
@@ -532,7 +534,7 @@ internal static partial class RemoteWindowChecks
         viewer.UpdateLayout();
         var remarkAdd = FindButton(viewer, "新增备注标签")!;
         var planAdd = FindButton(viewer, "新增异常处理方案")!;
-        var planInput = (Button)typeof(ImageViewer).GetField("planPicker", flags)!.GetValue(viewer)!;
+        var planInput = (Button)AnnotationField(viewer, "planPicker");
         if (Math.Abs(operatorBox.ActualWidth - planInput.ActualWidth) > 0.5
             || Math.Abs(operatorBox.ActualWidth - note.ActualWidth) > 0.5)
             throw new Exception("操作人、备注与上方输入框的宽度应统一");
@@ -545,7 +547,7 @@ internal static partial class RemoteWindowChecks
             || field.FocusVisualStyle is not null || field.BorderThickness != operatorBox.BorderThickness))
             throw new Exception("标注单行控件应等高，并采用无额外外框的焦点样式");
         if (Math.Abs(operatorBox.ActualHeight - 32) > 0.5
-            || Math.Abs(((Button)typeof(ImageViewer).GetField("submitButton", flags)!.GetValue(viewer)!).ActualHeight - 32) > 0.5)
+            || Math.Abs(((Button)AnnotationField(viewer, "submitButton")).ActualHeight - 32) > 0.5)
             throw new Exception("标注表单与提交按钮应统一为 32 个逻辑像素高");
         foreach (var input in new[] { note, operatorBox })
         {
@@ -587,15 +589,37 @@ internal static partial class RemoteWindowChecks
         await WaitAsync(() => !popup.IsOpen && FindTextBlocks(viewer).Any(block => block.Text == name));
     }
     private static System.Windows.Controls.Primitives.Popup AnnotationPopup(ImageViewer viewer) =>
-        (System.Windows.Controls.Primitives.Popup)typeof(ImageViewer).GetField("pickerPopup", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(viewer)!;
+        (System.Windows.Controls.Primitives.Popup)AnnotationField(viewer, "pickerPopup");
     private static void SelectAnnotationOption(ImageViewer viewer, string pickerName, string? name = null)
     {
-        const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var picker = (Button)typeof(ImageViewer).GetField(pickerName, flags)!.GetValue(viewer)!;
+        var picker = (Button)AnnotationField(viewer, pickerName);
         picker.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         var popup = AnnotationPopup(viewer);
         var options = (StackPanel)((ScrollViewer)((Border)popup.Child).Child).Content;
         options.Children.OfType<Button>().Single(button => name is null || button.Content is TextBlock text && text.Text == name)
             .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     }
+    // 通过控件语义定位表单，测试不再要求查看器持有其私有字段。
+    private static object AnnotationField(ImageViewer viewer, string name)
+    {
+        var panel = FindDescendant<AnnotationPanel>(viewer) ?? throw new Exception("缺少独立标注表单");
+        if (name == "pickerPopup")
+            return typeof(AnnotationPanel).GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(panel)!;
+        if (name == "submitButton") return FindButtonByContent(panel, "提交标注") ?? FindButtonByContent(panel, "新增标注")!;
+        string label = name switch
+        {
+            "noteBox" => "备注", "operatorBox" => "操作人", "categoryPicker" => "异常归类",
+            "planPicker" => "异常处理方案", "annotationHistory" => "标注历史",
+            _ => throw new ArgumentException(name)
+        };
+        DependencyObject? Find(DependencyObject parent)
+        {
+            if (parent is FrameworkElement element && System.Windows.Automation.AutomationProperties.GetName(element) == label) return parent;
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+                if (Find(VisualTreeHelper.GetChild(parent, i)) is { } found) return found;
+            return null;
+        }
+        return Find(panel) ?? throw new Exception("找不到标注控件：" + label);
+    }
+
 }
