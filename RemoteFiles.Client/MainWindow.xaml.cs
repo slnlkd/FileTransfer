@@ -33,7 +33,7 @@ public partial class MainWindow : Window
         Title = $"远程文件管理 · 客户端 v{version.ToString(3)}";
         UpdateThemeButton();
         if (Browser.FindName("FileGrid") is DataGrid fileGrid) WindowLayout.Attach(this, "remote-client", fileGrid);
-        Browser.StatusChanged += (text, key) => SetStatus(text, ThemeBrush(key));
+        Browser.StatusChanged += (text, key, highlight) => SetStatus(text, ThemeBrush(key), highlight);
         Browser.ProgressChanged += UpdateBrowserProgress;
         Browser.SelectionCountChanged += UpdateSelection;
         SetConnectionState("未连接", ThemeBrush("MutedBrush"));
@@ -258,10 +258,9 @@ public partial class MainWindow : Window
         ConnectionDot.Fill = dot;
         ConnectButton.Style = (Style)FindResource(text == "已连接" ? "ReconnectIconButton" : "ConnectPrimaryButton");
     }
-    private void SetStatus(string text, Brush dot)
+    private void SetStatus(string text, Brush dot, Range? highlight = null)
     {
-        StatusText.Text = text;
-        StatusText.ToolTip = text;
+        RemoteBrowser.ApplyStatusText(StatusText, text, highlight);
         StatusDot.Fill = dot;
     }
     private void UpdateBrowserProgress(string text, double percent, bool indeterminate, bool visible)

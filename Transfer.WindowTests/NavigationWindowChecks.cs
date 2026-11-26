@@ -113,13 +113,13 @@ internal static partial class RemoteWindowChecks
                 await WaitAsync(() => cancel.IsVisible);
                 if (!((Border)browser.FindName("PathBar")).IsAncestorOf(cancel))
                     throw new Exception("取消入口应随等待提示显示在路径栏内");
-                typeof(ClientBrowser).GetMethod("SetBusyProgress", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
-                    .Invoke(browser, [65d, "正在下载 65%"]);
+                typeof(ClientBrowser).GetMethod("SetProgress", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .Invoke(browser, [65d, "正在下载 65%", false]);
                 await FlushAsync(host);
-                var progress = (ProgressBar)browser.FindName("BusyProgress");
-                var indicator = (FrameworkElement)progress.Template.FindName("PART_Indicator", progress);
-                if (progress.IsIndeterminate || progress.Value != 65 || indicator.ActualWidth <= 0 || indicator.ActualWidth >= progress.ActualWidth)
-                    throw new Exception("路径栏进度线必须支持实际百分比显示");
+                var progress = (ProgressBar)browser.FindName("UploadProgress");
+                var pathProgress = (ProgressBar)browser.FindName("BusyProgress");
+                if (progress.IsIndeterminate || progress.Value != 65 || pathProgress.IsVisible || !cancel.IsVisible)
+                    throw new Exception("传输百分比应交给传输进度区，路径栏保留取消入口");
                 cancel.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 await cancellable;
                 if (browser.IsBusy || banner.IsVisible || ((TextBlock)browser.FindName("StatusText")).Text != "已取消")

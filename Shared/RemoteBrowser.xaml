@@ -1,4 +1,4 @@
-﻿<UserControl x:Class="RemoteFiles.Desktop.RemoteBrowser"
+<UserControl x:Class="RemoteFiles.Desktop.RemoteBrowser"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:RemoteFiles.Desktop">
@@ -11,6 +11,7 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Foreground" Value="{DynamicResource InkBrush}" />
         <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
         <Setter Property="Padding" Value="4,3" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -35,6 +36,7 @@
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
                                 <ToggleButton x:Name="Expander" Grid.Column="0" ClickMode="Press"
+                                              Click="TreeExpander_Click"
                                               IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
                                               Style="{StaticResource TreeExpanderStyle}" />
                                 <ContentPresenter x:Name="PART_Header" Grid.Column="1" Margin="4,0,0,0"
@@ -139,7 +141,7 @@
                 </Setter>
             </Style>
             <Style x:Key="NgBatchStatusDot" TargetType="Control" BasedOn="{StaticResource NgStatusDot}">
-                <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource WarningBrush}" />
                 <Style.Triggers>
                     <DataTrigger Binding="{Binding Annotated}" Value="True">
                         <Setter Property="Template" Value="{StaticResource NgCompletedStatus}" />
@@ -154,7 +156,8 @@
                 <Setter Property="AutomationProperties.HelpText" Value="未标注" />
                 <Style.Triggers>
                     <Trigger Property="IsKeyboardFocused" Value="True">
-                        <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                        <Setter Property="Background" Value="{DynamicResource SelectionBrush}" />
+                        <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
                     </Trigger>
                     <DataTrigger Binding="{Binding Annotated}" Value="True">
                         <Setter Property="AutomationProperties.HelpText" Value="已标注" />
@@ -291,9 +294,18 @@
                         MinHeight="{StaticResource ToolbarControlHeight}"
                         VerticalAlignment="Center"
                         Background="{DynamicResource SurfaceBrush}"
-                        BorderBrush="{DynamicResource HairlineBrush}"
                         BorderThickness="1"
                         CornerRadius="{StaticResource ControlCornerRadius}">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}" />
+                            <Style.Triggers>
+                                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                    <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
                     <Grid>
                     <DockPanel VerticalAlignment="Center" Margin="8,0">
                         <Path DockPanel.Dock="Left" Data="{StaticResource BrowserFolderGeometry}"
@@ -313,7 +325,17 @@
                                 <TextBlock x:Name="BusyText" MaxWidth="200" VerticalAlignment="Center"
                                            FontSize="12" FontWeight="Normal" TextTrimming="CharacterEllipsis"
                                            Foreground="{DynamicResource MutedBrush}" Text="正在处理…"
-                                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Visibility, ElementName=ProgressPanel}" Value="Visible">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
                                 <Button x:Name="CancelButton" Margin="6,0,0,0" Padding="6,0"
                                         Height="24" VerticalAlignment="Center" Style="{StaticResource GhostButton}"
                                         Click="Cancel_Click" Content="取消" Visibility="Collapsed" />
@@ -329,8 +351,17 @@
                         </ScrollViewer>
                     </DockPanel>
                     <ProgressBar x:Name="BusyProgress" Height="2" VerticalAlignment="Bottom"
-                                 Margin="2,0" IsIndeterminate="True" IsHitTestVisible="False"
-                                 Visibility="{Binding Visibility, ElementName=BusyIndicator}">
+                                 Margin="2,0" IsIndeterminate="True" IsHitTestVisible="False">
+                        <ProgressBar.Style>
+                            <Style TargetType="ProgressBar" BasedOn="{StaticResource {x:Type ProgressBar}}">
+                                <Setter Property="Visibility" Value="{Binding Visibility, ElementName=BusyIndicator}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Visibility, ElementName=ProgressPanel}" Value="Visible">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ProgressBar.Style>
                         <ProgressBar.Template>
                             <ControlTemplate TargetType="ProgressBar">
                                 <Grid x:Name="PART_Track" ClipToBounds="True">
@@ -666,8 +697,8 @@
                                             <Setter TargetName="StateText" Property="Foreground" Value="{DynamicResource SuccessBrush}" />
                                         </DataTrigger>
                                         <DataTrigger Binding="{Binding AnnotationStatus}" Value="未标注">
-                                            <Setter TargetName="Dot" Property="Fill" Value="{DynamicResource DangerBrush}" />
-                                            <Setter TargetName="StateText" Property="Foreground" Value="{DynamicResource DangerBrush}" />
+                                            <Setter TargetName="Dot" Property="Fill" Value="{DynamicResource WarningBrush}" />
+                                            <Setter TargetName="StateText" Property="Foreground" Value="{DynamicResource WarningBrush}" />
                                         </DataTrigger>
                                         <DataTrigger Binding="{Binding AnnotationStatus}" Value="未知">
                                             <Setter TargetName="Dot" Property="Fill" Value="{DynamicResource SubtleBrush}" />
@@ -743,9 +774,9 @@
                                         <RadioButton x:Name="NgPendingFilter" GroupName="NgOverviewStatus" ToolTip="未标注"
                                                      AutomationProperties.Name="未标注" Checked="NgOverviewFilter_Changed" Style="{StaticResource NgStatusFilterOption}">
                                             <StackPanel Orientation="Horizontal">
-                                                <Control Foreground="{DynamicResource DangerBrush}" Style="{StaticResource NgStatusDot}" />
+                                                <Control Foreground="{DynamicResource WarningBrush}" Style="{StaticResource NgStatusDot}" />
                                                 <TextBlock Margin="4,0,0,0" VerticalAlignment="Center">
-                                                    <Run Text="未标注" /><Run x:Name="NgPendingCount" FontWeight="SemiBold" Foreground="{DynamicResource DangerBrush}" />
+                                                    <Run Text="未标注" /><Run x:Name="NgPendingCount" FontWeight="SemiBold" Foreground="{DynamicResource WarningBrush}" />
                                                 </TextBlock>
                                             </StackPanel>
                                         </RadioButton>

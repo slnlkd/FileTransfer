@@ -20,6 +20,7 @@ internal static partial class RemoteWindowChecks
         var bitmap = BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, new byte[] { 0, 0, 0, 255 }, 4);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using (var output = File.Create(Path.Combine(root, folder, "image.png"))) encoder.Save(output);
+        File.Copy(Path.Combine(root, folder, "image.png"), Path.Combine(root, folder, "second.png"));
         string repositoryPath = Path.Combine(temp, "server-annotation.json");
         await File.WriteAllTextAsync(repositoryPath, JsonSerializer.Serialize(new
         {
@@ -30,12 +31,25 @@ internal static partial class RemoteWindowChecks
         service.Start(0);
         var endpoint = new RemoteFileClient("127.0.0.1", service.Port);
         var images = (await endpoint.CallAsync(new("list", folder))).Entries!;
+        images[0] = images[0] with { CreatedUtc = new DateTime(2026, 11, 20, 7, 15, 23, DateTimeKind.Utc) };
+        images[1] = images[1] with { CreatedUtc = images[0].CreatedUtc.AddSeconds(8) };
         var viewer = new ServerImageViewer(endpoint, images, images[0].Path, new ServerAnnotationContext(folder, folder, []));
         Prepare(viewer); viewer.Show();
         try
         {
             var panel = FindDescendant<ServerAnnotationPanel>(viewer) ?? throw new Exception("服务端缺少独立标注组件");
             await WaitAsync(() => FindImage(viewer)?.Source is not null && panel.Model.Dictionary.Categories.Length > 0);
+            void CheckImageDate(RemoteEntry entry)
+            {
+                var date = FindTextBlock(panel, FormattableString.Invariant($"{entry.CreatedLocal:yyyy-MM-dd HH:mm:ss}"));
+                if (date is not { IsVisible: true } || !Equals(date.Foreground, panel.FindResource("AccentBrush")))
+                    throw new Exception("当前图片应醒目显示文件创建日期和时分秒");
+            }
+            CheckImageDate(images[0]);
+            CheckStatusColor(panel, "未标注", "WarningBrush");
+            await viewer.MoveAsync(1);
+            CheckImageDate(images[1]);
+            await viewer.MoveAsync(-1);
             panel.Model.Category = "归类"; panel.Model.Plan = "方案"; panel.Model.Operator = "服务端测试员";
             panel.Model.Note = "服务端表单";
             FindButtonByContent(viewer, "提交标注")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -46,6 +60,7 @@ internal static partial class RemoteWindowChecks
             viewer = new ServerImageViewer(endpoint, images, images[0].Path, new ServerAnnotationContext(folder, folder, records));
             Prepare(viewer); viewer.Show();
             await WaitAsync(() => FindButtonByContent(viewer, "撤销标注") is { IsVisible: true } && FindImage(viewer)?.Source is not null);
+            CheckStatusColor(FindDescendant<ServerAnnotationPanel>(viewer)!, "已标注 1 次", "SuccessBrush");
             FindButtonByContent(viewer, "撤销标注")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             await WaitAsync(() => !viewer.IsVisible);
             if ((await endpoint.GetAnnotationHistoryAsync(folder)).Length != 0 || viewer.AnnotationSubmitted)
@@ -56,5 +71,12 @@ internal static partial class RemoteWindowChecks
         {
             if (viewer.IsVisible) viewer.Close();
         }
+    }
+
+    private static void CheckStatusColor(ServerAnnotationPanel panel, string text, string brushKey)
+    {
+        var status = FindTextBlock(panel, text);
+        if (status is not { IsVisible: true } || !Equals(status.Foreground, panel.FindResource(brushKey)))
+            throw new Exception($"标注状态颜色不正确：{text}");
     }
 }

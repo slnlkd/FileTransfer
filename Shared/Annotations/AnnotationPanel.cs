@@ -18,6 +18,11 @@ public sealed class AnnotationPanel : UserControl, IDisposable
     private WrapPanel? remarkTags;
     private Button? categoryPicker, planPicker, submitButton, revokeButton, annotationHistoryButton;
     private TextBlock? categoryLabel, planLabel, annotationStatus, annotationImageName, annotationSummary, annotationError, annotationHint;
+    private readonly TextBlock annotationImageDate = new()
+    {
+        FontSize = 12, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Right,
+        Margin = new Thickness(0, 4, 0, 0), Visibility = Visibility.Collapsed
+    };
     private RotateTransform? annotationHistoryChevron;
     private StackPanel? annotationHistory;
     private TextBox? noteBox, operatorBox;
@@ -43,10 +48,12 @@ public sealed class AnnotationPanel : UserControl, IDisposable
         Source = model, Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
     };
     private Style? ThemeStyle(string key) => TryFindResource(key) as Style;
-    public void SelectImage(string imageName)
+    public void SelectImage(RemoteEntry image)
     {
         if (pickerPopup is not null) pickerPopup.IsOpen = false;
-        model.SelectImage(imageName);
+        annotationImageDate.Text = FormattableString.Invariant($"{image.CreatedLocal:yyyy-MM-dd HH:mm:ss}");
+        annotationImageDate.Visibility = Visibility.Visible;
+        model.SelectImage(image.Name);
     }
     public async Task LoadAsync()
     {
@@ -63,7 +70,10 @@ public sealed class AnnotationPanel : UserControl, IDisposable
         {
             case nameof(AnnotationViewModel.Category): categoryLabel!.Text = model.Category.Length == 0 ? "请选择异常归类" : model.Category; break;
             case nameof(AnnotationViewModel.Plan): planLabel!.Text = model.Plan.Length == 0 ? "请选择异常处理方案" : model.Plan; break;
-            case nameof(AnnotationViewModel.History): UpdateCurrentAnnotationStatus(); break;
+            case nameof(AnnotationViewModel.History):
+            case nameof(AnnotationViewModel.IsWriting):
+                UpdateCurrentAnnotationStatus();
+                break;
             case nameof(AnnotationViewModel.Dictionary): RefreshRemarkTags(); RefreshDictionaryHint(); break;
             case nameof(AnnotationViewModel.Error):
                 annotationError!.Text = model.Error;
@@ -71,10 +81,6 @@ public sealed class AnnotationPanel : UserControl, IDisposable
                 break;
             case nameof(AnnotationViewModel.IsBusy):
                 submitButton!.IsEnabled = revokeButton!.IsEnabled = !model.IsBusy;
-                break;
-            case nameof(AnnotationViewModel.IsWriting):
-                UpdateCurrentAnnotationStatus();
-                if (model.IsWriting) annotationStatus!.Text = model.PendingWrite == AnnotationWriteKind.Submit ? "正在提交…" : "正在撤销…";
                 break;
         }
     }
@@ -120,10 +126,11 @@ public sealed class AnnotationPanel : UserControl, IDisposable
 
     private Border BuildAnnotationSide(Brush line)
     {
-        var stack = new StackPanel { Margin = new Thickness(14) };
-        var title = new TextBlock { Text = "异常标注", FontSize = 15, FontWeight = FontWeights.SemiBold };
+        var stack = new StackPanel { Margin = new Thickness(12, 0, 12, 12) };
+        var title = new TextBlock { Text = "异常标注", FontSize = 12, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
         title.SetResourceReference(TextBlock.ForegroundProperty, "InkBrush");
-        stack.Children.Add(title);
+        var header = new Border { Height = 42, Padding = new Thickness(12, 0, 12, 0), Child = title };
+        DockPanel.SetDock(header, Dock.Top);
 
         stack.Children.Add(BuildAnnotationStatusCard(line));
 
@@ -235,11 +242,11 @@ public sealed class AnnotationPanel : UserControl, IDisposable
         {
             BorderBrush = line,
             BorderThickness = new Thickness(0, 1, 0, 0),
-            Padding = new Thickness(14, 10, 14, 12),
+            Padding = new Thickness(12, 10, 12, 12),
             Child = new StackPanel { Children = { annotationError, actions } }
         };
         DockPanel.SetDock(footer, Dock.Bottom);
-        var layout = new DockPanel { Children = { footer, scroll } };
+        var layout = new DockPanel { Children = { header, footer, scroll } };
         var side = new Border { BorderBrush = line, BorderThickness = new Thickness(1), CornerRadius = (CornerRadius)FindResource("PanelCornerRadius"), Child = layout };
         side.SetResourceReference(Border.BackgroundProperty, "SurfaceBrush");
         return side;
@@ -283,8 +290,11 @@ public sealed class AnnotationPanel : UserControl, IDisposable
         annotationImageName = new TextBlock
         {
             FontSize = 12, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap,
+            LineHeight = 16, LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+            Height = 32, TextTrimming = TextTrimming.CharacterEllipsis,
             Margin = new Thickness(0, 6, 0, 0)
         };
+        annotationImageDate.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrush");
         annotationSummary = new TextBlock
         {
             FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 5, 0, 0), Visibility = Visibility.Collapsed
@@ -298,7 +308,7 @@ public sealed class AnnotationPanel : UserControl, IDisposable
         System.Windows.Automation.AutomationProperties.SetName(annotationHistory, "标注历史");
         var card = new Border
         {
-            Child = new StackPanel { Children = { header, annotationImageName, annotationSummary, annotationHistory } },
+            Child = new StackPanel { Children = { header, annotationImageName, annotationImageDate, annotationSummary, annotationHistory } },
             Margin = new Thickness(0, 10, 0, 0), Padding = new Thickness(10, 8, 10, 8),
             CornerRadius = new CornerRadius(6), BorderBrush = line, BorderThickness = new Thickness(1)
         };
@@ -585,9 +595,19 @@ public sealed class AnnotationPanel : UserControl, IDisposable
         var latest = history.FirstOrDefault();
         bool annotated = latest is not null;
         annotationImageName!.Text = imageName;
-        annotationStatus!.Text = annotated ? $"已标注 {history.Count} 次" : "未标注";
+        string? historyError = model.HistoryReadError;
+        annotationStatus!.Text = model.PendingWrite switch
+        {
+            AnnotationWriteKind.Submit when model.IsWriting => "正在提交…",
+            AnnotationWriteKind.Revoke when model.IsWriting => "正在撤销…",
+            _ when historyError is not null => "状态未知",
+            _ => annotated ? $"已标注 {history.Count} 次" : "未标注"
+        };
+        annotationStatus.SetResourceReference(TextBlock.ForegroundProperty,
+            model.IsWriting ? "AccentBrush" : annotated ? "SuccessBrush" : "WarningBrush");
         annotationHistoryButton!.IsEnabled = annotated;
-        annotationHistoryButton.ToolTip = annotated ? "查看标注历史" : null;
+        annotationHistoryButton.ToolTip = historyError ?? (annotated ? "查看标注历史" : null);
+        ToolTipService.SetShowOnDisabled(annotationHistoryButton, historyError is not null);
         System.Windows.Automation.AutomationProperties.SetName(annotationHistoryButton,
             annotated ? $"{annotationStatus.Text}，查看标注历史" : annotationStatus.Text);
         annotationHistory!.Visibility = Visibility.Collapsed;

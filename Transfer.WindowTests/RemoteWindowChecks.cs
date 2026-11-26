@@ -960,9 +960,10 @@ internal static partial class RemoteWindowChecks
         var pathTop = path.TranslatePoint(new Point(0, 0), window).Y;
         var titleBottom = title.TranslatePoint(new Point(0, title.ActualHeight), window).Y;
         var listTop = FindTextBlocks(window).Single(block => block.Text == "图片列表").TranslatePoint(new Point(0, 0), window).Y;
-        if (path.TextTrimming != TextTrimming.None || path.TextWrapping != TextWrapping.Wrap || path.ActualHeight <= title.ActualHeight
-            || pathTop < titleBottom || pathTop + path.ActualHeight > listTop)
-            throw new Exception("长路径应在图片名下方完整换行显示，并且不遮挡图片列表");
+        if (path.TextTrimming != TextTrimming.CharacterEllipsis || path.TextWrapping != TextWrapping.NoWrap
+            || pathTop + path.ActualHeight > listTop
+            || Math.Abs(pathTop + path.ActualHeight / 2 - (titleBottom - title.ActualHeight / 2)) > 1)
+            throw new Exception("长路径应在标题栏左侧单行省略，与居中的文件名垂直对齐");
     }
     private static void CheckImageName(ImageViewer window, string name)
     {

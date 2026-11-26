@@ -203,11 +203,10 @@ internal static partial class RemoteWindowChecks
         var source = PresentationSource.FromVisual(annotationWindow);
         var rightInNote = new KeyEventArgs(Keyboard.PrimaryDevice, source, 0, Key.Right) { RoutedEvent = Keyboard.PreviewKeyDownEvent };
         note.RaiseEvent(rightInNote);
-        if (rightInNote.Handled || annotationWindow.CurrentPath != annotationEntries[0].Path)
-            throw new Exception("备注框内的方向键不应被拦截或切换图片");
-        preview.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, source, 0, Key.Right) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+        if (!rightInNote.Handled)
+            throw new Exception("标注窗口应在备注框获得焦点时接收方向键切图");
         await WaitAsync(() => annotationWindow.CurrentPath == annotationEntries[1].Path);
-        leftList.SelectedIndex = 0;
+        preview.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, source, 0, Key.Left) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
         await WaitAsync(() => annotationWindow.CurrentPath == annotationEntries[0].Path);
         var toggle = FindButton(annotationWindow, "折叠图片列表") ?? throw new Exception("左栏缺少折叠按钮");
         double previewWidth = preview.ActualWidth;
@@ -280,7 +279,7 @@ internal static partial class RemoteWindowChecks
         AnswerDraftConfirmation(true);
         annotationWindow.Close();
         if (annotationWindow.IsVisible) throw new Exception("确认放弃后应关闭标注窗口");
-        Console.WriteLine("通过：标注窗口布局、方向键隔离、标注进度、历史和已标注筛选");
+        Console.WriteLine("通过：标注窗口布局、全窗口方向键切图、标注进度、历史和已标注筛选");
         // 大图默认适应窗口，实际大小按钮应能来回切换而不是点一次就禁用。
         var bigBitmap = BitmapSource.Create(2000, 1500, 96, 96, PixelFormats.Bgra32, null, new byte[2000 * 1500 * 4], 2000 * 4);
         var bigEncoder = new PngBitmapEncoder();

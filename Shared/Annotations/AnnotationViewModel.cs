@@ -21,6 +21,7 @@ public sealed class AnnotationViewModel(
     public event Action<AnnotationWriteKind>? WriteSucceeded;
     public string ImageName { get; private set; } = "";
     public IReadOnlyList<RemoteAnnotation> History { get; private set; } = [];
+    public string? HistoryReadError => context.HistoryReadError;
     public RemoteDictionary Dictionary { get; private set; } = new([], []);
     public string Category { get => category; set => ChangeDraft(ref category, value); }
     public string Plan { get => plan; set => ChangeDraft(ref plan, value); }

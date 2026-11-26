@@ -61,7 +61,7 @@ public partial class RemoteBrowser : UserControl
     private bool dragArmed;
     private RemoteEntry[]? dragSelection;
     private bool dragInProgress;
-    public event Action<string, string>? StatusChanged;
+    public event Action<string, string, Range?>? StatusChanged;
     public event Action<string, double, bool, bool>? ProgressChanged;
     public event Action<int, int?>? SelectionCountChanged;
     public bool IsBusy => busy || dragInProgress;
@@ -170,8 +170,8 @@ public partial class RemoteBrowser : UserControl
         var navigationTime = Stopwatch.StartNew();
         bool ownedBusy = !busy;
         string progress = "正在打开 " + (path.Split('/').LastOrDefault(part => part.Length > 0) ?? "共享目录") + "…";
-        if (ownedBusy) ShowBusy(progress);
-        else { BusyText.Text = progress; SetStatus(progress); }
+        if (ownedBusy) StartBusyIndicator(progress);
+        else BusyText.Text = progress;
         int? appliedVersion = null;
         try
         {
@@ -220,7 +220,8 @@ public partial class RemoteBrowser : UserControl
             }
             UpdatePath(response);
             UpdateItemCount();
-            SetStatus(response.Warning ?? "正在更新目录…", response.Warning is null ? "MutedBrush" : "WarningBrush");
+            if (response.Warning is not null) SetStatus(response.Warning, "WarningBrush");
+            string statusBeforeSync = StatusText.Text;
             UpdateEmptyState();
             Log.Debug("目录首屏已绑定；路径 {RemoteDirectory}，累计耗时 {ElapsedMs} ms", path, navigationTime.ElapsedMilliseconds);
             if (rebuild || FolderTree.Items.Count == 0)
@@ -256,7 +257,7 @@ public partial class RemoteBrowser : UserControl
             await UpdateNgOverviewAsync(path, ct);
             if (version != navigationVersion) return;
             if (resetScroll) await ResetFileScrollAsync();
-            if (response.Warning is null && StatusText.Text == "正在更新目录…")
+            if (response.Warning is null && StatusText.Text == statusBeforeSync)
                 SetStatus(entries.Count == 0 ? EmptyTextFor(directory) : "就绪", "MutedBrush");
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested
@@ -635,6 +636,12 @@ public partial class RemoteBrowser : UserControl
         node.Items.Clear();
         foreach (var child in next) node.Items.Add(child);
     }
+    private void TreeExpander_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { TemplatedParent: TreeViewItem node }) return;
+        node.Focus();
+        node.IsSelected = true;
+    }
     private async void Tree_Selected(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
         // 代码同步高亮时不能再触发一次导航，否则树和列表会来回跳。
@@ -974,7 +981,9 @@ public partial class RemoteBrowser : UserControl
             if (button is null) return;
             button.BringIntoView();
             button.Focus();
-            SetStatus($"下一未标注批次：{nextDay.Date:yyyy.MM.dd} / {next.Name}，按 Enter 打开", "MutedBrush");
+            string prefix = $"下一未标注批次：{nextDay.Date:yyyy.MM.dd} / ";
+            const string suffix = "，按 Enter 打开";
+            SetStatus(prefix + next.Name + suffix, highlight: prefix.Length..(prefix.Length + next.Name.Length));
         }, DispatcherPriority.Loaded);
     }
 
@@ -1024,15 +1033,17 @@ public partial class RemoteBrowser : UserControl
         string selected = entry.IsDirectory ? images[0].Path : entry.Path;
         if (!images.Any(item => item.Path == selected)) { SetStatus("图片已从目录移除，请刷新后重试", "WarningBrush"); return; }
         RemoteAnnotation[] history = [];
+        string? historyReadError = null;
         try { history = await endpoint.GetAnnotationHistoryAsync(folder); }
         catch (Exception ex)
         {
-            // 旧服务端没有标注命令时仍然允许查看，右栏显示未标注。
+            historyReadError = "读取标注历史失败：" + ex.Message;
             Log.Warning(ex, "读取对线标注失败；目录 {RemoteDirectory}", folder);
         }
         if (!ReferenceEquals(client, endpoint)) return;
         string displayPath = (listing.RootName ?? "共享根目录") + "/" + folder;
-        var window = new ImageViewer(endpoint, images, selected, new AnnotationContext(folder, displayPath, history));
+        var context = new AnnotationContext(folder, displayPath, history) { HistoryReadError = historyReadError };
+        var window = new ImageViewer(endpoint, images, selected, context);
         var owner = Window.GetWindow(this);
         string listDirectory = ParentPath(folder);
         string? openedOverview = NgOverviewPanel.Visibility == Visibility.Visible ? ngOverviewPath : null;
@@ -1176,11 +1187,11 @@ public partial class RemoteBrowser : UserControl
                 (name, value) =>
                 {
                     if (value is null) ShowProgress(name);
-                    else { SetProgress(value.Value, $"{name} {value:F1}%"); SetStatus("正在上传 " + name, "MutedBrush"); }
+                    else SetProgress(value.Value, $"{name} {value:F1}%");
                 }, ct);
             navigation.InvalidateCache();
+            HideProgress();
             await NavigateAsync(targetDirectory, false, ct);
-            SetProgress(100, "上传完成");
             SetStatus(uploaded > 0 ? "上传完成" : "未上传文件", uploaded > 0 ? "SuccessBrush" : "MutedBrush");
             if (uploaded > 0) Toast.Show(Window.GetWindow(this), $"已上传 {uploaded} 个文件");
         }, cancellable: true);
@@ -1290,11 +1301,12 @@ public partial class RemoteBrowser : UserControl
         await ExecuteAsync(async ct =>
         {
             BusyText.Text = paths.Length == 1 ? "正在上传拖入的内容…" : $"正在上传 {paths.Length} 项…";
-            SetBusyProgress(0, "准备上传…");
+            ShowProgress(BusyText.Text);
             await fileOperations.UploadPathsAsync(endpoint, paths, targetDirectory,
                 name => Dialog.Confirm(Window.GetWindow(this), $"服务端已存在 {name}，是否覆盖？", "拖入上传"),
-                name => BusyText.Text = $"正在上传 {name}…", SetBusyProgress, ct);
+                name => ShowProgress($"正在上传 {name}…"), (value, text) => SetProgress(value, text), ct);
             navigation.InvalidateCache();
+            HideProgress();
             await NavigateAsync(targetDirectory, false, ct);
             SetStatus($"已拖入 {paths.Length} 项", "SuccessBrush");
             Toast.Show(Window.GetWindow(this), $"已拖入 {paths.Length} 项");
@@ -1405,12 +1417,11 @@ public partial class RemoteBrowser : UserControl
         BusyText.Text = selected.Count == 1
             ? (selected[0].IsDirectory ? "正在准备复制文件夹…" : "正在准备复制文件…")
             : $"正在准备复制 {selected.Count} 项…";
-        SetBusyProgress(0, BusyText.Text);
-        var paths = await clipboardTransfer.PrepareAsync(Endpoint, selected, SetBusyProgress, ct);
+        ShowProgress(BusyText.Text);
+        var paths = await clipboardTransfer.PrepareAsync(Endpoint, selected, (value, text) => SetProgress(value, text), ct);
         var data = new DataObject();
         data.SetData(DataFormats.FileDrop, paths);
         Clipboard.SetDataObject(data, true);
-        SetBusyProgress(100, "复制完成");
         SetStatus(selected.Count == 1 ? $"已复制 {selected[0].Name}，可在本地文件夹粘贴" : $"已复制 {selected.Count} 项，可在本地文件夹粘贴", "SuccessBrush");
         Toast.Show(Window.GetWindow(this), selected.Count == 1 ? $"已复制 {selected[0].Name}" : $"已复制 {selected.Count} 项");
     }, cancellable: true);
@@ -1455,26 +1466,38 @@ public partial class RemoteBrowser : UserControl
         SetStatus("正在取消…", "WarningBrush");
         operationCancel.Cancel();
     }
-    private void SetStatus(string text, string brushKey = "MutedBrush")
+    private void SetStatus(string text, string brushKey = "MutedBrush", Range? highlight = null)
     {
-        StatusText.Text = text;
-        StatusText.ToolTip = text;
+        ApplyStatusText(StatusText, text, highlight);
         BrowserStatusDot.Fill = ThemeBrush(brushKey);
-        StatusChanged?.Invoke(text, brushKey);
+        StatusChanged?.Invoke(text, brushKey, highlight);
+    }
+    internal static void ApplyStatusText(TextBlock target, string text, Range? highlight)
+    {
+        target.ToolTip = text;
+        if (highlight is not { } range)
+        {
+            target.Text = text;
+            return;
+        }
+        var emphasis = new System.Windows.Documents.Run(text[range]) { FontWeight = FontWeights.SemiBold };
+        emphasis.SetResourceReference(System.Windows.Documents.Run.ForegroundProperty, "AccentBrush");
+        target.Inlines.Clear();
+        target.Inlines.Add(new System.Windows.Documents.Run(text[..range.Start]));
+        target.Inlines.Add(emphasis);
+        target.Inlines.Add(new System.Windows.Documents.Run(text[range.End..]));
     }
     private void ShowBusy(string text)
+    {
+        StartBusyIndicator(text);
+        SetStatus(text);
+    }
+    private void StartBusyIndicator(string text)
     {
         BusyProgress.IsIndeterminate = true;
         BusyProgress.Value = 0;
         BusyText.Text = text;
-        SetStatus(text);
         busyIndicatorTimer.Start();
-    }
-    private void SetBusyProgress(double percent, string text)
-    {
-        BusyProgress.IsIndeterminate = false;
-        BusyProgress.Value = Math.Clamp(percent, 0, 100);
-        BusyText.Text = text;
     }
     private void DisplayBusyIndicator()
     {
@@ -1490,14 +1513,12 @@ public partial class RemoteBrowser : UserControl
     }
     private void ShowProgress(string text)
     {
-        UploadText.Text = text;
-        UploadText.ToolTip = text;
-        ProgressPanel.Visibility = Visibility.Visible;
-        ProgressChanged?.Invoke(text, 0, false, true);
+        SetProgress(0, text, indeterminate: true);
     }
     private void SetProgress(double value, string text, bool indeterminate = false)
     {
         UploadProgress.IsIndeterminate = indeterminate;
+        value = Math.Clamp(value, 0, 100);
         if (!indeterminate) UploadProgress.Value = value;
         UploadText.Text = text;
         UploadText.ToolTip = text;

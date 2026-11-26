@@ -11,6 +11,7 @@ using Serilog;
 using Transfer.Core;
 using Transfer.Core.Remote;
 using Transfer.Desktop;
+using RemoteFiles.Desktop;
 
 namespace RemoteFiles.Server;
 public partial class MainWindow : Window
@@ -28,7 +29,7 @@ public partial class MainWindow : Window
         settings = settingsPath; InitializeComponent(); TransferGrid.ItemsSource = transfers;
         UpdateThemeButton();
         WindowLayout.Attach(this, "remote-server", (DataGrid)Browser.FindName("FileGrid"), TransferGrid);
-        Browser.StatusChanged += (text, key) => SetStatus(text, key);
+        Browser.StatusChanged += SetStatus;
         Browser.ProgressChanged += UpdateBrowserProgress;
         Browser.SelectionCountChanged += UpdateSelection;
         try
@@ -129,10 +130,9 @@ public partial class MainWindow : Window
         try { Process.Start(new ProcessStartInfo(AppLogging.LogDirectory) { UseShellExecute = true }); }
         catch (Exception ex) { Log.Error(ex, "打开日志目录失败"); SetStatus(ex.Message, "DangerBrush"); }
     }
-    private void SetStatus(string text, string brushKey = "MutedBrush")
+    private void SetStatus(string text, string brushKey = "MutedBrush", Range? highlight = null)
     {
-        StatusText.Text = text;
-        StatusText.ToolTip = text;
+        RemoteBrowser.ApplyStatusText(StatusText, text, highlight);
         var brush = (Brush)FindResource(brushKey);
         StatusText.Foreground = brush;
         StatusDot.Fill = brush;

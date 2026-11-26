@@ -134,7 +134,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Margin="0,0,8,0"
+                    <TextBlock Margin="0,0,8,0" FontSize="11"
                                VerticalAlignment="Center"
                                Foreground="{DynamicResource MutedBrush}"
                                Text="服务端" />

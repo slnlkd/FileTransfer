@@ -63,12 +63,15 @@ public sealed class ImageViewer : Window
         FontSize = 11
     };
     private readonly StackPanel infoPanel = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock pixelPosition = new()
+    {
+        FontSize = 11, Width = 104, VerticalAlignment = VerticalAlignment.Center
+    };
+    private readonly System.Windows.Documents.Run pixelNumbers = new("—, —");
     private readonly TextBlock titleText = new()
     {
-        HorizontalAlignment = HorizontalAlignment.Center,
         VerticalAlignment = VerticalAlignment.Center,
         FontWeight = FontWeights.SemiBold,
-        Margin = new Thickness(150, 0, 150, 0),
         TextTrimming = TextTrimming.CharacterEllipsis
     };
     private readonly AnnotationContext? annotation;
@@ -153,7 +156,7 @@ public sealed class ImageViewer : Window
         SnapsToDevicePixels = true;
         WindowChrome.SetWindowChrome(this, new WindowChrome
         {
-            CaptionHeight = 44,
+            CaptionHeight = 36,
             ResizeBorderThickness = new Thickness(6),
             UseAeroCaptionButtons = false
         });
@@ -176,11 +179,11 @@ public sealed class ImageViewer : Window
 
         var panel = new DockPanel();
 
-        // 标题栏：文件名居中，窗口按钮在右侧，统一使用线性图标。
+        // 等宽的左右区域让文件名始终以整个窗口为中心。
         var titleButtons = new StackPanel { Orientation = Orientation.Horizontal };
         var minimize = CreateTitleButton("IconMinimizeGeometry", "最小化");
         var maximize = CreateTitleButton("IconMaximizeGeometry", "最大化 / 还原");
-        var close = CreateTitleButton("IconCloseGeometry", "关闭");
+        var close = CreateTitleButton("IconCloseGeometry", "关闭", "ViewerCloseButton");
         foreach (var button in new[] { minimize, maximize, close })
         {
             WindowChrome.SetIsHitTestVisibleInChrome(button, true);
@@ -194,45 +197,30 @@ public sealed class ImageViewer : Window
             if (maximize.Content is System.Windows.Shapes.Path icon)
                 icon.Data = (Geometry)FindResource(WindowState == WindowState.Maximized ? "IconRestoreGeometry" : "IconMaximizeGeometry");
         };
-        var titleGrid = new Grid();
-        titleGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(44) });
-        titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var titleGrid = new Grid { Height = 36 };
+        double captionWidth = titleButtons.Children.Count * close.Width;
+        titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = captionWidth });
+        titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
+        titleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = captionWidth });
+        titleText.Margin = new Thickness(8, 0, 8, 0);
+        titleText.TextAlignment = TextAlignment.Center;
+        Grid.SetColumn(titleText, 1);
+        titleGrid.Children.Add(titleText);
         if (annotation is not null)
         {
-            titleGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             var pathLabel = new TextBlock
             {
                 Text = annotation.DisplayPath,
-                ToolTip = annotation.DisplayPath,
                 Foreground = muted,
-                HorizontalAlignment = HorizontalAlignment.Left,
+                FontSize = 11,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(24, 0, 24, 8),
-                TextWrapping = TextWrapping.Wrap
+                Margin = new Thickness(14, 0, 4, 0),
+                TextTrimming = TextTrimming.CharacterEllipsis
             };
-            Grid.SetRow(pathLabel, 1);
-            Grid.SetColumnSpan(pathLabel, 2);
             titleGrid.Children.Add(pathLabel);
-            WindowChrome.SetIsHitTestVisibleInChrome(pathLabel, true);
-            WindowChrome.SetIsHitTestVisibleInChrome(titleText, true);
-            var defaultTitleMargin = titleText.Margin;
-            titleGrid.SizeChanged += (_, e) =>
-            {
-                if (!e.WidthChanged) return;
-                var pathText = new FormattedText(pathLabel.Text, System.Globalization.CultureInfo.CurrentUICulture,
-                    pathLabel.FlowDirection, new Typeface(pathLabel.FontFamily, pathLabel.FontStyle, pathLabel.FontWeight, pathLabel.FontStretch),
-                    pathLabel.FontSize, pathLabel.Foreground, VisualTreeHelper.GetDpi(pathLabel).PixelsPerDip);
-                double reserve = Math.Max(defaultTitleMargin.Left, Math.Ceiling(pathText.WidthIncludingTrailingWhitespace) + 40);
-                bool inline = reserve <= e.NewSize.Width / 3;
-                Grid.SetRow(pathLabel, inline ? 0 : 1);
-                pathLabel.Margin = inline ? new Thickness(24, 0, 0, 0) : new Thickness(24, 0, 24, 8);
-                titleText.Margin = inline ? new Thickness(reserve, 0, reserve, 0) : defaultTitleMargin;
-            };
         }
-        Grid.SetColumnSpan(titleText, 2);
-        titleGrid.Children.Add(titleText);
-        Grid.SetColumn(titleButtons, 1);
+        titleButtons.HorizontalAlignment = HorizontalAlignment.Right;
+        Grid.SetColumn(titleButtons, 2);
         titleGrid.Children.Add(titleButtons);
         titleBar = new Border
         {
@@ -249,7 +237,8 @@ public sealed class ImageViewer : Window
         transform.Children.Add(translate);
         image.RenderTransform = transform;
         canvas.Children.Add(image);
-        stage.Background = Background;
+        stage.Background = Brushes.Transparent;
+        stage.FocusVisualStyle = null;
         stage.ClipToBounds = true;
         stage.Children.Add(canvas);
         stage.Children.Add(stageMessage);
@@ -326,6 +315,13 @@ public sealed class ImageViewer : Window
         infoPanel.Children.Add(CreateInfoSeparator());
         infoPanel.Children.Add(CreateInfoIcon("IconSizeGeometry"));
         infoPanel.Children.Add(sizeText);
+        infoPanel.Children.Add(CreateInfoSeparator());
+        pixelPosition.SetResourceReference(TextBlock.ForegroundProperty, "InkBrush");
+        pixelNumbers.SetResourceReference(System.Windows.Documents.Run.ForegroundProperty, "AccentBrush");
+        pixelPosition.Inlines.Add(pixelNumbers);
+        pixelPosition.Inlines.Add(new System.Windows.Documents.Run(" 像素"));
+        pixelPosition.ToolTip = "鼠标所在的原图像素坐标";
+        infoPanel.Children.Add(pixelPosition);
         left.Children.Add(infoPanel);
 
         actualSizeButton = CreateIconButton("IconActualSizeGeometry", "缩放到实际大小 (100%)", out var actualSizeGlyph);
@@ -385,9 +381,24 @@ public sealed class ImageViewer : Window
         };
         DockPanel.SetDock(statusBar, Dock.Bottom);
         panel.Children.Add(statusBar);
+        var previewFrame = new Border
+        {
+            Child = stage,
+            BorderThickness = new Thickness(1),
+            CornerRadius = (CornerRadius)FindResource("PanelCornerRadius"),
+            SnapsToDevicePixels = true
+        };
+        previewFrame.SetResourceReference(Border.BorderBrushProperty, "HairlineBrush");
+        var stageClip = new RectangleGeometry
+        {
+            RadiusX = previewFrame.CornerRadius.TopLeft - previewFrame.BorderThickness.Left,
+            RadiusY = previewFrame.CornerRadius.TopLeft - previewFrame.BorderThickness.Top
+        };
+        stage.Clip = stageClip;
+        stage.SizeChanged += (_, e) => stageClip.Rect = new Rect(e.NewSize);
         // 先停靠状态栏，再停靠缩略图条，最后让舞台填充剩余空间。
         panel.Children.Add(thumbBar);
-        panel.Children.Add(stage);
+        panel.Children.Add(previewFrame);
 
         if (annotation is null) Content = panel;
         else
@@ -443,26 +454,33 @@ public sealed class ImageViewer : Window
             if (infoPanel.Children.Count > 0 && infoPanel.Children[0] is Border) infoPanel.Children.RemoveAt(0);
             // 按屏幕可用区域自适应，不强行放大到 1440×900（高 DPI 下会超出屏幕）。
             var workArea = SystemParameters.WorkArea;
-            Width = Math.Max(1000, Math.Min(1440, workArea.Width * 0.9));
-            Height = Math.Max(600, Math.Min(900, workArea.Height * 0.9));
-            MinWidth = 960;
-            MinHeight = 560;
+            MinWidth = 880;
+            MinHeight = 480;
+            Width = Math.Clamp(workArea.Width * 0.9, MinWidth, 1440);
+            Height = Math.Clamp(workArea.Height * 0.9, MinHeight, 900);
             stage.Focusable = true;
             System.Windows.Automation.AutomationProperties.SetName(stage, "图片预览");
             stage.PreviewMouseLeftButtonDown += (_, _) => stage.Focus();
+            FocusManager.SetFocusedElement(this, stage);
+            bool initialFocusApplied = false;
+            void FocusPreviewOnOpen()
+            {
+                if (initialFocusApplied || !IsLoaded || !IsActive) return;
+                initialFocusApplied = stage.IsKeyboardFocusWithin || stage.Focus();
+            }
+            Activated += (_, _) => FocusPreviewOnOpen();
+            Loaded += (_, _) => Dispatcher.BeginInvoke(new Action(FocusPreviewOnOpen), DispatcherPriority.Input);
         }
 
         Loaded += async (_, _) =>
         {
-            if (annotation is not null && IsActive) stage.Focus();
             FitToWindow();
             await LoadAnnotationDictionaryAsync();
             if (!lifetime.IsCancellationRequested) await ShowCurrentAsync();
         };
         previousArrow.Click += async (_, _) => await MoveAsync(-1);
         nextArrow.Click += async (_, _) => await MoveAsync(1);
-        UIElement navigationSurface = annotation is null ? this : stage;
-        navigationSurface.PreviewKeyDown += async (_, e) =>
+        PreviewKeyDown += async (_, e) =>
         {
             if (e.Key is not (Key.Left or Key.Right)) return;
             e.Handled = true;
@@ -627,17 +645,21 @@ public sealed class ImageViewer : Window
             FontSize = 12,
             FontWeight = FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(12, 0, 0, 0)
+            Margin = new Thickness(12, 0, 0, 0),
+            TextTrimming = TextTrimming.CharacterEllipsis
         };
         title.SetResourceReference(TextBlock.ForegroundProperty, "InkBrush");
+        int annotatedCount = thumbs.Count(item => item.Annotated);
         var count = new TextBlock
         {
-            Text = $"已标注 {thumbs.Count(item => item.Annotated)} / {thumbs.Count} 张",
+            Text = $"已标注 {annotatedCount} / {thumbs.Count} 张",
             FontSize = 11,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 6, 0),
             Foreground = muted
         };
+        if (annotatedCount > 0)
+            count.SetResourceReference(TextBlock.ForegroundProperty, "SuccessBrush");
         head.Children.Add(title);
         Grid.SetColumn(count, 1);
         head.Children.Add(count);
@@ -798,7 +820,7 @@ public sealed class ImageViewer : Window
     private Task LoadAnnotationDictionaryAsync() => annotationPanel?.LoadAsync() ?? Task.CompletedTask;
     private Task LoadAnnotationForCurrentAsync()
     {
-        annotationPanel?.SelectImage(images[index].Name);
+        annotationPanel?.SelectImage(images[index]);
         return Task.CompletedTask;
     }
 
@@ -842,7 +864,7 @@ public sealed class ImageViewer : Window
         });
     }
 
-    private Button CreateTitleButton(string geometryKey, string tooltip)
+    private Button CreateTitleButton(string geometryKey, string tooltip, string styleKey = "ViewerCaptionButton")
     {
         var icon = new System.Windows.Shapes.Path
         {
@@ -854,15 +876,9 @@ public sealed class ImageViewer : Window
         {
             Content = icon,
             ToolTip = tooltip,
-            Width = 44,
-            Height = 44,
-            Padding = new Thickness(0),
-            BorderThickness = new Thickness(0),
-            Background = Brushes.Transparent,
-            Foreground = ThemeBrush("InkBrush", Color.FromRgb(0xE7, 0xE9, 0xEC))
+            Style = ThemeStyle(styleKey)
         };
-        var style = ThemeStyle("GhostButton");
-        if (style is not null) button.Style = style;
+        System.Windows.Automation.AutomationProperties.SetName(button, tooltip);
         return button;
     }
 
@@ -1011,6 +1027,7 @@ public sealed class ImageViewer : Window
     // 指针在图片区域内就保持两侧箭头可见：靠近边缘提亮到实体，离开窗口 0.9 秒后淡出。
     private void Stage_MouseMove(object sender, MouseEventArgs e)
     {
+        UpdatePixelPosition(e.GetPosition(image));
         var point = e.GetPosition(stage);
         double zone = Math.Clamp(stage.ActualWidth * 0.16, 96, 220);
         RevealArrow(previousArrow, point.X <= zone);
@@ -1019,6 +1036,7 @@ public sealed class ImageViewer : Window
 
     private void Stage_MouseEnter(object sender, MouseEventArgs e)
     {
+        UpdatePixelPosition(e.GetPosition(image));
         arrowHideTimer.Stop();
         SetArrowVisual(previousArrow, previousArrow.IsEnabled ? ArrowDimOpacity : 0);
         SetArrowVisual(nextArrow, nextArrow.IsEnabled ? ArrowDimOpacity : 0);
@@ -1026,8 +1044,19 @@ public sealed class ImageViewer : Window
 
     private void Stage_MouseLeave(object sender, MouseEventArgs e)
     {
+        pixelNumbers.Text = "—, —";
         arrowHideTimer.Stop();
         arrowHideTimer.Start();
+    }
+
+    private void UpdatePixelPosition(Point point)
+    {
+        if (image.Source is BitmapSource bitmap
+            && point.X >= 0 && point.Y >= 0 && point.X < bitmap.PixelWidth && point.Y < bitmap.PixelHeight)
+        {
+            pixelNumbers.Text = $"{(int)point.X}, {(int)point.Y}";
+        }
+        else pixelNumbers.Text = "—, —";
     }
 
     private void RevealArrow(Button arrow, bool near)
@@ -1133,7 +1162,9 @@ public sealed class ImageViewer : Window
     private double FitZoom()
     {
         if (image.Source is not BitmapSource bitmap || canvas.ActualWidth <= 0 || canvas.ActualHeight <= 0) return 1;
-        double fit = Math.Min(canvas.ActualWidth / bitmap.PixelWidth, canvas.ActualHeight / bitmap.PixelHeight);
+        const double sideInset = 3;
+        double availableWidth = canvas.ActualWidth - 2 * sideInset;
+        double fit = Math.Min(availableWidth / bitmap.PixelWidth, canvas.ActualHeight / bitmap.PixelHeight);
         return Math.Clamp(Math.Min(fit, 1.0), 0.05, 8);
     }
 
@@ -1509,6 +1540,7 @@ public sealed class ImageViewer : Window
 
     private async Task ShowCurrentAsync()
     {
+        pixelNumbers.Text = "—, —";
         SyncAnnotationSelection();
         await LoadAnnotationForCurrentAsync();
         var previousCancel = loadCancel;
@@ -1563,7 +1595,7 @@ public sealed class ImageViewer : Window
         formatText.Text = Path.GetExtension(CurrentPath).TrimStart('.').ToUpperInvariant();
         dimensionText.Text = $"{bitmap.PixelWidth} × {bitmap.PixelHeight}";
         sizeText.Text = images[index].Length > 0 ? FormatSize(images[index].Length) : "";
-        infoPanel.ToolTip = $"{images[index].Name}\n{CurrentPath}\n创建：{images[index].CreatedLocal:yyyy.MM.dd HH:mm}";
+        infoPanel.ToolTip = $"{images[index].Name}\n{annotation?.DisplayPath ?? CurrentPath}\n创建：{images[index].CreatedLocal:yyyy.MM.dd HH:mm}";
     }
 
     private static BitmapSource Decode(byte[] bytes)
