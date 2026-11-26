@@ -24,6 +24,8 @@ internal static partial class RemoteWindowChecks
     public static async Task CheckNavigationBusyAsync(string temp)
     {
         await CheckSlowTreeResponsivenessAsync();
+        await CheckNavigationContinuationsAsync(temp);
+        await CheckConnectionHandshakeAsync(temp);
         string root = Path.Combine(temp, "navigation-busy-root");
         Directory.CreateDirectory(Path.Combine(root, "机台", "日期"));
         foreach (int number in Enumerable.Range(1, 45)) Directory.CreateDirectory(Path.Combine(root, "机台", "日期", number.ToString()));

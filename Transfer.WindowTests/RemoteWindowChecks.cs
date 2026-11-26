@@ -26,7 +26,7 @@ internal static partial class RemoteWindowChecks
     {
         switch (group)
         {
-            case "state": await AnnotationStateChecks.RunAsync(); break;
+            case "state": await AnnotationStateChecks.RunAsync(); await BrowserStateChecks.RunNavigationAsync(); await NgProgressStateChecks.RunAsync(); break;
             case "navigation": await CheckNavigationBusyAsync(temp); break;
             case "images": await CheckImageViewerGroupAsync(temp); break;
             case "logs": await CheckLogDirectoryOpeningAsync(temp); break;
@@ -38,6 +38,8 @@ internal static partial class RemoteWindowChecks
     public static async Task RunAsync(string temp)
     {
         await AnnotationStateChecks.RunAsync();
+        await BrowserStateChecks.RunNavigationAsync();
+        await NgProgressStateChecks.RunAsync();
         CheckLegacyClientSettingsMigration(temp);
         await CheckNavigationBusyAsync(temp);
         await CheckLogDirectoryOpeningAsync(temp);
@@ -1035,11 +1037,12 @@ internal static partial class RemoteWindowChecks
         menu.IsOpen = false;
         Clipboard.Clear();
         copy.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-        await WaitAsync(() => Clipboard.ContainsImage() && Clipboard.ContainsFileDropList());
+        BitmapSource? bitmap = null;
+        // OLE 可能已公布图片格式但尚未完成渲染；等待可读取的图片，而不仅是格式存在。
+        await WaitAsync(() => (bitmap = Clipboard.GetImage()) is not null && Clipboard.ContainsFileDropList());
         string cached = Clipboard.GetFileDropList().Cast<string>().Single();
         if (!File.ReadAllBytes(cached).SequenceEqual(File.ReadAllBytes(original)))
             throw new Exception("图片复制未保留原始文件内容");
-        var bitmap = Clipboard.GetImage();
         if (bitmap is null || bitmap.PixelWidth != 2 || bitmap.PixelHeight != 2)
             throw new Exception($"复制缺少原图剪贴板数据：{bitmap?.PixelWidth}×{bitmap?.PixelHeight}");
         Console.WriteLine("通过：图片菜单仅保留复制、配色正确、复制原文件及图片双格式");

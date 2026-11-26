@@ -24,7 +24,9 @@ namespace RemoteFiles.Desktop;
 public partial class RemoteBrowser : UserControl
 {
     private RemoteFileClient? client;
-    private string directory = "";
+    private int connectionVersion;
+    private readonly DirectoryNavigationState navigation = new();
+    private string directory => navigation.Path;
     private string? fullDirectoryPath;
     private bool busy;
     private ImageViewer? annotationWindow;
@@ -34,14 +36,12 @@ public partial class RemoteBrowser : UserControl
     private bool suppressTreeSelected;
     // 逐级展开并选中时，Expanded 处理器不能再拉一次子项，否则会把刚选中的节点替换掉。
     private bool syncingTree;
-    private System.Collections.ObjectModel.ObservableCollection<RemoteEntry> entries = [];
-    private const int PageSize = 500;
-    private int totalCount;
-    private bool allLoaded = true;
-    private Task pageLoad = Task.CompletedTask;
-    private readonly Dictionary<string, (DateTime At, RemoteEntry[] Entries)> unfilteredCache = [];
+    private System.Collections.ObjectModel.ObservableCollection<RemoteEntry> entries => navigation.Entries;
+    private int totalCount => navigation.Total;
+    private bool allLoaded => navigation.AllLoaded;
+    private Task pageLoad => navigation.PageLoad;
     private readonly HashSet<TreeViewItem> loadingTreeNodes = [];
-    private int navigationVersion;
+    private int navigationVersion => navigation.ListingVersion;
     private CancellationTokenSource? operationCancel;
     private static readonly TimeSpan BusyIndicatorDelay = TimeSpan.FromMilliseconds(150);
     private const int LargeTextThreshold = 1024 * 1024;
@@ -50,11 +50,9 @@ public partial class RemoteBrowser : UserControl
     private int pendingUp;
     private bool navigatingUp;
     private string? listFilter;
-    private string? ngOverviewPath;
-    private RemoteNgDay[] ngDays = [];
-    private bool ngOverviewHasResult;
-    private static readonly string[] NgDateFormats = ["yyyy-MM-dd", "yyyy.MM.dd", "yyyyMMdd"];
-    private readonly Dictionary<DateTime, bool> ngExpandedDays = [];
+    private readonly NgProgressViewModel ngProgress = new();
+    private string? ngOverviewPath => ngProgress.Path;
+    private bool ngOverviewHasResult => ngProgress.HasResult;
     private Func<string, string?>? localEmptyText = null;
     private ScrollViewer? fileScroll;
     private bool scrollHooked;
@@ -71,6 +69,8 @@ public partial class RemoteBrowser : UserControl
     private async void Grid_Sorting(object sender, DataGridSortingEventArgs e)
     {
         if (CollectionViewSource.GetDefaultView(FileGrid.ItemsSource) is not ListCollectionView view) return;
+        int version = navigationVersion;
+        var listing = entries;
         e.Handled = true;
         string member = e.Column.SortMemberPath;
         if (string.IsNullOrEmpty(member)) { view.CustomSort = null; return; }
@@ -78,37 +78,18 @@ public partial class RemoteBrowser : UserControl
         if (!allLoaded)
         {
             SetStatus("正在加载全部条目…", "MutedBrush");
-            await LoadAllPagesAsync();
+            if (!await LoadAllPagesAsync()) return;
         }
+        if (version != navigationVersion || !ReferenceEquals(listing, entries)) return;
         var direction = e.Column.SortDirection == ListSortDirection.Ascending ? ListSortDirection.Descending : ListSortDirection.Ascending;
         foreach (var column in FileGrid.Columns) column.SortDirection = null;
-        view.CustomSort = new EntryComparer(member, direction);
+        view.CustomSort = new RemoteEntryComparer(member, direction);
         e.Column.SortDirection = direction;
-    }
-    private sealed class EntryComparer(string member, ListSortDirection direction) : IComparer
-    {
-        public int Compare(object? x, object? y)
-        {
-            var left = (RemoteEntry)x!;
-            var right = (RemoteEntry)y!;
-            // 与资源管理器一致：文件夹始终排在文件前，组内按当前列排序。
-            if (left.IsDirectory != right.IsDirectory) return left.IsDirectory ? -1 : 1;
-            int result = member switch
-            {
-                "Name" => NaturalComparer.Compare(left.Name, right.Name),
-                "Kind" => string.Compare(left.Kind, right.Kind, StringComparison.OrdinalIgnoreCase),
-                "Size" => left.Length.CompareTo(right.Length),
-                "CreatedLocal" => left.CreatedLocal.CompareTo(right.CreatedLocal),
-                "ModifiedLocal" => left.ModifiedLocal.CompareTo(right.ModifiedLocal),
-                "AnnotationStatus" => string.Compare(left.AnnotationStatus, right.AnnotationStatus, StringComparison.OrdinalIgnoreCase),
-                _ => 0
-            };
-            return direction == ListSortDirection.Descending ? -Math.Sign(result) : Math.Sign(result);
-        }
     }
     public RemoteBrowser()
     {
         InitializeComponent();
+        navigation.PageReceived += ApplyAnnotationStatuses;
         busyIndicatorTimer.Tick += (_, _) => DisplayBusyIndicator();
         ((ContextMenu)FindResource("ColumnSettingsMenu")).Opened += ColumnSettings_Opened;
         FileGrid.Columns[0].SortDirection = ListSortDirection.Ascending;
@@ -136,19 +117,23 @@ public partial class RemoteBrowser : UserControl
     public async Task ConnectAsync(RemoteFileClient endpoint)
     {
         if (busy) throw new IOException("当前操作尚未结束，请稍后重新连接");
-        client = endpoint; directory = "";
+        int connection = ++connectionVersion;
+        client = endpoint;
+        navigation.SetClient(new RemoteDirectoryClient(endpoint));
         ProtocolWarning = null;
-        unfilteredCache.Clear();
+        navigation.InvalidateCache();
         foreach (var column in FileGrid.Columns) column.SortDirection = null;
         FileGrid.Columns[0].SortDirection = ListSortDirection.Ascending;
         try
         {
             var hello = await endpoint.CallAsync(new("hello"));
+            if (connection != connectionVersion) return;
             if (hello.Protocol > 0 && hello.Protocol != RemoteProtocol.Version)
                 ProtocolWarning = $"客户端协议 v{RemoteProtocol.Version}，服务端协议 v{hello.Protocol}，请更新两端";
         }
         catch (Exception ex)
         {
+            if (connection != connectionVersion) return;
             ProtocolWarning = "服务端不支持版本握手，可能为旧版本，请更新服务端";
             Log.Warning(ex, "远程文件服务端版本握手失败");
         }
@@ -156,16 +141,15 @@ public partial class RemoteBrowser : UserControl
     }
     public void Disconnect()
     {
+        connectionVersion++;
         dragArmed = false;
         dragSelection = null;
         operationCancel?.Cancel();
         client = null;
         ProtocolWarning = null;
-        entries = [];
-        totalCount = 0; allLoaded = true;
-        navigationVersion++;
+        navigation.SetClient(null);
         scrollResetPending = false;
-        unfilteredCache.Clear();
+        navigation.InvalidateCache();
         FolderTree.Items.Clear();
         FileGrid.ItemsSource = null;
         annotationIndex = null;
@@ -187,37 +171,30 @@ public partial class RemoteBrowser : UserControl
         string progress = "正在打开 " + (path.Split('/').LastOrDefault(part => part.Length > 0) ?? "共享目录") + "…";
         if (ownedBusy) ShowBusy(progress);
         else { BusyText.Text = progress; SetStatus(progress); }
+        int? appliedVersion = null;
         try
         {
             var endpoint = Endpoint;
-            var request = new RemoteRequest("list", path, Filter: listFilter, Take: PageSize);
-            var response = await Task.Run(() => endpoint.CallAsync(request, ct), ct);
-            if (!ReferenceEquals(client, endpoint)) return;
+            string previous = directory;
+            var response = await navigation.NavigateAsync(path, listFilter, ct);
+            if (response is null || !ReferenceEquals(client, endpoint)) return;
+            int version = navigationVersion;
+            appliedVersion = version;
             Log.Debug("目录列表已返回；路径 {RemoteDirectory}，耗时 {ElapsedMs} ms", path, navigationTime.ElapsedMilliseconds);
-            if (!string.Equals(directory, path, StringComparison.Ordinal))
+            if (!string.Equals(previous, path, StringComparison.Ordinal))
             {
                 foreach (var column in FileGrid.Columns) column.SortDirection = null;
                 FileGrid.Columns[0].SortDirection = ListSortDirection.Ascending;
             }
             var nameDirection = FileGrid.Columns[0].SortDirection;
-            string previous = directory;
-            directory = path;
-            navigationVersion++;
             scrollResetPending = false;
             annotationIndex = null;
             annotationReadError = null;
             FileGrid.SelectionMode = IsDateDirectory(path) ? DataGridSelectionMode.Single : DataGridSelectionMode.Extended;
-            var page = response.Entries ?? [];
-            entries = new(page);
-            totalCount = response.Total > 0 ? response.Total : page.Length;
-            allLoaded = page.Length >= totalCount;
-            // 未过滤且已取全的列表可直接供目录树使用，避免同一路径再请求一次。
-            if (string.IsNullOrEmpty(listFilter) && allLoaded)
-                unfilteredCache[path] = (DateTime.UtcNow, page);
             FileGrid.ItemsSource = entries;
             if (nameDirection is { } direction && CollectionViewSource.GetDefaultView(entries) is ListCollectionView view)
             {
-                view.CustomSort = new EntryComparer("Name", direction);
+                view.CustomSort = new RemoteEntryComparer("Name", direction);
                 FileGrid.Columns[0].SortDirection = direction;
             }
             // 返回上一级时定位到刚才所在的文件夹；其他目录切换回到顶部，同目录刷新保留位置。
@@ -230,6 +207,7 @@ public partial class RemoteBrowser : UserControl
                 {
                     int before = entries.Count;
                     await LoadMoreAsync(ct);
+                    if (version != navigationVersion) return;
                     if (entries.Count == before) break;
                     anchor = entries.FirstOrDefault(e => e.Path == previous && e.IsDirectory);
                 }
@@ -251,7 +229,9 @@ public partial class RemoteBrowser : UserControl
                 {
                     FolderTree.Items.Clear();
                     var root = MakeNode(new(response.RootName ?? "共享根目录", "", true, 0, default, default));
-                    SetChildren(root, await UnfilteredEntriesAsync(path, ct));
+                    var children = await UnfilteredEntriesAsync(path, ct);
+                    if (version != navigationVersion) return;
+                    SetChildren(root, children);
                     root.IsExpanded = true;
                     FolderTree.Items.Add(root);
                 }
@@ -260,19 +240,26 @@ public partial class RemoteBrowser : UserControl
             else if (FindNode(FolderTree.Items, path) is TreeViewItem { IsExpanded: true } node)
             {
                 // 目录树始终展示未过滤的完整内容，过滤只作用于右侧列表；折叠的节点不预加载。
-                SetChildren(node, await UnfilteredEntriesAsync(path, ct));
+                var children = await UnfilteredEntriesAsync(path, ct);
+                if (version != navigationVersion) return;
+                SetChildren(node, children);
             }
             // 双击文件夹、点面包屑、退格或“上一级”切换目录后，把树的选中项同步到当前目录。
             BusyText.Text = "正在同步目录位置…";
             await SyncTreeSelectionAsync(path);
+            if (version != navigationVersion) return;
             BusyText.Text = "正在读取标注状态…";
             await RefreshAnnotationStatusAsync(path, ct);
+            if (version != navigationVersion) return;
             BusyText.Text = "正在读取 NG 进度…";
             await UpdateNgOverviewAsync(path, ct);
+            if (version != navigationVersion) return;
             if (resetScroll) await ResetFileScrollAsync();
             if (response.Warning is null && StatusText.Text == "正在更新目录…")
                 SetStatus(entries.Count == 0 ? EmptyTextFor(directory) : "就绪", "MutedBrush");
         }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested
+            && (client is null || appliedVersion is int applied && applied != navigationVersion)) { }
         finally
         {
             if (ownedBusy) HideBusy();
@@ -286,33 +273,14 @@ public partial class RemoteBrowser : UserControl
         SelectionCountChanged?.Invoke(FileGrid.SelectedItems.Count, count);
     }
     // 目录树始终使用未过滤结果，且不受分页影响；结果短时间缓存，避免来回切换时重复请求。
-    private async Task<RemoteEntry[]> UnfilteredEntriesAsync(string path, CancellationToken ct)
-    {
-        if (unfilteredCache.TryGetValue(path, out var cached) && DateTime.UtcNow - cached.At < TimeSpan.FromSeconds(10)) return cached.Entries;
-        var endpoint = Endpoint;
-        var response = await Task.Run(() => endpoint.CallAsync(new("list", path), ct), ct);
-        var all = response.Entries ?? [];
-        if (ReferenceEquals(client, endpoint)) unfilteredCache[path] = (DateTime.UtcNow, all);
-        return all;
-    }
-    private Task LoadMoreAsync(CancellationToken ct = default)
-    {
-        if (!pageLoad.IsCompleted) return pageLoad;
-        if (allLoaded || client is null) return Task.CompletedTask;
-        return pageLoad = LoadPageAsync(ct);
-    }
-    private async Task LoadPageAsync(CancellationToken ct)
+    private Task<RemoteEntry[]> UnfilteredEntriesAsync(string path, CancellationToken ct) => navigation.GetUnfilteredAsync(path, ct);
+    private async Task LoadMoreAsync(CancellationToken ct = default)
     {
         int version = navigationVersion;
         try
         {
-            var response = await Endpoint.CallAsync(new("list", directory, Filter: listFilter, Skip: entries.Count, Take: PageSize), ct);
+            await navigation.LoadMoreAsync(ct);
             if (version != navigationVersion) return;
-            if (response.Total > 0) totalCount = response.Total;
-            var page = response.Entries ?? [];
-            ApplyAnnotationStatuses(page);
-            foreach (var entry in page) entries.Add(entry);
-            allLoaded = page.Length == 0 || entries.Count >= totalCount;
             UpdateItemCount();
             UpdateEmptyState();
             if (CollectionViewSource.GetDefaultView(entries) is ListCollectionView view && view.CustomSort is not null) view.Refresh();
@@ -320,18 +288,22 @@ public partial class RemoteBrowser : UserControl
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
         {
+            if (version != navigationVersion) return;
             Log.Warning(ex, "加载更多条目失败；目录 {RemoteDirectory}", directory);
             SetStatus("加载更多失败：" + ex.Message, "DangerBrush");
         }
     }
-    private async Task LoadAllPagesAsync()
+    private async Task<bool> LoadAllPagesAsync()
     {
-        while (!allLoaded && client is not null)
+        int version = navigationVersion;
+        var listing = entries;
+        while (!allLoaded && client is not null && version == navigationVersion && ReferenceEquals(listing, entries))
         {
             int before = entries.Count;
             await LoadMoreAsync();
             if (entries.Count == before) break;
         }
+        return version == navigationVersion && ReferenceEquals(listing, entries) && allLoaded;
     }
     private void FileScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
@@ -344,8 +316,7 @@ public partial class RemoteBrowser : UserControl
     }
     private void ShowDisconnectedPath()
     {
-        ngOverviewPath = null;
-        ngExpandedDays.Clear();
+        ngProgress.Reset();
         ClearNgOverviewResult("");
         SetNgOverviewVisible(false);
         Breadcrumb.Children.Clear();
@@ -519,6 +490,7 @@ public partial class RemoteBrowser : UserControl
     private async Task SyncTreeSelectionAsync(string path)
     {
         if (rebuilding) return;
+        int version = navigationVersion;
         var node = FindNode(FolderTree.Items, path);
         if (node is null && path.Length > 0)
         {
@@ -536,7 +508,9 @@ public partial class RemoteBrowser : UserControl
                         // 展开会触发 Expanded 处理器，但 syncingTree 为真，它不会重复拉取；
                         // 这里直接填充子项，保证紧接着就能找到下一级节点。注意加载的是父目录的内容。
                         parent.IsExpanded = true;
-                        SetChildren(parent, await UnfilteredEntriesAsync(walked, CancellationToken.None));
+                        var children = await UnfilteredEntriesAsync(walked, CancellationToken.None);
+                        if (version != navigationVersion) return;
+                        SetChildren(parent, children);
                     }
                     node = FindNode(parent.Items, child);
                     walked = child;
@@ -598,6 +572,13 @@ public partial class RemoteBrowser : UserControl
                     var children = await UnfilteredEntriesAsync(entry.Path, CancellationToken.None);
                     if (ReferenceEquals(client, endpoint) && ReferenceEquals(FindNode(FolderTree.Items, entry.Path), node))
                         SetChildren(node, children);
+                }
+                catch (OperationCanceledException)
+                {
+                    if (ReferenceEquals(client, endpoint) && ReferenceEquals(FindNode(FolderTree.Items, entry.Path), node))
+                    {
+                        node.Items.Clear(); node.Items.Add("目录已更新，折叠后重试");
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -736,7 +717,7 @@ public partial class RemoteBrowser : UserControl
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await ExecuteAsync(async () =>
     {
         // 刷新会丢弃未过滤缓存，确保目录树看到服务端最新内容。
-        unfilteredCache.Clear();
+        navigation.InvalidateCache();
         // 根目录重建可移除树中的过期节点；目录内刷新只更新当前节点。
         await NavigateAsync(directory, directory.Length == 0);
     });
@@ -825,40 +806,6 @@ public partial class RemoteBrowser : UserControl
     private bool NgFilterEnabled => string.Equals(listFilter, "ng", StringComparison.OrdinalIgnoreCase);
     private bool CanOpenAnnotation => !IsBusy && client is not null && annotationWindow is null;
 
-    private sealed class NgDayRow(RemoteNgDay day, RemoteNgBatch[] visibleBatches, bool expanded) : INotifyPropertyChanged
-    {
-        public event PropertyChangedEventHandler? PropertyChanged;
-        public DateTime Date => day.Date;
-        private int Total => day.Batches.Length;
-        private int Annotated => day.Batches.Count(batch => batch.Annotated);
-        public bool IsComplete => Annotated == Total;
-        public string Progress => $"{Annotated}/{Total}";
-        public string ProgressDetails => $"NG {Total} · 已标注 {Annotated} · 未标注 {Total - Annotated}";
-        public System.Collections.ObjectModel.ObservableCollection<RemoteNgBatch> VisibleBatches { get; } = new(visibleBatches);
-        public bool IsExpanded { get; set; } = expanded;
-        public void Update(RemoteNgDay updated, RemoteNgBatch[] visible)
-        {
-            bool countsChanged = Total != updated.Batches.Length || Annotated != updated.Batches.Count(batch => batch.Annotated);
-            day = updated;
-            for (int index = 0; index < visible.Length; index++)
-            {
-                var batch = visible[index];
-                if (index >= VisibleBatches.Count) VisibleBatches.Add(batch);
-                else if (VisibleBatches[index].Path != batch.Path)
-                {
-                    var existing = VisibleBatches.FirstOrDefault(item => item.Path == batch.Path);
-                    if (existing is null) VisibleBatches.Insert(index, batch);
-                    else VisibleBatches.Move(VisibleBatches.IndexOf(existing), index);
-                }
-                if (VisibleBatches[index] != batch) VisibleBatches[index] = batch;
-            }
-            while (VisibleBatches.Count > visible.Length) VisibleBatches.RemoveAt(VisibleBatches.Count - 1);
-            if (countsChanged)
-                foreach (string property in new[] { nameof(IsComplete), nameof(Progress), nameof(ProgressDetails) })
-                    PropertyChanged?.Invoke(this, new(property));
-        }
-    }
-
     private async Task UpdateNgOverviewAsync(string path, CancellationToken ct)
     {
         string equipment = path.Split('/').Last();
@@ -866,8 +813,7 @@ public partial class RemoteBrowser : UserControl
             equipment = ParentPath(path).Split('/').Last();
         if (!NgFilterEnabled || !equipment.StartsWith("A6", StringComparison.OrdinalIgnoreCase))
         {
-            ngOverviewPath = null;
-            ngExpandedDays.Clear();
+            ngProgress.Reset();
             ClearNgOverviewResult("");
             SetNgOverviewVisible(false);
             return;
@@ -875,8 +821,7 @@ public partial class RemoteBrowser : UserControl
 
         if (!string.Equals(ngOverviewPath, path, StringComparison.Ordinal))
         {
-            ngOverviewPath = path;
-            ngExpandedDays.Clear();
+            ngProgress.SetPath(path);
             ClearNgOverviewResult("");
             if (NgEndDate.Text.Length == 0) NgEndDate.Text = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             if (NgStartDate.Text.Length == 0) NgStartDate.Text = DateTime.Today.AddDays(-6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -913,9 +858,9 @@ public partial class RemoteBrowser : UserControl
 
     private Task QueryNgOverviewPresetAsync(int daysBack) => ExecuteAsync(async ct =>
     {
-        var today = DateTime.Today;
-        NgStartDate.Text = today.AddDays(-daysBack).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        NgEndDate.Text = today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var range = NgProgressViewModel.GetDatePreset(daysBack, DateTime.Today);
+        NgStartDate.Text = range.Start.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        NgEndDate.Text = range.End.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         await RefreshNgOverviewAsync(ct);
     }, cancellable: true);
 
@@ -941,10 +886,8 @@ public partial class RemoteBrowser : UserControl
     private void UpdateNgDatePresets()
     {
         if (NgTodayButton is null || NgLastWeekButton is null) return;
-        bool validStart = DateTime.TryParseExact(NgStartDate.Text.Trim(), NgDateFormats, CultureInfo.InvariantCulture,
-            DateTimeStyles.None, out var start);
-        bool validEnd = DateTime.TryParseExact(NgEndDate.Text.Trim(), NgDateFormats, CultureInfo.InvariantCulture,
-            DateTimeStyles.None, out var end);
+        bool validStart = NgProgressViewModel.TryDate(NgStartDate.Text, out var start);
+        bool validEnd = NgProgressViewModel.TryDate(NgEndDate.Text, out var end);
         bool valid = validStart && validEnd;
         var today = DateTime.Today;
         System.Windows.Controls.Primitives.Selector.SetIsSelected(NgTodayButton, valid && start == today && end == today);
@@ -953,8 +896,7 @@ public partial class RemoteBrowser : UserControl
 
     private void ClearNgOverviewResult(string message)
     {
-        ngOverviewHasResult = false;
-        ngDays = [];
+        ngProgress.Invalidate(message);
         NgOverviewDays.ItemsSource = null;
         UpdateNgOverviewCounts();
         ShowNgOverviewMessage(message);
@@ -962,11 +904,9 @@ public partial class RemoteBrowser : UserControl
 
     private void UpdateNgOverviewCounts()
     {
-        int total = ngDays.Sum(day => day.Batches.Length);
-        int annotated = ngDays.Sum(day => day.Batches.Count(batch => batch.Annotated));
-        NgAllCount.Text = ngOverviewHasResult ? $" {total}" : "";
-        NgPendingCount.Text = ngOverviewHasResult ? $" {total - annotated}" : "";
-        NgDoneCount.Text = ngOverviewHasResult ? $" {annotated}" : "";
+        NgAllCount.Text = ngProgress.HasResult ? $" {ngProgress.Total}" : "";
+        NgPendingCount.Text = ngProgress.HasResult ? $" {ngProgress.Pending}" : "";
+        NgDoneCount.Text = ngProgress.HasResult ? $" {ngProgress.Annotated}" : "";
     }
 
     private async Task RefreshNgOverviewAsync(CancellationToken ct)
@@ -974,34 +914,17 @@ public partial class RemoteBrowser : UserControl
         if (ngOverviewPath is not { } path || NgOverviewPanel.Visibility != Visibility.Visible) return;
         string startText = NgStartDate.Text.Trim();
         string endText = NgEndDate.Text.Trim();
-        if (!DateTime.TryParseExact(startText, NgDateFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var start)
-            || !DateTime.TryParseExact(endText, NgDateFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var end)
-            || end.Date < start.Date || (end.Date - start.Date).TotalDays >= 31)
-        {
-            ClearNgOverviewResult("请输入有效日期，格式为 yyyy-MM-dd，范围最多 31 天");
-            return;
-        }
         var endpoint = Endpoint;
         int version = navigationVersion;
         bool Current() => ReferenceEquals(client, endpoint) && version == navigationVersion
             && path == ngOverviewPath && NgOverviewPanel.Visibility == Visibility.Visible
             && startText == NgStartDate.Text.Trim() && endText == NgEndDate.Text.Trim();
-        try
-        {
-            var days = await endpoint.GetNgOverviewAsync(path, start, end, ct);
-            if (!Current()) return;
-            ngDays = days;
-            ngOverviewHasResult = true;
-            UpdateNgOverviewCounts();
-            RenderNgOverview(keepScroll: true);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (Exception ex)
-        {
-            if (!Current()) return;
-            ClearNgOverviewResult("读取 NG 总览失败：" + ex.Message);
-            Log.Warning(ex, "读取 NG 总览失败；目录 {RemoteDirectory}", path);
-        }
+        await ngProgress.QueryAsync(startText, endText, endpoint.GetNgOverviewAsync, ct, Current);
+        if (!Current()) return;
+        UpdateNgOverviewCounts();
+        RenderNgOverview(keepScroll: true);
+        NgOverviewDays.ItemsSource = ngProgress.HasResult ? ngProgress.Rows : null;
+        ShowNgOverviewMessage(ngProgress.Message);
     }
 
     private void ShowNgOverviewMessage(string message)
@@ -1012,42 +935,11 @@ public partial class RemoteBrowser : UserControl
 
     private void RenderNgOverview(bool keepScroll)
     {
-        var previous = NgOverviewDays.ItemsSource as System.Collections.ObjectModel.ObservableCollection<NgDayRow>;
-        var previousDays = previous?.ToDictionary(day => day.Date) ?? [];
-        foreach (var day in previousDays.Values) ngExpandedDays[day.Date] = day.IsExpanded;
-        var rows = new List<NgDayRow>();
-        bool? onlyAnnotated = NgPendingFilter.IsChecked == true ? false : NgDoneFilter.IsChecked == true ? true : null;
-        foreach (var day in ngDays)
-        {
-            var batches = onlyAnnotated is { } annotated ? day.Batches.Where(batch => batch.Annotated == annotated).ToArray() : day.Batches;
-            if (batches.Length == 0) continue;
-            bool expanded = ngExpandedDays.GetValueOrDefault(day.Date, rows.Count == 0 && ngExpandedDays.Count == 0);
-            if (previousDays.TryGetValue(day.Date, out var existing))
-            {
-                existing.Update(day, batches);
-                rows.Add(existing);
-            }
-            else rows.Add(new(day, batches, expanded));
-        }
-        if (previous is null)
-            NgOverviewDays.ItemsSource = new System.Collections.ObjectModel.ObservableCollection<NgDayRow>(rows);
-        else
-        {
-            for (int index = 0; index < rows.Count; index++)
-            {
-                var row = rows[index];
-                if (index >= previous.Count) previous.Add(row);
-                else if (!ReferenceEquals(previous[index], row))
-                {
-                    int existingIndex = previous.IndexOf(row);
-                    if (existingIndex < 0) previous.Insert(index, row);
-                    else previous.Move(existingIndex, index);
-                }
-            }
-            while (previous.Count > rows.Count) previous.RemoveAt(previous.Count - 1);
-        }
+        ngProgress.SetFilter(NgPendingFilter.IsChecked == true ? NgProgressFilter.Pending
+            : NgDoneFilter.IsChecked == true ? NgProgressFilter.Annotated : NgProgressFilter.All);
+        NgOverviewDays.ItemsSource = ngProgress.HasResult ? ngProgress.Rows : null;
         if (!keepScroll) NgOverviewScroll.ScrollToTop();
-        ShowNgOverviewMessage(rows.Count > 0 ? "" : ngDays.Length == 0 ? "所选日期范围内没有可查看的 NG 批次" : "没有符合筛选条件的 NG 批次");
+        ShowNgOverviewMessage(ngProgress.Message);
     }
 
     private async void NgBatch_Click(object sender, RoutedEventArgs e)
@@ -1060,10 +952,7 @@ public partial class RemoteBrowser : UserControl
     {
         if (!ngOverviewHasResult || NgDoneFilter.IsChecked == true
             || NgOverviewPanel.Visibility != Visibility.Visible) return;
-        var batches = ngDays.SelectMany(day => day.Batches).ToArray();
-        int current = Array.FindIndex(batches, batch => batch.Path == completedFolder);
-        var next = batches.Skip(current + 1).Concat(batches.Take(current + 1))
-            .FirstOrDefault(batch => !batch.Annotated);
+        var next = ngProgress.FindNext(completedFolder);
         if (next is null)
         {
             SetStatus("当前查询范围内的 NG 批次均已标注", "SuccessBrush");
@@ -1076,7 +965,7 @@ public partial class RemoteBrowser : UserControl
         var dayContainer = NgOverviewDays.ItemContainerGenerator.ContainerFromItem(nextDay);
         if (dayContainer is null || FindVisualChild<Expander>(dayContainer) is not { } expander) return;
         expander.IsExpanded = true;
-        ngExpandedDays[nextDay.Date] = true;
+        ngProgress.RememberExpanded(nextDay.Date, true);
         await Dispatcher.InvokeAsync(() =>
         {
             if (!ReferenceEquals(rows, NgOverviewDays.ItemsSource) || annotationWindow is not null
@@ -1257,12 +1146,15 @@ public partial class RemoteBrowser : UserControl
     }
     private async Task SelectAllAsync()
     {
+        int version = navigationVersion;
+        var listing = entries;
         if (FileGrid.SelectionMode == DataGridSelectionMode.Single) return;
         if (!allLoaded)
         {
             SetStatus("正在加载全部条目…", "MutedBrush");
-            await LoadAllPagesAsync();
+            if (!await LoadAllPagesAsync()) return;
         }
+        if (version != navigationVersion || !ReferenceEquals(listing, entries)) return;
         if (FileGrid.SelectionMode == DataGridSelectionMode.Single) return;
         FileGrid.Focus();
         FileGrid.SelectAll();
@@ -1319,7 +1211,7 @@ public partial class RemoteBrowser : UserControl
                 await endpoint.UploadAsync(local, target, exists, progress, ct);
                 uploaded++;
             }
-            unfilteredCache.Clear();
+            navigation.InvalidateCache();
             await NavigateAsync(targetDirectory, false, ct);
             SetProgress(100, "上传完成");
             SetStatus(uploaded > 0 ? "上传完成" : "未上传文件", uploaded > 0 ? "SuccessBrush" : "MutedBrush");
@@ -1480,7 +1372,7 @@ public partial class RemoteBrowser : UserControl
                 listing[fileName] = false;
             }
             foreach (string path in paths) await UploadPathAsync(path, targetDirectory);
-            unfilteredCache.Clear();
+            navigation.InvalidateCache();
             await NavigateAsync(targetDirectory, false, ct);
             SetStatus($"已拖入 {paths.Length} 项", "SuccessBrush");
             Toast.Show(Window.GetWindow(this), $"已拖入 {paths.Length} 项");
@@ -1574,7 +1466,7 @@ public partial class RemoteBrowser : UserControl
         string archive = await Endpoint.CompressAsync(entry.Path, ArchiveProgress(), ct);
         // 刷新 ZIP 所在目录，根目录压缩的结果放在根目录内。
         string parent = ParentPath(entry.Path);
-        unfilteredCache.Clear();
+        navigation.InvalidateCache();
         await NavigateAsync(parent, parent.Length == 0, ct);
         SetProgress(100, "压缩完成");
         SetStatus("压缩完成：" + archive, "SuccessBrush");
@@ -1584,7 +1476,7 @@ public partial class RemoteBrowser : UserControl
     {
         await Endpoint.DeleteFileAsync(entry);
         string parent = ParentPath(entry.Path);
-        unfilteredCache.Clear();
+        navigation.InvalidateCache();
         await NavigateAsync(parent, parent.Length == 0);
         SetStatus("已删除：" + entry.Path, "SuccessBrush");
     });
@@ -1595,7 +1487,7 @@ public partial class RemoteBrowser : UserControl
         var endpoint = Endpoint; var progress = ArchiveProgress(); SetProgress(0, "准备下载");
         string archive = entry.IsDirectory ? await endpoint.CompressAsync(entry.Path, progress, ct) : entry.Path;
         await endpoint.DownloadZipAsync(archive, destination, progress, ct);
-        if (entry.IsDirectory) { unfilteredCache.Clear(); await NavigateAsync(ParentPath(entry.Path), ParentPath(entry.Path).Length == 0, ct); }
+        if (entry.IsDirectory) { navigation.InvalidateCache(); await NavigateAsync(ParentPath(entry.Path), ParentPath(entry.Path).Length == 0, ct); }
         SetProgress(100, "下载完成");
         SetStatus("下载完成，SHA-256 校验通过", "SuccessBrush");
     }, cancellable: true);
