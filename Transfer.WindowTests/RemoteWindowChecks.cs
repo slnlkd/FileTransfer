@@ -21,8 +21,21 @@ using ProcessViewer = RemoteClient::RemoteFiles.Desktop.ProcessViewer;
 
 internal static partial class RemoteWindowChecks
 {
+    public static async Task RunGroupAsync(string group, string temp)
+    {
+        switch (group)
+        {
+            case "state": await AnnotationStateChecks.RunAsync(); break;
+            case "navigation": await CheckNavigationBusyAsync(temp); break;
+            case "logs": await CheckLogDirectoryOpeningAsync(temp); break;
+            case "annotation": await CheckAnnotationReopenAsync(temp); break;
+            case "interaction": await CheckNextNgBatchAsync(temp); break;
+            default: throw new ArgumentException("未知测试分组：" + group);
+        }
+    }
     public static async Task RunAsync(string temp)
     {
+        await AnnotationStateChecks.RunAsync();
         CheckLegacyClientSettingsMigration(temp);
         await CheckNavigationBusyAsync(temp);
         await CheckLogDirectoryOpeningAsync(temp);

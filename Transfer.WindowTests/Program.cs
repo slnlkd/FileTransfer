@@ -38,6 +38,13 @@ internal static class Program
         {
             try
             {
+                int suiteIndex = Array.IndexOf(args, "--suite");
+                if (suiteIndex >= 0)
+                {
+                    if (suiteIndex + 1 >= args.Length) throw new ArgumentException("请指定测试分组");
+                    await RemoteWindowChecks.RunGroupAsync(args[suiteIndex + 1], logs);
+                    return;
+                }
                 if (Environment.GetEnvironmentVariable("FILETRANSFER_NAVIGATION_ONLY") == "1")
                 {
                     await RemoteWindowChecks.CheckNavigationBusyAsync(logs);
@@ -66,7 +73,7 @@ internal static class Program
         string logText = string.Join("\n", Directory.GetFiles(logs, "app-*.log").Select(File.ReadAllText));
         if (!logText.Contains("应用程序启动") || !logText.Contains("应用程序退出")
             || (Environment.GetEnvironmentVariable("FILETRANSFER_LOG_OPEN_ONLY") != "1"
-                && Environment.GetEnvironmentVariable("FILETRANSFER_NAVIGATION_ONLY") != "1" && !logText.Contains("资源清理已完成")))
+                && Environment.GetEnvironmentVariable("FILETRANSFER_NAVIGATION_ONLY") != "1" && !args.Contains("--suite") && !logText.Contains("资源清理已完成")))
         {
             Console.Error.WriteLine("应用生命周期或关闭过程日志缺失"); result = 1;
         }
