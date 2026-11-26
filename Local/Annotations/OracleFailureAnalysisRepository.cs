@@ -72,7 +72,7 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
         command.Parameters.Add("pDate", OracleDbType.Date).Value = date;
         if (batch is not null)
         {
-            command.Parameters.Add("pBatch", OracleDbType.NVarchar2, 32).Value = batch;
+            command.Parameters.Add("pBatch", OracleDbType.NVarchar2, 32).Value = BatchNames.Normalize(batch);
         }
         var items = new List<RemoteAnnotation>();
         await using var reader = await command.ExecuteReaderAsync(ct);
@@ -163,7 +163,7 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
         await using var command = Create(connection, sql);
         command.Parameters.Add("pEqp", OracleDbType.NVarchar2, 32).Value = equipmentNo;
         command.Parameters.Add("pDate", OracleDbType.Date).Value = date;
-        command.Parameters.Add("pBatch", OracleDbType.NVarchar2, 32).Value = batch;
+        command.Parameters.Add("pBatch", OracleDbType.NVarchar2, 32).Value = BatchNames.Normalize(batch);
         command.Parameters.Add("pDir", OracleDbType.Varchar2, 3072).Value = folderPath + "/" + imageName;
         return await command.ExecuteNonQueryAsync(ct);
     }
