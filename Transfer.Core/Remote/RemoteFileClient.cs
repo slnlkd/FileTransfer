@@ -316,17 +316,38 @@ public sealed class RemoteFileClient(string host, int port)
     public async Task<RemoteAnnotation?> GetAnnotationAsync(string path, CancellationToken ct = default)
         => (await CallAsync(new("annotation-get", path), ct)).Annotation;
     public async Task<RemoteAnnotation[]> GetAnnotationHistoryAsync(string path, CancellationToken ct = default)
+        => (await GetAnnotationHistoryStateAsync(path, ct)).History;
+
+    public async Task<(RemoteAnnotation[] History, bool? BatchHasAnnotations)> GetAnnotationHistoryStateAsync(
+        string path, CancellationToken ct = default)
     {
         var response = await CallAsync(new("annotation-get", path), ct);
-        return response.Annotations ?? (response.Annotation is { } record ? [record] : []);
+        return (response.Annotations ?? (response.Annotation is { } record ? [record] : []), response.BatchHasAnnotations);
     }
     public async Task<RemoteAnnotation[]> ListAnnotationsAsync(string directory, CancellationToken ct = default)
         => (await CallAsync(new("annotation-list", directory), ct)).Annotations ?? [];
+    public async Task<RemoteAnnotationTarget?> GetAnnotationTargetAsync(string folderPath, CancellationToken ct = default)
+    {
+        try { return (await CallAsync(new("annotation-target", folderPath), ct)).AnnotationTarget; }
+        catch (IOException ex) when (ex.Message == "未知的文件管理命令") { return null; }
+    }
+    public async Task<AnnotationDatabaseInfo?> GetAnnotationDatabaseInfoAsync(bool verify, CancellationToken ct = default)
+    {
+        try
+        {
+            return (await CallAsync(new("annotation-db-info", Text: verify ? "verify" : null), ct)).AnnotationDatabase;
+        }
+        catch (IOException ex) when (ex.Message == "未知的文件管理命令") { return null; }
+    }
     public async Task<RemoteAnnotation> SaveAnnotationAsync(string path, string categoryCode, string planCode,
-        string? note, string operatorName, string? imageName = null, CancellationToken ct = default)
+        string? note, string operatorName, string? imageName = null, CancellationToken ct = default, string? ngResultId = null,
+        string? categoryDictionaryId = null)
         => (await CallAsync(new("annotation-add", path, CategoryCode: categoryCode, PlanCode: planCode,
-            Note: note, Operator: operatorName, ImageName: imageName), ct)).Annotation ?? throw new IOException("服务端未返回标注结果");
-    public async Task<int> DeleteImageAnnotationsAsync(string folderPath, string imageName, CancellationToken ct = default)
-        => (await CallAsync(new("annotation-delete", folderPath, ImageName: imageName), ct)).Total;
+            Note: note, Operator: operatorName, ImageName: imageName)
+            { NgResultId = ngResultId, RequireNgResult = ngResultId is not null, CategoryDictionaryId = categoryDictionaryId }, ct))
+            .Annotation ?? throw new IOException("服务端未返回标注结果");
+    public async Task<int> DeleteImageAnnotationsAsync(string folderPath, string imageName, CancellationToken ct = default, string? ngResultId = null)
+        => (await CallAsync(new("annotation-delete", folderPath, ImageName: imageName)
+            { NgResultId = ngResultId, RequireNgResult = ngResultId is not null }, ct)).Total;
     private static void Ensure(RemoteResponse response) { if (!response.Ok) throw new IOException(response.Error ?? "远程操作失败"); }
 }

@@ -1,14 +1,9 @@
 using System.Globalization;
-using System.IO;
-using System.Text.Json;
 using Oracle.ManagedDataAccess.Client;
 using Serilog;
-using Transfer.Core;
 using Transfer.Core.Remote;
 
 namespace RemoteFiles.Server;
-
-internal sealed record NgFilterSettings(string ConnectionString, int CommandTimeoutSeconds = 10);
 
 /// <summary>
 /// 个性化 NG 截图过滤：按机台编号和日期查询 Oracle，只保留 NG 对应的文件夹。
@@ -18,21 +13,7 @@ internal sealed class OracleNgFolderQuery
 {
     private const string FilterName = "ng";
     private readonly NgFilterSettings settings;
-    private OracleNgFolderQuery(NgFilterSettings settings) => this.settings = settings;
-
-    public static OracleNgFolderQuery? Load()
-    {
-        string path = AppLogging.GetSettingsPath("ngfilter.json");
-        if (!File.Exists(path)) { Log.Warning("只看NG配置不存在；路径 {SettingsPath}", path); return null; }
-        var settings = JsonSerializer.Deserialize<NgFilterSettings>(File.ReadAllText(path));
-        if (string.IsNullOrWhiteSpace(settings?.ConnectionString))
-        {
-            Log.Warning("只看NG配置缺少连接字符串；路径 {SettingsPath}", path);
-            return null;
-        }
-        Log.Information("只看NG配置已加载；路径 {SettingsPath}", path);
-        return new(settings);
-    }
+    internal OracleNgFolderQuery(NgFilterSettings settings) => this.settings = settings;
 
     public async Task<RemoteFilterResult> ApplyAsync(string filter, string path, RemoteEntry[] entries)
     {
@@ -51,9 +32,7 @@ internal sealed class OracleNgFolderQuery
 
     public async Task<RemoteBatchKey[]> FindBatchesAsync(string equipmentNo, DateTime start, DateTime end, CancellationToken ct)
     {
-        const string sql = "SELECT DISTINCT TRUNC(\"AlignmentStartTime\"), \"Parameter2\" FROM \"RCMDB\".\"ProjectRpaAutoAlignmentResults\" " +
-            "WHERE \"EquipmentNo\" = :equipmentNo AND \"AlignmentResult\" = :result " +
-            "AND \"AlignmentStartTime\" >= :startUtc AND \"AlignmentStartTime\" < :endUtc AND \"Parameter2\" IS NOT NULL";
+        string sql = OracleAnnotationSql.SelectNgBatches;
         await using var connection = new OracleConnection(settings.ConnectionString);
         await connection.OpenAsync(ct);
         await using var command = connection.CreateCommand();

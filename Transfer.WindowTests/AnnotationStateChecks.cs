@@ -5,11 +5,13 @@ using AnnotationContext = RemoteClient::RemoteFiles.Desktop.AnnotationContext;
 using AnnotationViewModel = RemoteClient::RemoteFiles.Desktop.AnnotationViewModel;
 using IAnnotationClient = RemoteClient::RemoteFiles.Desktop.IAnnotationClient;
 using AnnotationWriteKind = RemoteClient::RemoteFiles.Desktop.AnnotationWriteKind;
+using AnnotationDictionaryCache = RemoteClient::RemoteFiles.Desktop.AnnotationDictionaryCache;
 
 internal static class AnnotationStateChecks
 {
     public static async Task RunAsync()
     {
+        await CheckDictionaryCacheAsync();
         static AnnotationViewModel Model(FakeClient client) => new(client,
             new AnnotationContext("A601/20261120/1", "测试批次", [
                 new("A601/20261120/1", ImageName: "old.png", CategoryName: "旧归类")
@@ -130,6 +132,48 @@ internal static class AnnotationStateChecks
                 && kind == AnnotationWriteKind.Revoke, "撤销必须针对当前图片并通知宿主");
         }
         Console.WriteLine("通过：标注状态的校验、备注追加、失败重试、重复提交、字典并发、过期结果、取消及撤销");
+    }
+
+    private static async Task CheckDictionaryCacheAsync()
+    {
+        var original = new RemoteDictionary([new("old", "旧分类")], []);
+        var updated = new RemoteDictionary([new("new", "新分类")], []);
+        var clock = new DictionaryClock();
+        var incoming = new TaskCompletionSource<RemoteDictionary>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int requests = 0;
+        using var cache = new AnnotationDictionaryCache(_ => { requests++; return incoming.Task; }, clock);
+        using var caller = new CancellationTokenSource();
+        var canceled = cache.GetAsync(caller.Token);
+        var shared = cache.GetAsync(CancellationToken.None);
+        caller.Cancel();
+        try { await canceled; throw new Exception("字典等待者应支持取消"); }
+        catch (OperationCanceledException) { }
+        if (requests != 1) throw new Exception("并发读取字典应共用一个请求");
+        cache.Replace(updated);
+        incoming.SetResult(original);
+        if (await shared != updated || await cache.GetAsync(CancellationToken.None) != updated)
+            throw new Exception("新增后的字典不能被旧响应覆盖");
+        clock.Advance(TimeSpan.FromSeconds(30));
+        incoming = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failed = cache.GetAsync(CancellationToken.None);
+        incoming.SetException(new IOException("字典读取失败"));
+        try { await failed; throw new Exception("过期后应重新读取字典"); }
+        catch (IOException) { }
+        incoming = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var retry = cache.GetAsync(CancellationToken.None);
+        incoming.SetResult(original);
+        if (await retry != original || requests != 3) throw new Exception("失败的字典读取不应进入缓存");
+        using var reconnect = new AnnotationDictionaryCache(_ => Task.FromResult(updated), clock);
+        if (await reconnect.GetAsync(CancellationToken.None) != updated) throw new Exception("字典缓存不能跨连接复用");
+        Console.WriteLine("通过：连接内合并字典读取、独立取消、过期、失败重试和新增覆盖");
+    }
+
+    private sealed class DictionaryClock : TimeProvider
+    {
+        private long timestamp;
+        public override long GetTimestamp() => timestamp;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public void Advance(TimeSpan duration) => timestamp += duration.Ticks;
     }
 
     private sealed class FakeClient : IAnnotationClient

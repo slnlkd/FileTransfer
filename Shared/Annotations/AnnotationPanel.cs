@@ -14,7 +14,8 @@ namespace RemoteFiles.Desktop;
 public sealed class AnnotationPanel : UserControl, IDisposable
 {
     private readonly AnnotationViewModel model;
-    private bool disposed;
+    private bool disposed, loadingDictionary;
+    private readonly List<Button> dictionaryEditors = [];
     private WrapPanel? remarkTags;
     private Button? categoryPicker, planPicker, submitButton, revokeButton, annotationHistoryButton;
     private TextBlock? categoryLabel, planLabel, annotationStatus, annotationImageName, annotationSummary, annotationError, annotationHint;
@@ -42,6 +43,12 @@ public sealed class AnnotationPanel : UserControl, IDisposable
         model.PropertyChanged += ModelChanged;
         model.WriteSucceeded += Written;
         UpdateCurrentAnnotationStatus();
+        if (model.TargetError is { } targetError)
+        {
+            annotationError!.Text = targetError;
+            annotationError.Visibility = Visibility.Visible;
+            submitButton!.IsEnabled = revokeButton!.IsEnabled = false;
+        }
     }
     private Binding DraftBinding(string property) => new(property)
     {
@@ -57,7 +64,15 @@ public sealed class AnnotationPanel : UserControl, IDisposable
     }
     public async Task LoadAsync()
     {
-        await model.LoadDictionaryAsync();
+        loadingDictionary = true;
+        UpdateActionAvailability();
+        RefreshDictionaryHint();
+        try { await model.LoadDictionaryAsync(); }
+        finally
+        {
+            loadingDictionary = false;
+            if (!disposed) UpdateActionAvailability();
+        }
         if (disposed) return;
         RefreshDictionaryHint();
         Log.Information("标注字典加载完成；归类 {Categories}，方案 {Plans}，备注标签 {Remarks}",
@@ -76,26 +91,35 @@ public sealed class AnnotationPanel : UserControl, IDisposable
                 break;
             case nameof(AnnotationViewModel.Dictionary): RefreshRemarkTags(); RefreshDictionaryHint(); break;
             case nameof(AnnotationViewModel.Error):
-                annotationError!.Text = model.Error;
-                annotationError.Visibility = model.Error.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+                annotationError!.Text = model.TargetError ?? model.Error;
+                annotationError.Visibility = annotationError.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
                 break;
             case nameof(AnnotationViewModel.IsBusy):
-                submitButton!.IsEnabled = revokeButton!.IsEnabled = !model.IsBusy;
+                UpdateActionAvailability();
                 break;
         }
     }
+    private void UpdateActionAvailability()
+    {
+        categoryPicker!.IsEnabled = planPicker!.IsEnabled = !loadingDictionary;
+        foreach (var button in dictionaryEditors) button.IsEnabled = !loadingDictionary;
+        revokeButton!.IsEnabled = !model.IsBusy && model.TargetError is null;
+        submitButton!.IsEnabled = revokeButton.IsEnabled && !loadingDictionary;
+    }
+
     private void RefreshDictionaryHint()
     {
         bool empty = model.Dictionary.Categories.Length == 0 && model.Dictionary.Plans.Length == 0;
-        annotationHint!.Text = empty ? "服务端未配置标注字典（RpaDataItems / RpaDataItemDetails），下拉暂时为空。" : "";
-        annotationHint.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+        annotationHint!.Text = loadingDictionary ? "正在读取标注字典…"
+            : empty ? "服务端未配置标注字典（RpaDataItems / RpaDataItemDetails），下拉暂时为空。" : "";
+        annotationHint.Visibility = annotationHint.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
     private void Written(AnnotationWriteKind kind) => WriteSucceeded?.Invoke(kind);
     private Task SubmitAnnotationAsync() => WriteAsync(AnnotationWriteKind.Submit);
     private Task RevokeAnnotationAsync() => WriteAsync(AnnotationWriteKind.Revoke);
     private async Task WriteAsync(AnnotationWriteKind kind)
     {
-        if (model.IsBusy || disposed) return;
+        if (model.IsBusy || disposed || (loadingDictionary && kind == AnnotationWriteKind.Submit)) return;
         bool success = kind == AnnotationWriteKind.Submit ? await model.SubmitAsync() : await model.RevokeAsync();
         if (success || disposed || model.Error.Length == 0) return;
         FrameworkElement? field = model.ErrorField switch
@@ -153,6 +177,7 @@ public sealed class AnnotationPanel : UserControl, IDisposable
         addRemark.SetResourceReference(WidthProperty, "FormControlHeight");
         System.Windows.Automation.AutomationProperties.SetName(addRemark, "新增备注标签");
         addRemark.Click += (_, _) => ShowDictionaryEditor(addRemark, null, AnnotationDictionaryKind.Remark, "备注标签");
+        dictionaryEditors.Add(addRemark);
         remarkTags = new WrapPanel();
         stack.Children.Add(new ScrollViewer
         {
@@ -436,6 +461,7 @@ public sealed class AnnotationPanel : UserControl, IDisposable
         add.SetResourceReference(WidthProperty, "FormControlHeight");
         System.Windows.Automation.AutomationProperties.SetName(add, "新增" + fieldName);
         add.Click += (_, _) => ShowDictionaryEditor(picker, label, kind, fieldName);
+        dictionaryEditors.Add(add);
         row.Children.Add(picker);
         Grid.SetColumn(add, 1);
         row.Children.Add(add);
@@ -444,7 +470,7 @@ public sealed class AnnotationPanel : UserControl, IDisposable
 
     private void ShowDictionaryEditor(Button anchor, TextBlock? label, AnnotationDictionaryKind kind, string fieldName)
     {
-        if (model.IsBusy) return;
+        if (model.IsBusy || loadingDictionary) return;
         var input = new TextBox { MaxLength = AnnotationStore.NameLimit, Margin = new Thickness(0, 6, 0, 0), Style = ThemeStyle("AnnotationFieldInput") };
         System.Windows.Automation.AutomationProperties.SetName(input, fieldName + "名称");
         var error = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0), Visibility = Visibility.Collapsed };
@@ -496,12 +522,6 @@ public sealed class AnnotationPanel : UserControl, IDisposable
         }
     }
 
-    private void SetPickerValue(Button picker, TextBlock label, string name)
-    {
-        if (ReferenceEquals(picker, categoryPicker)) model.Category = name;
-        else model.Plan = name;
-    }
-
     private void RefreshRemarkTags()
     {
         if (remarkTags is null) return;
@@ -528,7 +548,7 @@ public sealed class AnnotationPanel : UserControl, IDisposable
     // 自绘下拉：弹出层里放一列按钮，避开 ContextMenu/MenuItem 原生模板的勾选列白条。
     private void ShowPickerMenu(Button button, TextBlock label, string placeholder)
     {
-        if (model.IsBusy) return;
+        if (model.IsBusy || loadingDictionary) return;
         var items = ReferenceEquals(button, categoryPicker) ? model.Dictionary?.Categories : model.Dictionary?.Plans;
         if (items is null || items.Length == 0)
         {
@@ -552,7 +572,8 @@ public sealed class AnnotationPanel : UserControl, IDisposable
             if (ghost is not null) option.Style = ghost;
             option.Click += (_, _) =>
             {
-                SetPickerValue(button, label, item.Name);
+                if (ReferenceEquals(button, categoryPicker)) model.SelectCategory(item);
+                else model.Plan = item.Name;
                 if (pickerPopup is not null) pickerPopup.IsOpen = false;
             };
             stack.Children.Add(option);

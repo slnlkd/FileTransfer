@@ -21,11 +21,13 @@ public sealed class ViewerCoordinator
         Show(viewer, owner);
     }
 
-    public void ShowAnnotation(ImageViewer viewer, Window? owner, Func<bool> canActivate, Func<Task> refresh, Func<Task> focusNext)
+    public void ShowAnnotation(ImageViewer viewer, Window? owner, Func<bool> canActivate, Func<ImageViewer, Task> onWrite)
     {
         if (AnnotationWindow is not null) throw new InvalidOperationException("标注窗口已打开");
         viewer.Closed += async (_, _) =>
         {
+            AnnotationWindow = null;
+            AnnotationWindowChanged?.Invoke();
             try
             {
                 if (canActivate() && owner is { IsVisible: true })
@@ -33,15 +35,9 @@ public sealed class ViewerCoordinator
                     if (owner.WindowState == WindowState.Minimized) owner.WindowState = WindowState.Normal;
                     owner.Activate();
                 }
-                await refresh();
+                if (viewer.AnnotationOutcome is not null) await onWrite(viewer);
             }
             catch (Exception ex) { Log.Debug(ex, "标注窗口关闭后刷新状态失败"); }
-            finally { AnnotationWindow = null; AnnotationWindowChanged?.Invoke(); }
-            if (viewer.AnnotationSubmitted)
-            {
-                try { await focusNext(); }
-                catch (Exception ex) { Log.Debug(ex, "定位下一未标注批次失败"); }
-            }
         };
         AnnotationWindow = viewer;
         try { Show(viewer, owner); }

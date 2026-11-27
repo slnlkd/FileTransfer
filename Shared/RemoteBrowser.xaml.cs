@@ -29,6 +29,7 @@ public partial class RemoteBrowser : UserControl
     private string? fullDirectoryPath;
     private bool busy;
     private readonly ViewerCoordinator viewers = new();
+    private BrowserAnnotationWorkflow? annotationWorkflow;
     private ImageViewer? annotationWindow => viewers.AnnotationWindow;
     private Dictionary<string, RemoteAnnotation>? annotationIndex;
     private string? annotationReadError;
@@ -119,6 +120,9 @@ public partial class RemoteBrowser : UserControl
     {
         if (busy) throw new IOException("当前操作尚未结束，请稍后重新连接");
         int connection = ++connectionVersion;
+        ngProgress.CancelReconcile();
+        annotationWorkflow?.Dispose();
+        annotationWorkflow = new(endpoint);
         client = endpoint;
         navigation.SetClient(new RemoteDirectoryClient(endpoint));
         ProtocolWarning = null;
@@ -143,6 +147,8 @@ public partial class RemoteBrowser : UserControl
     public void Disconnect()
     {
         connectionVersion++;
+        annotationWorkflow?.Dispose();
+        annotationWorkflow = null;
         dragArmed = false;
         dragSelection = null;
         operationCancel?.Cancel();
@@ -742,6 +748,8 @@ public partial class RemoteBrowser : UserControl
     }
     private void Browser_Unloaded(object sender, RoutedEventArgs e)
     {
+        ngProgress.CancelReconcile();
+        annotationWorkflow?.InvalidateRevocations();
         HideBusy();
         if (fileScroll is not null) { fileScroll.ScrollChanged -= FileScroll_ScrollChanged; fileScroll = null; }
         scrollHooked = false;
@@ -914,22 +922,23 @@ public partial class RemoteBrowser : UserControl
         NgDoneCount.Text = ngProgress.HasResult ? $" {ngProgress.Annotated}" : "";
     }
 
-    private async Task RefreshNgOverviewAsync(CancellationToken ct)
+    private async Task RefreshNgOverviewAsync(CancellationToken ct, bool background = false)
     {
+        if (!background) ngProgress.CancelReconcile();
         if (ngOverviewPath is not { } path || NgOverviewPanel.Visibility != Visibility.Visible) return;
         string startText = NgStartDate.Text.Trim();
         string endText = NgEndDate.Text.Trim();
         var endpoint = Endpoint;
+        int connection = connectionVersion;
         int version = navigationVersion;
-        bool Current() => ReferenceEquals(client, endpoint) && version == navigationVersion
+        bool Current() => connection == connectionVersion && ReferenceEquals(client, endpoint) && version == navigationVersion
             && path == ngOverviewPath && NgOverviewPanel.Visibility == Visibility.Visible
             && startText == NgStartDate.Text.Trim() && endText == NgEndDate.Text.Trim();
-        await ngProgress.QueryAsync(startText, endText, endpoint.GetNgOverviewAsync, ct, Current);
+        bool loaded = await ngProgress.QueryAsync(startText, endText, endpoint.GetNgOverviewAsync, ct, Current, background);
         if (!Current()) return;
+        if (background && !loaded) return;
         UpdateNgOverviewCounts();
         RenderNgOverview(keepScroll: true);
-        NgOverviewDays.ItemsSource = ngProgress.HasResult ? ngProgress.Rows : null;
-        ShowNgOverviewMessage(ngProgress.Message);
     }
 
     private void ShowNgOverviewMessage(string message)
@@ -1021,49 +1030,91 @@ public partial class RemoteBrowser : UserControl
     }
     // 标注窗口：左栏列出该对线文件夹下的全部图片，右栏是失败原因分析表单。
     public Task OpenAnnotationAsync(RemoteEntry entry) => CanOpenAnnotation
-        ? ExecuteAsync(() => ShowAnnotationWindowAsync(entry))
+        ? ExecuteAsync(() => ShowAnnotationWindowAsync(entry, NgFilterEnabled))
         : Task.CompletedTask;
-    private async Task ShowAnnotationWindowAsync(RemoteEntry entry)
+    private async Task ShowAnnotationWindowAsync(RemoteEntry entry, bool fromNg)
     {
+        var workflow = annotationWorkflow;
+        if (workflow is null) return;
         var endpoint = Endpoint;
+        int version = navigationVersion;
+        bool Current() => IsLoaded && ReferenceEquals(annotationWorkflow, workflow) && version == navigationVersion;
         string folder = entry.IsDirectory ? entry.Path : ParentPath(entry.Path);
-        var listing = await endpoint.CallAsync(new("list", folder));
-        var images = (listing.Entries ?? []).Where(item => item.IsImage).ToArray();
-        if (images.Length == 0) { SetStatus("该对线文件夹下没有图片", "WarningBrush"); return; }
-        string selected = entry.IsDirectory ? images[0].Path : entry.Path;
-        if (!images.Any(item => item.Path == selected)) { SetStatus("图片已从目录移除，请刷新后重试", "WarningBrush"); return; }
-        RemoteAnnotation[] history = [];
-        string? historyReadError = null;
-        try { history = await endpoint.GetAnnotationHistoryAsync(folder); }
-        catch (Exception ex)
-        {
-            historyReadError = "读取标注历史失败：" + ex.Message;
-            Log.Warning(ex, "读取对线标注失败；目录 {RemoteDirectory}", folder);
-        }
-        if (!ReferenceEquals(client, endpoint)) return;
-        string displayPath = (listing.RootName ?? "共享根目录") + "/" + folder;
-        var context = new AnnotationContext(folder, displayPath, history) { HistoryReadError = historyReadError };
-        var window = new ImageViewer(endpoint, images, selected, context);
-        var owner = Window.GetWindow(this);
-        string listDirectory = ParentPath(folder);
-        string? openedOverview = NgOverviewPanel.Visibility == Visibility.Visible ? ngOverviewPath : null;
-        int openedVersion = navigationVersion;
-        viewers.ShowAnnotation(window, owner, () => IsLoaded, async () =>
-        {
-                if (ReferenceEquals(client, endpoint) && (directory == listDirectory || directory == folder))
-                    await RefreshAnnotationStatusAsync(directory, CancellationToken.None);
-                if (ReferenceEquals(client, endpoint) && ngOverviewPath is { } overview
-                    && folder.StartsWith(overview + "/", StringComparison.OrdinalIgnoreCase))
-                    await RefreshNgOverviewAsync(CancellationToken.None);
-        }, async () =>
-        {
-            if (ReferenceEquals(client, endpoint)
-                && openedOverview is not null && openedOverview == ngOverviewPath && openedVersion == navigationVersion)
-                await FocusNextNgBatchAsync(folder);
-        });
+        var data = await workflow.LoadAsync(navigation, folder, fromNg);
+        if (!Current()) return;
+        if (data.Images.Length == 0) { SetStatus("该对线文件夹下没有图片", "WarningBrush"); return; }
+        string selected = entry.IsDirectory ? data.Images[0].Path : entry.Path;
+        if (!data.Images.Any(image => image.Path == selected)) { SetStatus("图片已从目录移除，请刷新后重试", "WarningBrush"); return; }
+
+        var window = new ImageViewer(endpoint, data.Images, selected, data.Context);
+        string? overview = NgOverviewPanel.IsVisible ? ngOverviewPath : null;
+        string from = NgStartDate.Text, to = NgEndDate.Text;
+        bool CurrentOverview() => Current() && overview is not null && overview == ngOverviewPath
+            && NgOverviewPanel.IsVisible && ngOverviewHasResult && from == NgStartDate.Text && to == NgEndDate.Text;
+        viewers.ShowAnnotation(window, Window.GetWindow(this), () => IsLoaded, closed =>
+            ApplyAnnotationOutcomeAsync(closed, workflow, folder, Current, CurrentOverview));
         Log.Information("打开标注窗口；对线文件夹 {RemoteFolder}，图片数 {ImageCount}，标注记录数 {AnnotationCount}",
-            folder, images.Length, history.Length);
-        SetStatus("标注：" + (Path.GetFileName(folder.Replace('/', '\\'))), "MutedBrush");
+            folder, data.Images.Length, data.HistoryCount);
+        SetStatus("标注：" + Path.GetFileName(folder), "MutedBrush");
+    }
+
+    private async Task ApplyAnnotationOutcomeAsync(ImageViewer window, BrowserAnnotationWorkflow workflow, string folder,
+        Func<bool> isCurrent, Func<bool> isCurrentOverview)
+    {
+        if (!isCurrent()) return;
+        if (window.AnnotationOutcome == AnnotationWriteKind.Submit && window.SavedAnnotation is { } saved)
+        {
+            var timer = Stopwatch.StartNew();
+            workflow.InvalidateRevocation(folder);
+            ApplyFileAnnotationChange(folder, saved.ImageName, saved, true);
+            if (isCurrentOverview())
+            {
+                UpdateOverviewBatch(folder, true);
+                await FocusNextNgBatchAsync(folder);
+            }
+            Log.Debug("标注成功到恢复操作耗时 {ElapsedMs} ms；目录 {RemoteDirectory}", timer.ElapsedMilliseconds, folder);
+        }
+        else if (window.AnnotationOutcome == AnnotationWriteKind.Revoke)
+        {
+            if (isCurrentOverview()) ngProgress.InvalidateQueryResponse();
+            var state = await workflow.ReadAfterRevokeAsync(folder);
+            if (!isCurrent()) return;
+            if (state is not null)
+            {
+                string image = Path.GetFileName(window.CurrentPath);
+                var latest = directory == folder
+                    ? state.History.FirstOrDefault(item => string.Equals(item.ImageName, image, StringComparison.OrdinalIgnoreCase))
+                    : state.History.FirstOrDefault();
+                ApplyFileAnnotationChange(folder, image, latest, state.HasAnnotations);
+            }
+            if (isCurrentOverview()) UpdateOverviewBatch(folder, state?.HasAnnotations);
+        }
+
+        void UpdateOverviewBatch(string path, bool? annotated)
+        {
+            ngProgress.InvalidateQueryResponse();
+            if (annotated is { } value)
+            {
+                ngProgress.SetBatchAnnotated(path, value);
+                UpdateNgOverviewCounts();
+                ShowNgOverviewMessage(ngProgress.Message);
+            }
+            ngProgress.QueueReconcile(ct => isCurrentOverview() ? RefreshNgOverviewAsync(ct, background: true) : Task.CompletedTask);
+        }
+    }
+
+    private void ApplyFileAnnotationChange(string folder, string? image, RemoteAnnotation? annotation, bool batchAnnotated)
+    {
+        if (!NgFilterEnabled || annotationIndex is null) return;
+        bool imageList = directory == folder;
+        if (!imageList && directory != ParentPath(folder)) return;
+        string? key = imageList ? image : BatchNames.Normalize(Path.GetFileName(folder));
+        if (string.IsNullOrEmpty(key)) return;
+        if (annotation is not null) annotationIndex[key] = annotation;
+        else if (imageList || !batchAnnotated) annotationIndex.Remove(key);
+        else return;
+        ApplyAnnotationStatuses(entries.Where(item => string.Equals(item.Name, key, StringComparison.OrdinalIgnoreCase)));
+        FileGrid.Items.Refresh();
     }
     // 只看 NG 时，日期层显示批次状态，批次层显示每张图片的状态。
     private async Task RefreshAnnotationStatusAsync(string path, CancellationToken ct)

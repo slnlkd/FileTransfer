@@ -47,15 +47,26 @@ internal static partial class RemoteWindowChecks
             annotations = Array.Empty<RemoteAnnotation>()
         }));
         var repository = new JsonAnnotationRepository(repositoryPath);
+        var releaseOverview = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDictionary = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gatedRepository = new GatedAnnotationRepository(repository) { DictionaryRelease = releaseDictionary };
+        gatedRepository.Release.SetResult();
+        bool delayOverview = false;
+        int overviewRequests = 0;
         RemoteBatchKey BatchKey(string folder) => new(DateTime.ParseExact(folder.Split('/')[1], "yyyyMMdd",
             System.Globalization.CultureInfo.InvariantCulture), folder.Split('/')[2]);
         foreach (var batch in batches.Where(batch => batch.Annotated))
             await repository.SaveAsync(new RemoteAnnotation(batch.Folder, "A601", AutoLineDate: BatchKey(batch.Folder).Date,
                 BatchNumber: BatchKey(batch.Folder).Batch, ImageName: "image.png"));
-        await using var service = new RemoteFileService(root, repository)
+        await using var service = new RemoteFileService(root, gatedRepository)
         {
             ListFilter = (_, _, entries) => Task.FromResult(new RemoteFilterResult(entries)),
-            NgBatchQuery = (_, _, _, _) => Task.FromResult(batches.Select(batch => BatchKey(batch.Folder)).ToArray())
+            NgBatchQuery = async (_, _, _, ct) =>
+            {
+                Interlocked.Increment(ref overviewRequests);
+                if (delayOverview) await releaseOverview.Task.WaitAsync(ct);
+                return batches.Select(batch => BatchKey(batch.Folder)).ToArray();
+            }
         };
         service.Start(0);
         var endpoint = new RemoteFileClient("127.0.0.1", service.Port);
@@ -79,6 +90,8 @@ internal static partial class RemoteWindowChecks
             var overview = (FrameworkElement)browser.FindName("NgOverviewPanel");
             var overviewDays = (ItemsControl)browser.FindName("NgOverviewDays");
             await FlushAsync(browser);
+            int initialRequests = Volatile.Read(ref overviewRequests);
+            delayOverview = true;
             var first = FindButton(overview, "标注批次 1") ?? throw new Exception("缺少首个待标注卡片");
             var originalRows = overviewDays.ItemsSource;
             var originalDayContainer = overviewDays.ItemContainerGenerator.ContainerFromIndex(0);
@@ -86,6 +99,11 @@ internal static partial class RemoteWindowChecks
             first.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             await WaitAsync(() => !browser.IsBusy && host.OwnedWindows.OfType<ImageViewer>().Any());
             var viewer = host.OwnedWindows.OfType<ImageViewer>().Single();
+            await WaitAsync(() => FindImage(viewer)?.Source is not null);
+            var firstPicker = (Button)AnnotationField(viewer, "categoryPicker");
+            if (firstPicker.IsEnabled) throw new Exception("字典请求未结束时，首图可见但归类控件应保持禁用");
+            releaseDictionary.SetResult();
+            await WaitAsync(() => firstPicker.IsEnabled);
             otherApp.Show();
             otherApp.Activate();
             await WaitAsync(() => otherApp.IsActive);
@@ -97,16 +115,21 @@ internal static partial class RemoteWindowChecks
                 throw new Exception("普通关窗刷新应复用日期和卡片容器");
             if (viewer.AnnotationSubmitted || ((TextBlock)browser.FindName("StatusText")).Text.StartsWith("下一未标注"))
                 throw new Exception("普通关闭标注窗口时不应自动定位下一批");
+            if (Volatile.Read(ref overviewRequests) != initialRequests)
+                throw new Exception("普通关闭标注窗口不应重查 NG 总览");
             ((RadioButton)browser.FindName("NgPendingFilter")).IsChecked = true;
             await FlushAsync(browser);
             first = FindButton(overview, "标注批次 1") ?? throw new Exception("未标注筛选丢失首个批次");
             first.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            int successfulWrites = 0;
             foreach (var (current, next) in new[] { ("1", "3"), ("3", "4"), ("4", "") })
             {
                 await WaitAsync(() => !browser.IsBusy && host.OwnedWindows.OfType<ImageViewer>().Any());
                 viewer = host.OwnedWindows.OfType<ImageViewer>().Single();
                 if (!viewer.CurrentPath.Contains("/" + current + "/")) throw new Exception("Enter 打开的批次不正确");
                 await WaitAsync(() => FindImage(viewer)?.Source is not null);
+                if (Volatile.Read(ref gatedRepository.DictionaryReads) != 1 + successfulWrites)
+                    throw new Exception("同连接连续标注应复用字典，只保留旧提交路径必要的服务端校验");
                 SelectAnnotationOption(viewer, "categoryPicker", "测试归类");
                 SelectAnnotationOption(viewer, "planPicker", "测试方案");
                 var rowsBeforeSubmit = overviewDays.ItemsSource;
@@ -119,12 +142,14 @@ internal static partial class RemoteWindowChecks
                     || current == "1" && !ReferenceEquals(firstDayBeforeSubmit, overviewDays.ItemContainerGenerator.ContainerFromIndex(0)))
                     throw new Exception("提交后的进度更新应复用现有列表与未移除的日期容器");
                 if (!viewer.AnnotationSubmitted) throw new Exception("成功提交后应记录提交结果");
+                successfulWrites++;
                 if (next.Length == 0)
                 {
                     await WaitAsync(() => ((TextBlock)browser.FindName("StatusText")).Text.Contains("均已标注"));
                     break;
                 }
                 await WaitAsync(() => FindButton(overview, "标注批次 " + next)?.IsKeyboardFocused == true);
+                await WaitAsync(() => Volatile.Read(ref overviewRequests) > initialRequests);
                 var nextButton = FindButton(overview, "标注批次 " + next)!;
                 // BringIntoView 在布局队列中完成；获焦并不代表滚动已经结束。
                 await FlushAsync(nextButton);
@@ -138,7 +163,13 @@ internal static partial class RemoteWindowChecks
             Console.WriteLine("通过：提交后跳过已标注批次、跨日期展开并定位，Enter 打开下一批，普通关闭保持位置");
             Console.WriteLine("通过：切换其他窗口后关窗回到主页，进度刷新保留列表和日期卡片容器");
         }
-        finally { await CloseAsync(otherApp); await CloseAsync(host); }
+        finally
+        {
+            releaseOverview.TrySetResult();
+            releaseDictionary.TrySetResult();
+            await CloseAsync(otherApp);
+            await CloseAsync(host);
+        }
     }
 
     private static async Task CheckAnnotationReopenAsync(string temp)

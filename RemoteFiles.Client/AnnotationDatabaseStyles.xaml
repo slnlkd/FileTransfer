@@ -1,0 +1,111 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Style x:Key="AnnotationTableText" TargetType="TextBlock"
+           BasedOn="{x:Static DataGridTextColumn.DefaultElementStyle}">
+        <Setter Property="FontFamily" Value="{DynamicResource UiFontFamily}"/>
+    </Style>
+
+    <Style x:Key="AnnotationValidationText" TargetType="TextBlock"
+           BasedOn="{StaticResource AnnotationTableText}">
+        <Setter Property="Text" Value="未验证"/>
+        <Setter Property="Foreground" Value="{DynamicResource WarningBrush}"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding ValidationState}" Value="通过">
+                <Setter Property="Text" Value="已验证"/>
+                <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+            </DataTrigger>
+            <DataTrigger Binding="{Binding ValidationState}" Value="失败">
+                <Setter Property="Text" Value="验证失败"/>
+                <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="SqlTemplateOption" TargetType="ComboBoxItem">
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBoxItem">
+                    <Border x:Name="Row" Background="Transparent" Padding="10,6"
+                            CornerRadius="{DynamicResource ControlCornerRadius}">
+                        <ContentPresenter/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Row" Property="Background" Value="{DynamicResource SelectionBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Row" Property="Background" Value="{DynamicResource RowHoverBrush}"/>
+                            <Setter TargetName="Row" Property="TextElement.Foreground" Value="{DynamicResource AccentBrush}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="SqlTemplatePicker" TargetType="ComboBox">
+        <Setter Property="Height" Value="{DynamicResource FormControlHeight}"/>
+        <Setter Property="MaxDropDownHeight" Value="320"/>
+        <Setter Property="Foreground" Value="{DynamicResource InkBrush}"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="ItemContainerStyle" Value="{StaticResource SqlTemplateOption}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBox">
+                    <Grid>
+                        <ToggleButton x:Name="PickerToggle" Focusable="False" ClickMode="Press"
+                                      IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
+                            <ToggleButton.Template>
+                                <ControlTemplate TargetType="ToggleButton">
+                                    <Border Background="Transparent"/>
+                                </ControlTemplate>
+                            </ToggleButton.Template>
+                        </ToggleButton>
+                        <Border x:Name="PickerFrame" IsHitTestVisible="False" Padding="10,0"
+                                Background="{DynamicResource SurfaceBrush}"
+                                BorderBrush="{DynamicResource LineBrush}" BorderThickness="1"
+                                CornerRadius="{DynamicResource ControlCornerRadius}">
+                            <DockPanel>
+                                <Path DockPanel.Dock="Right" Margin="10,0,2,0" VerticalAlignment="Center"
+                                      Style="{DynamicResource IconGlyph}" Data="{DynamicResource IconChevronGeometry}"
+                                      Stroke="{DynamicResource MutedBrush}"/>
+                                <ContentPresenter VerticalAlignment="Center"
+                                                  Content="{TemplateBinding SelectionBoxItem}"
+                                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                  ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"/>
+                            </DockPanel>
+                        </Border>
+                        <Popup x:Name="PART_Popup" Placement="Bottom" VerticalOffset="4" AllowsTransparency="True"
+                               Focusable="False" IsOpen="{TemplateBinding IsDropDownOpen}"
+                               PlacementTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}">
+                            <Border Style="{DynamicResource PopupSurface}"
+                                    Width="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                                    MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                              CanContentScroll="True">
+                                    <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                </ScrollViewer>
+                            </Border>
+                        </Popup>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="PickerFrame" Property="BorderBrush" Value="{DynamicResource SelectionBorderBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                            <Setter TargetName="PickerFrame" Property="BorderBrush" Value="{DynamicResource FocusBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsDropDownOpen" Value="True">
+                            <Setter TargetName="PickerFrame" Property="BorderBrush" Value="{DynamicResource FocusBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="PickerFrame" Property="Opacity" Value="0.55"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>

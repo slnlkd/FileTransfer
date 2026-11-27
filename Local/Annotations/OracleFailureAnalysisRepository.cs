@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.IO;
-using System.Text.Json;
 using Oracle.ManagedDataAccess.Client;
 using Serilog;
 using Transfer.Core;
@@ -13,60 +12,30 @@ namespace RemoteFiles.Server;
 /// 表名在运行时从 all_tables 解析（兼容全大写/混合大小写、不同 schema），
 /// 字典读 RpaDataItems(ItemCode=ExceptionType / ExceptionSol) + RpaDataItemDetails。
 /// </summary>
-internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
+internal sealed partial class OracleFailureAnalysisRepository : IAnnotationRepository, INgAnnotationRepository
 {
-    private const string CategoryItemCode = "ExceptionType";
-    private const string PlanItemCode = "ExceptionSol";
-    private const string RemarkItemCode = "ExceptionRemark";
-    private const string NoteColumn = "EXTEND_FIELD1";
-    private const string TargetTable = "AUTOLINEFAILUREANALYSISLOG";
+    internal const string CategoryItemCode = "ExceptionType";
+    internal const string PlanItemCode = "ExceptionSol";
+    internal const string RemarkItemCode = "ExceptionRemark";
+    internal const string TargetTable = "AUTOLINEFAILUREANALYSISLOG";
     private static readonly ConcurrentDictionary<string, string?> equipmentTypes = new(StringComparer.OrdinalIgnoreCase);
-
-    private sealed record Settings(string ConnectionString, int CommandTimeoutSeconds = 10);
 
     private readonly string connectionString;
     private readonly int commandTimeout;
     private string? resolvedTable;
-    private string? resolvedSchema;
+    internal string? ResolvedLogTable => resolvedLogTableName;
+    private string? resolvedLogTableName;
 
-    private OracleFailureAnalysisRepository(string connectionString, int commandTimeout)
+    internal OracleFailureAnalysisRepository(NgFilterSettings settings)
     {
-        this.connectionString = connectionString;
-        this.commandTimeout = commandTimeout;
-    }
-
-    /// <summary>连接串沿用 ngfilter.json；没有配置时返回 null，服务端回退到本地 JSON 仓储。</summary>
-    public static IAnnotationRepository? TryLoad()
-    {
-        try
-        {
-            string path = AppLogging.GetSettingsPath("ngfilter.json");
-            if (!File.Exists(path)) { Log.Warning("标注未启用：缺少 ngfilter.json 数据库配置"); return null; }
-            var settings = JsonSerializer.Deserialize<Settings>(File.ReadAllText(path));
-            if (string.IsNullOrWhiteSpace(settings?.ConnectionString))
-            {
-                Log.Warning("标注未启用：ngfilter.json 缺少 ConnectionString");
-                return null;
-            }
-            int timeout = Math.Clamp(settings.CommandTimeoutSeconds <= 0 ? 10 : settings.CommandTimeoutSeconds, 1, 60);
-            Log.Information("标注仓储已启用：Oracle {Table}", TargetTable);
-            return new OracleFailureAnalysisRepository(settings.ConnectionString, timeout);
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "初始化标注仓储失败，回退到本地 JSON");
-            return null;
-        }
+        connectionString = settings.ConnectionString;
+        commandTimeout = settings.AnnotationTimeout;
     }
 
     public async Task<RemoteAnnotation[]> ListAsync(string equipmentNo, DateTime date, CancellationToken ct = default, string? batch = null)
     {
         await using var connection = await OpenAsync(ct);
-        string sql = "SELECT \"JOB_BATCH_NUMBER\",\"FAIL_TYPE\",\"FAIL_HANDLE_SOLUTION\",\"ANALYSIS_USER\",\"ANALYSIS_DATETIME\"," +
-            "\"FILE_DIRECTORY\",\"" + NoteColumn + "\",\"EQP_TYPE\" FROM " + await TableAsync(connection, ct) + " " +
-            "WHERE \"EQP_ID\" = :pEqp AND TRUNC(\"AUTOLINE_DATE\") = :pDate" +
-            (batch is null ? "" : " AND TRIM(\"JOB_BATCH_NUMBER\") = :pBatch") +
-            " ORDER BY \"ANALYSIS_DATETIME\" DESC NULLS LAST, \"ID\" DESC";
+        string sql = OracleAnnotationSql.SelectHistory(await TableAsync(connection, ct), batch);
         await using var command = Create(connection, sql);
         command.Parameters.Add("pEqp", OracleDbType.NVarchar2, 32).Value = equipmentNo;
         command.Parameters.Add("pDate", OracleDbType.Date).Value = date;
@@ -91,8 +60,7 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
     public async Task<RemoteBatchKey[]> ListAnnotatedBatchesAsync(string equipmentNo, DateTime start, DateTime end, CancellationToken ct)
     {
         await using var connection = await OpenAsync(ct);
-        string sql = "SELECT DISTINCT TRUNC(\"AUTOLINE_DATE\"), \"JOB_BATCH_NUMBER\" FROM " + await TableAsync(connection, ct) +
-            " WHERE \"EQP_ID\" = :pEqp AND \"AUTOLINE_DATE\" >= :pStart AND \"AUTOLINE_DATE\" < :pEnd AND \"JOB_BATCH_NUMBER\" IS NOT NULL";
+        string sql = OracleAnnotationSql.SelectAnnotatedBatches(await TableAsync(connection, ct));
         await using var command = Create(connection, sql);
         command.Parameters.Add("pEqp", OracleDbType.NVarchar2, 32).Value = equipmentNo;
         command.Parameters.Add("pStart", OracleDbType.Date).Value = start;
@@ -115,18 +83,26 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
         return Path.GetExtension(name).ToLowerInvariant() is ".jpg" or ".png" ? (normalized[..slash], name) : (normalized, null);
     }
 
-    public async Task<RemoteAnnotation> SaveAsync(RemoteAnnotation annotation, CancellationToken ct = default)
+    public Task<RemoteAnnotation> SaveAsync(RemoteAnnotation annotation, CancellationToken ct = default)
+        => SaveAsync(annotation, false, null, ct);
+
+    public async Task<RemoteAnnotation> SaveAsync(RemoteAnnotation annotation, bool requireNgResult, string? resultId, CancellationToken ct)
     {
         await using var connection = await OpenAsync(ct);
         string table = await TableAsync(connection, ct);
         // 优先使用设备主数据；DS616 路径可在主数据缺失时提供机型。
         string? registeredType = await ResolveEquipmentTypeAsync(connection, annotation.EquipmentNo ?? "", ct);
         string equipmentType = string.IsNullOrWhiteSpace(registeredType) ? annotation.EquipmentType ?? "未知" : registeredType;
-        string sql = "INSERT INTO " + table + " " +
-            "(\"ID\",\"EQP_ID\",\"EQP_TYPE\",\"AUTOLINE_DATE\",\"JOB_BATCH_NUMBER\",\"ANALYSIS_USER\",\"ANALYSIS_DATETIME\"," +
-            "\"FAIL_TYPE\",\"FAIL_HANDLE_SOLUTION\",\"FILE_DIRECTORY\",\"" + NoteColumn + "\") " +
-            "VALUES (:pId,:pEqp,:pEqpType,:pDate,:pBatch,:pUser,SYSDATE,:pType,:pPlan,:pDir,:pNote)";
+        await using var transaction = (OracleTransaction)await connection.BeginTransactionAsync(ct);
+        ResultTarget? target = null;
+        if (resultId is not null && annotation.CategoryDictionaryId is { } dictionaryId)
+            await UpdateSelectedResultAsync(connection, transaction, annotation, resultId, dictionaryId, ct);
+        else
+            target = await FindWriteTargetAsync(connection, transaction, annotation.EquipmentNo ?? "",
+                annotation.AutoLineDate ?? DateTime.Today, annotation.BatchNumber ?? "", requireNgResult, resultId, ct);
+        string sql = OracleAnnotationSql.InsertAnnotation(table);
         await using var command = Create(connection, sql);
+        command.Transaction = transaction;
         // Oracle DATE 精确到秒，同一秒内新增的记录用带时间的 ID 决定读取顺序。
         command.Parameters.Add("pId", OracleDbType.NVarchar2, 128).Value = Guid.CreateVersion7().ToString("N");
         command.Parameters.Add("pEqp", OracleDbType.NVarchar2, 32).Value = annotation.EquipmentNo ?? "";
@@ -143,7 +119,14 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
         command.Parameters.Add("pPlan", OracleDbType.Varchar2, 3072).Value = annotation.PlanName ?? "";
         command.Parameters.Add("pDir", OracleDbType.Varchar2, 3072).Value = fileDirectory;
         command.Parameters.Add("pNote", OracleDbType.Varchar2, 3072).Value = annotation.Note ?? "";
-        try { await command.ExecuteNonQueryAsync(ct); }
+        try
+        {
+            await command.ExecuteNonQueryAsync(ct);
+            if (target is not null)
+                await UpdateResultAsync(connection, transaction, target, annotation.CategoryName, ct);
+            ct.ThrowIfCancellationRequested();
+            await transaction.CommitAsync(CancellationToken.None);
+        }
         catch (OracleException ex)
         {
             Log.Error(ex, "标注写入数据库失败；Oracle {Code}；SQL {Sql}", ex.Number, sql);
@@ -154,18 +137,32 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
         return annotation with { UpdatedAt = DateTime.Now, EquipmentType = equipmentType };
     }
 
-    public async Task<int> DeleteImageAsync(string equipmentNo, DateTime date, string batch, string folderPath, string imageName, CancellationToken ct = default)
+    public Task<int> DeleteImageAsync(string equipmentNo, DateTime date, string batch, string folderPath, string imageName, CancellationToken ct = default)
+        => DeleteImageAsync(equipmentNo, date, batch, folderPath, imageName, false, null, ct);
+
+    public async Task<int> DeleteImageAsync(string equipmentNo, DateTime date, string batch, string folderPath, string imageName,
+        bool requireNgResult, string? resultId, CancellationToken ct)
     {
         await using var connection = await OpenAsync(ct);
-        string sql = "DELETE FROM " + await TableAsync(connection, ct) +
-            " WHERE \"EQP_ID\" = :pEqp AND TRUNC(\"AUTOLINE_DATE\") = :pDate AND TRIM(\"JOB_BATCH_NUMBER\") = :pBatch" +
-            " AND LOWER(RTRIM(REPLACE(\"FILE_DIRECTORY\", CHR(92), '/'), '/')) = LOWER(:pDir)";
+        string table = await TableAsync(connection, ct);
+        await using var transaction = (OracleTransaction)await connection.BeginTransactionAsync(ct);
+        var target = await FindWriteTargetAsync(connection, transaction, equipmentNo, date, batch, requireNgResult, resultId, ct);
+        string sql = OracleAnnotationSql.DeleteImageAnnotations(table);
         await using var command = Create(connection, sql);
+        command.Transaction = transaction;
         command.Parameters.Add("pEqp", OracleDbType.NVarchar2, 32).Value = equipmentNo;
         command.Parameters.Add("pDate", OracleDbType.Date).Value = date;
         command.Parameters.Add("pBatch", OracleDbType.NVarchar2, 32).Value = BatchNames.Normalize(batch);
         command.Parameters.Add("pDir", OracleDbType.Varchar2, 3072).Value = folderPath + "/" + imageName;
-        return await command.ExecuteNonQueryAsync(ct);
+        int deleted = await command.ExecuteNonQueryAsync(ct);
+        if (target is not null && deleted > 0)
+        {
+            string? category = await FindLatestCategoryAsync(connection, transaction, table, equipmentNo, date, batch, ct);
+            await UpdateResultAsync(connection, transaction, target, category, ct);
+        }
+        ct.ThrowIfCancellationRequested();
+        await transaction.CommitAsync(CancellationToken.None);
+        return deleted;
     }
 
     public async Task<RemoteDictionary> GetDictionaryAsync(CancellationToken ct = default)
@@ -263,11 +260,7 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
 
     private async Task<RemoteDictionary> ReadDictionaryAsync(OracleConnection connection, OracleTransaction? transaction, CancellationToken ct)
     {
-        const string sql = "SELECT i.\"ItemCode\", d.\"ItemValue\", d.\"ItemName\" " +
-            "FROM \"RCMDB\".\"RpaDataItems\" i JOIN \"RCMDB\".\"RpaDataItemDetails\" d ON d.\"ItemId\" = i.\"Id\" " +
-            "WHERE (UPPER(TRIM(i.\"ItemCode\")) = :pCategory OR UPPER(TRIM(i.\"ItemCode\")) = :pPlan OR UPPER(TRIM(i.\"ItemCode\")) = :pRemark) " +
-            "AND i.\"IsDeleted\" = 0 AND d.\"IsDeleted\" = 0 " +
-            "ORDER BY d.\"SortCode\", d.\"ItemName\"";
+        string sql = OracleAnnotationSql.SelectDictionary;
         await using var command = Create(connection, sql);
         if (transaction is not null) command.Transaction = transaction;
         command.Parameters.Add("pCategory", OracleDbType.NVarchar2, 50).Value = CategoryItemCode.ToUpperInvariant();
@@ -286,7 +279,8 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
                 if (name.Length == 0) continue;
                 seenCodes.Add(itemCode);
                 var item = new RemoteDictionaryItem(Text(reader, 1) is { Length: > 0 } value ? value : name, name);
-                if (itemCode.Equals(CategoryItemCode, StringComparison.OrdinalIgnoreCase)) categories.Add(item);
+                if (itemCode.Equals(CategoryItemCode, StringComparison.OrdinalIgnoreCase))
+                    categories.Add(item with { Id = Convert.ToHexStringLower(reader.GetOracleBinary(3).Value) });
                 else if (itemCode.Equals(PlanItemCode, StringComparison.OrdinalIgnoreCase)) plans.Add(item);
                 else if (itemCode.Equals(RemarkItemCode, StringComparison.OrdinalIgnoreCase)) remarks.Add(item);
             }
@@ -305,27 +299,28 @@ internal sealed class OracleFailureAnalysisRepository : IAnnotationRepository
         await using var command = Create(connection, sql);
         command.Parameters.Add("pName", OracleDbType.Varchar2, 128).Value = TargetTable;
         await using var reader = await command.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
+        var candidates = new List<(string Owner, string Name)>();
+        while (await reader.ReadAsync(ct)) candidates.Add((reader.GetString(0), reader.GetString(1)));
+        if (ChooseLogTable(candidates) is { } table)
         {
-            string owner = reader.GetString(0);
-            string name = reader.GetString(1);
-            string candidate = "\"" + owner + "\".\"" + name + "\"";
-            // 多个 schema 同名表时优先 RCMDB。
-            resolvedSchema = owner;
-            if (resolvedTable is null || owner.Equals("RCMDB", StringComparison.OrdinalIgnoreCase))
-            {
-                resolvedTable = candidate;
-                if (owner.Equals("RCMDB", StringComparison.OrdinalIgnoreCase)) break;
-            }
+            resolvedTable = resolvedLogTableName = Qualify(table.Owner, table.Name);
+            Log.Information("标注表已定位：{Table}（schema {Schema}）", resolvedTable, table.Owner);
         }
-        if (resolvedTable is null)
+        else
         {
             Log.Warning("数据库里没有找到 {Table}，标注将无法写入", TargetTable);
-            resolvedTable = "\"RCMDB\"." + TargetTable;
+            resolvedTable = Qualify("RCMDB", TargetTable);
         }
-        else Log.Information("标注表已定位：{Table}（schema {Schema}）", resolvedTable, resolvedSchema);
         return resolvedTable;
     }
+
+    internal static (string Owner, string Name)? ChooseLogTable(IEnumerable<(string Owner, string Name)> candidates)
+        => candidates.OrderByDescending(table => table.Owner.Equals("RCMDB", StringComparison.OrdinalIgnoreCase))
+            .ThenBy(table => table.Owner, StringComparer.Ordinal).ThenBy(table => table.Name, StringComparer.Ordinal)
+            .Select(table => ((string Owner, string Name)?)table).FirstOrDefault();
+
+    internal static string Qualify(string owner, string name)
+        => $"\"{owner.Replace("\"", "\"\"")}\".\"{name.Replace("\"", "\"\"")}\"";
 
     private async Task<string?> ResolveEquipmentTypeAsync(OracleConnection connection, string equipmentNo, CancellationToken ct)
     {

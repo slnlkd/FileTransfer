@@ -166,6 +166,13 @@
                             Visibility="Collapsed">
                         <Path Data="{StaticResource IconDownloadGeometry}" Style="{StaticResource IconGlyph}" />
                     </Button>
+                    <Button Margin="0,0,2,0"
+                            Click="AnnotationDatabase_Click"
+                            Style="{StaticResource RoundIconButton}"
+                            AutomationProperties.Name="标注数据库"
+                            ToolTip="标注数据库">
+                        <Path Data="{StaticResource IconDatabaseGeometry}" Style="{StaticResource SmallIconGlyph}" />
+                    </Button>
                     <Button x:Name="ThemeButton"
                             Margin="0,0,2,0"
                             Click="Theme_Click"

@@ -77,6 +77,8 @@ internal static partial class RemoteWindowChecks
 
     private sealed class GatedAnnotationRepository(IAnnotationRepository inner) : IAnnotationRepository
     {
+        public TaskCompletionSource? DictionaryRelease { get; init; }
+        public int DictionaryReads;
         public TaskCompletionSource Started { get; private set; } = new();
         public TaskCompletionSource Release { get; private set; } = new();
         public void Reset() { Started = new(); Release = new(); }
@@ -92,7 +94,12 @@ internal static partial class RemoteWindowChecks
         {
             Started.TrySetResult(); await Release.Task.WaitAsync(ct); return await inner.DeleteImageAsync(equipment, date, batch, path, image, ct);
         }
-        public Task<RemoteDictionary> GetDictionaryAsync(CancellationToken ct = default) => inner.GetDictionaryAsync(ct);
+        public async Task<RemoteDictionary> GetDictionaryAsync(CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref DictionaryReads);
+            if (DictionaryRelease is { } release) await release.Task.WaitAsync(ct);
+            return await inner.GetDictionaryAsync(ct);
+        }
         public Task<RemoteDictionary> AddDictionaryItemAsync(AnnotationDictionaryKind kind, string name, CancellationToken ct = default) =>
             inner.AddDictionaryItemAsync(kind, name, ct);
     }

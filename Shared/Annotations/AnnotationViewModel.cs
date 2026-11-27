@@ -17,13 +17,15 @@ public sealed class AnnotationViewModel(
     private bool disposed, isDirty, isWriting, isAddingDictionary;
     private int imageVersion, dictionaryVersion;
     private string category = "", plan = "", note = "", operatorText = operatorName, error = "";
+    private string? categoryDictionaryId;
     public event PropertyChangedEventHandler? PropertyChanged;
     public event Action<AnnotationWriteKind>? WriteSucceeded;
     public string ImageName { get; private set; } = "";
     public IReadOnlyList<RemoteAnnotation> History { get; private set; } = [];
     public string? HistoryReadError => context.HistoryReadError;
+    public string? TargetError => context.Target?.Error;
     public RemoteDictionary Dictionary { get; private set; } = new([], []);
-    public string Category { get => category; set => ChangeDraft(ref category, value); }
+    public string Category { get => category; set => SetCategory(value, null); }
     public string Plan { get => plan; set => ChangeDraft(ref plan, value); }
     public string Note { get => note; set => ChangeDraft(ref note, value); }
     public string Operator { get => operatorText; set => ChangeDraft(ref operatorText, value); }
@@ -34,6 +36,7 @@ public sealed class AnnotationViewModel(
     public bool IsAddingDictionary { get => isAddingDictionary; private set { isAddingDictionary = value; Changed(); Changed(nameof(IsBusy)); } }
     public bool IsBusy => IsWriting || IsAddingDictionary;
     public AnnotationWriteKind? PendingWrite { get; private set; }
+    public RemoteAnnotation? SavedAnnotation { get; private set; }
 
     public void SelectImage(string imageName)
     {
@@ -43,6 +46,7 @@ public sealed class AnnotationViewModel(
         ImageName = imageName;
         History = context.GetImageHistory(imageName);
         category = plan = note = "";
+        categoryDictionaryId = null;
         operatorText = defaultOperator;
         ClearError();
         IsDirty = false;
@@ -51,6 +55,16 @@ public sealed class AnnotationViewModel(
     }
 
     public void DiscardDraft() { IsDirty = false; }
+    public void SelectCategory(RemoteDictionaryItem item) => SetCategory(item.Name, item.Id);
+
+    private void SetCategory(string name, string? id)
+    {
+        if (disposed) return;
+        if (category == name && categoryDictionaryId != id) IsDirty = true;
+        categoryDictionaryId = id;
+        ChangeDraft(ref category, name, nameof(Category));
+    }
+
     public void ClearError() { ErrorField = null; Error = ""; }
     private void ChangeDraft(ref string field, string value, [CallerMemberName] string? property = null)
     {
@@ -122,7 +136,7 @@ public sealed class AnnotationViewModel(
                 var item = items.FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase));
                 if (item is not null)
                 {
-                    if (kind == AnnotationDictionaryKind.Category) Category = item.Name;
+                    if (kind == AnnotationDictionaryKind.Category) SelectCategory(item);
                     else if (kind == AnnotationDictionaryKind.Plan) Plan = item.Name;
                 }
             }
@@ -137,6 +151,7 @@ public sealed class AnnotationViewModel(
     public Task<bool> SubmitAsync()
     {
         if (disposed || IsBusy) return Task.FromResult(false);
+        if (TargetError is { } targetError) return Task.FromResult(Invalid(targetError));
         ClearError();
         if (ImageName.Length == 0) return Task.FromResult(Invalid("请选择图片"));
         if (string.IsNullOrWhiteSpace(Category)) return Task.FromResult(Invalid("请选择异常归类", nameof(Category)));
@@ -149,10 +164,10 @@ public sealed class AnnotationViewModel(
         if (Category.Trim().Length > AnnotationStore.NameLimit || Plan.Trim().Length > AnnotationStore.NameLimit)
             return Task.FromResult(Invalid($"取值不能超过 {AnnotationStore.NameLimit} 个字符"));
         var record = new RemoteAnnotation(context.FolderPath, CategoryName: Category.Trim(), PlanName: Plan.Trim(),
-            Note: Note, Operator: Operator.Trim(), ImageName: ImageName);
+            Note: Note, Operator: Operator.Trim(), ImageName: ImageName) { CategoryDictionaryId = categoryDictionaryId };
         return WriteAsync(AnnotationWriteKind.Submit, async ct =>
         {
-            await client.SaveAsync(record, ct);
+            SavedAnnotation = await client.SaveAsync(record, ct);
             if (!disposed && !ct.IsCancellationRequested) saveOperator?.Invoke(record.Operator!);
         });
     }
@@ -160,6 +175,7 @@ public sealed class AnnotationViewModel(
     public Task<bool> RevokeAsync()
     {
         if (disposed || IsBusy || History.Count == 0) return Task.FromResult(false);
+        if (TargetError is { } targetError) return Task.FromResult(Invalid(targetError));
         string image = ImageName;
         return WriteAsync(AnnotationWriteKind.Revoke, async ct => { await client.DeleteImageAsync(context.FolderPath, image, ct); });
     }

@@ -13,6 +13,8 @@ public sealed class NgProgressViewModel : IDisposable
     private static readonly string[] DateFormats = ["yyyy-MM-dd", "yyyy.MM.dd", "yyyyMMdd"];
     private readonly Dictionary<DateTime, bool> expanded = [];
     private CancellationTokenSource? active;
+    private CancellationTokenSource? reconcile;
+    private Func<CancellationToken, Task>? pendingReconcile;
     private int version;
     private NgProgressFilter filter;
     public string? Path { get; private set; }
@@ -35,6 +37,7 @@ public sealed class NgProgressViewModel : IDisposable
     public void Reset() { Invalidate(""); expanded.Clear(); Path = null; }
     public void Invalidate(string message)
     {
+        CancelReconcile();
         version++; active?.Cancel();
         Clear(message);
     }
@@ -49,6 +52,58 @@ public sealed class NgProgressViewModel : IDisposable
         if (HasResult) Render();
     }
     public void RememberExpanded(DateTime date, bool value) => expanded[date] = value;
+    public void SetBatchAnnotated(string folder, bool annotated)
+    {
+        for (int dayIndex = 0; dayIndex < Days.Length; dayIndex++)
+        {
+            var day = Days[dayIndex];
+            int index = Array.FindIndex(day.Batches, batch => batch.Path == folder);
+            if (index < 0) continue;
+            if (day.Batches[index].Annotated == annotated) return;
+            var batches = (RemoteNgBatch[])day.Batches.Clone();
+            batches[index] = batches[index] with { Annotated = annotated };
+            Days[dayIndex] = day with { Batches = batches };
+            Render();
+            return;
+        }
+    }
+
+    public void InvalidateQueryResponse() => version++;
+
+    public void QueueReconcile(Func<CancellationToken, Task> refresh)
+    {
+        pendingReconcile = refresh;
+        if (reconcile is null) _ = RunReconcileAsync();
+    }
+
+    public void CancelReconcile()
+    {
+        pendingReconcile = null;
+        reconcile?.Cancel();
+        reconcile = null;
+    }
+
+    private async Task RunReconcileAsync()
+    {
+        using var source = reconcile = new CancellationTokenSource();
+        try
+        {
+            while (pendingReconcile is not null)
+            {
+                await Task.Delay(150, source.Token);
+                if (pendingReconcile is not { } refresh) break;
+                pendingReconcile = null;
+                await refresh(source.Token);
+                source.Token.ThrowIfCancellationRequested();
+            }
+        }
+        catch (OperationCanceledException) when (source.IsCancellationRequested) { }
+        catch (Exception ex) { Log.Debug(ex, "后台校准 NG 总览失败"); }
+        finally
+        {
+            if (ReferenceEquals(reconcile, source)) reconcile = null;
+        }
+    }
     public RemoteNgBatch? FindNext(string completedFolder)
     {
         var batches = Days.SelectMany(day => day.Batches).ToArray();
@@ -58,7 +113,7 @@ public sealed class NgProgressViewModel : IDisposable
 
     public async Task<bool> QueryAsync(string startText, string endText,
         Func<string, DateTime, DateTime, CancellationToken, Task<RemoteNgDay[]>> query,
-        CancellationToken ct = default, Func<bool>? isCurrent = null)
+        CancellationToken ct = default, Func<bool>? isCurrent = null, bool preserveResultOnFailure = false)
     {
         if (Path is not { } path) return false;
         if (!TryDate(startText, out var start) || !TryDate(endText, out var end)
@@ -85,7 +140,7 @@ public sealed class NgProgressViewModel : IDisposable
         {
             if (Current())
             {
-                Clear("读取 NG 总览失败：" + ex.Message);
+                if (!preserveResultOnFailure) Clear("读取 NG 总览失败：" + ex.Message);
                 Log.Warning(ex, "读取 NG 总览失败；目录 {RemoteDirectory}", path);
             }
             return false;

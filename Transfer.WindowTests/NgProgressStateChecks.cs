@@ -23,6 +23,16 @@ internal static class NgProgressStateChecks
         state.SetFilter(NgFilter.Pending);
         Check(state.Rows.Count == 1 && state.Rows[0].Date.Day == 19 && state.Total == 3, "筛选只能改变可见批次，不能改变总数");
         Check(state.FindNext("day/1")?.Path == "day/3", "下一批应跳过已标注并跨日期");
+        var staleRefresh = new TaskCompletionSource<RemoteNgDay[]>();
+        var reconcile = state.QueryAsync("2026-11-19", "2026-11-20", (_, _, _, _) => staleRefresh.Task, preserveResultOnFailure: true);
+        state.InvalidateQueryResponse();
+        state.SetBatchAnnotated("day/3", true);
+        staleRefresh.SetResult(days);
+        await reconcile;
+        Check(state.Annotated == 3 && state.Pending == 0 && state.FindNext("day/3") is null, "晚到的总览不能覆盖已经确认的提交");
+        await state.QueryAsync("2026-11-19", "2026-11-20", (_, _, _, _) => throw new InvalidOperationException("后台失败"),
+            preserveResultOnFailure: true);
+        Check(state.HasResult && state.Annotated == 3, "后台校准失败应保留当前视图");
         state.Invalidate("日期已更改，请点击查询"); state.SetFilter(NgFilter.Annotated);
         Check(!state.HasResult && state.Rows.Count == 0 && state.Message.Contains("日期已更改"), "修改日期后筛选不能恢复旧结果");
         int calls = 0;

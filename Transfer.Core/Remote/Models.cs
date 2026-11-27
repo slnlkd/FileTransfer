@@ -32,8 +32,14 @@ public record ProcessState(int[] ProcessIds, string State, string? Detail = null
 public record RemoteAnnotation(string FolderPath,
     string? EquipmentNo = null, string? EquipmentType = null, DateTime? AutoLineDate = null,
     string? BatchNumber = null, string? CategoryName = null, string? PlanName = null,
-    string? Note = null, string? Operator = null, DateTime? UpdatedAt = null, string? ImageName = null);
-public record RemoteDictionaryItem(string Code, string Name);
+    string? Note = null, string? Operator = null, DateTime? UpdatedAt = null, string? ImageName = null)
+{
+    public string? CategoryDictionaryId { get; init; }
+}
+public record RemoteDictionaryItem(string Code, string Name)
+{
+    public string? Id { get; init; }
+}
 public enum AnnotationDictionaryKind { Category, Plan, Remark }
 public record RemoteDictionary(RemoteDictionaryItem[] Categories, RemoteDictionaryItem[] Plans)
 {
@@ -42,6 +48,7 @@ public record RemoteDictionary(RemoteDictionaryItem[] Categories, RemoteDictiona
 public record RemoteBatchKey(DateTime Date, string Batch);
 public record RemoteNgBatch(string Name, string Path, bool Annotated);
 public record RemoteNgDay(DateTime Date, RemoteNgBatch[] Batches);
+public record RemoteAnnotationTarget(string? ResultId = null, string? Error = null);
 public record RemoteRequest(string Command, string Path = "", string? Text = null, string? Version = null,
     string? EncodingName = null, long Length = 0, string? Sha256 = null, bool Overwrite = false,
     string? Filter = null, int Skip = 0, int Take = 0, bool FoldersOnly = false, int Protocol = 0,
@@ -49,13 +56,21 @@ public record RemoteRequest(string Command, string Path = "", string? Text = nul
     string? ImageName = null, DateTime? StartDate = null, DateTime? EndDate = null)
 {
     public string RequestId { get; init; } = Guid.NewGuid().ToString("N");
+    public bool RequireNgResult { get; init; }
+    public string? NgResultId { get; init; }
+    public string? CategoryDictionaryId { get; init; }
 }
 public record RemoteResponse(bool Ok, string? Error = null, RemoteEntry[]? Entries = null, string? Text = null,
     string? Version = null, string? EncodingName = null, long Length = 0, ProcessState? Process = null, string? RootName = null,
     string? Stage = null, double Percent = 0, string? ArchivePath = null, long CompletedBytes = 0, long TotalBytes = 0,
     string? Warning = null, int Total = 0, int Protocol = 0, string? Sha256 = null,
     RemoteAnnotation? Annotation = null, RemoteAnnotation[]? Annotations = null, RemoteDictionary? Dictionary = null,
-    RemoteNgDay[]? NgDays = null);
+    RemoteNgDay[]? NgDays = null)
+{
+    public RemoteAnnotationTarget? AnnotationTarget { get; init; }
+    public bool? BatchHasAnnotations { get; init; }
+    public AnnotationDatabaseInfo? AnnotationDatabase { get; init; }
+}
 // 目录过滤扩展的返回值：过滤后的条目，以及可选的提示信息。
 public record RemoteFilterResult(RemoteEntry[] Entries, string? Warning = null);
 public record RemoteUpdateInfo(string Version, string FileName, string Sha256, long Length, string Notes);

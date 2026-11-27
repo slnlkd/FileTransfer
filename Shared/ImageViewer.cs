@@ -122,7 +122,9 @@ public sealed class ImageViewer : Window
     private Point dragStart;
     private double dragOriginX, dragOriginY;
     public string CurrentPath => images[index].Path;
-    public bool AnnotationSubmitted { get; private set; }
+    public bool AnnotationSubmitted => AnnotationOutcome == AnnotationWriteKind.Submit;
+    public AnnotationWriteKind? AnnotationOutcome { get; private set; }
+    public RemoteAnnotation? SavedAnnotation { get; private set; }
 
     public ImageViewer(RemoteFileClient client, RemoteEntry[] images, string selected, AnnotationContext? annotation = null)
     {
@@ -433,12 +435,14 @@ public sealed class ImageViewer : Window
             System.Windows.Automation.AutomationProperties.SetName(splitter, "调整标注面板宽度");
             Grid.SetColumn(splitter, 2);
             columns.Children.Add(splitter);
-            annotationPanel = new AnnotationPanel(new AnnotationViewModel(new RemoteAnnotationClient(client), annotation,
+            annotationPanel = new AnnotationPanel(new AnnotationViewModel(new RemoteAnnotationClient(client, annotation.Target?.ResultId,
+                annotation.DictionaryCache), annotation,
                 AnnotationOperatorSettings.Load(), AnnotationOperatorSettings.Save), Resources);
             annotationPanel.WriteSucceeded += kind =>
             {
                 if (lifetime.IsCancellationRequested) return;
-                AnnotationSubmitted = kind == AnnotationWriteKind.Submit;
+                AnnotationOutcome = kind;
+                SavedAnnotation = annotationPanel.Model.SavedAnnotation;
                 var owner = Owner;
                 Close();
                 Toast.Show(owner, kind == AnnotationWriteKind.Submit ? "标注已提交" : "该图片的标注已撤销", ToastKind.Success);
@@ -475,8 +479,8 @@ public sealed class ImageViewer : Window
         Loaded += async (_, _) =>
         {
             FitToWindow();
-            await LoadAnnotationDictionaryAsync();
-            if (!lifetime.IsCancellationRequested) await ShowCurrentAsync();
+            if (!lifetime.IsCancellationRequested)
+                await Task.WhenAll(ShowCurrentAsync(), LoadAnnotationDictionaryAsync());
         };
         previousArrow.Click += async (_, _) => await MoveAsync(-1);
         nextArrow.Click += async (_, _) => await MoveAsync(1);
@@ -826,14 +830,7 @@ public sealed class ImageViewer : Window
 
     private void LoadAnnotationThumbs()
     {
-        if (annotationList is null) return;
-        foreach (var item in thumbs)
-        {
-            if (item.Thumbnail is not null) continue;
-            // 只加载已经实现出来的项，滚动到哪加载到哪。
-            if (annotationList.ItemContainerGenerator.ContainerFromItem(item) is not ListBoxItem) continue;
-            EnsureThumb(item);
-        }
+        if (annotationList is not null) LoadRealizedThumbs(annotationList);
     }
 
     private void SyncAnnotationSelection()
@@ -1394,9 +1391,12 @@ public sealed class ImageViewer : Window
         return null;
     }
 
-    private void LoadRealizedThumbs()
+    private void LoadRealizedThumbs() => LoadRealizedThumbs(thumbList);
+
+    private void LoadRealizedThumbs(ListBox list)
     {
-        foreach (var container in FindVisualChildren<ListBoxItem>(thumbList))
+        if (lifetime.IsCancellationRequested) return;
+        foreach (var container in FindVisualChildren<ListBoxItem>(list))
             if (container.DataContext is ImageThumbItem item) EnsureThumb(item);
     }
 
@@ -1445,6 +1445,7 @@ public sealed class ImageViewer : Window
                 if (item.Thumbnail is not null) return;
                 byte[] bytes = await client.ReadImageAsync(item.Path, lifetime.Token);
                 var bitmap = await Task.Run(() => DecodeThumb(bytes), lifetime.Token);
+                if (lifetime.IsCancellationRequested) return;
                 thumbCache[item.Path] = bitmap;
                 item.Thumbnail = bitmap;
             }
@@ -1551,7 +1552,7 @@ public sealed class ImageViewer : Window
         int version = ++loadVersion;
         previousArrow.IsEnabled = nextArrow.IsEnabled = false;
         SyncThumbSelection();
-        EnsureThumbsAround(index);
+        if (annotation is null) EnsureThumbsAround(index);
         titleText.Text = images[index].Name;
         titleText.ToolTip = CurrentPath;
         Title = images[index].Name + " - 图片查看";
@@ -1566,7 +1567,11 @@ public sealed class ImageViewer : Window
         {
             var bitmap = await LoadImageAsync(CurrentPath, token);
             if (version != loadVersion) return;
+            bool firstImage = image.Source is null;
             image.Source = bitmap;
+            if (firstImage && annotation?.OpenStartedAt is long started)
+                Log.Debug("打开标注到首图显示耗时 {ElapsedMs} ms；目录 {RemoteDirectory}",
+                    System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds, annotation.FolderPath);
             image.Width = bitmap.PixelWidth;
             image.Height = bitmap.PixelHeight;
             stageMessage.Visibility = Visibility.Collapsed;

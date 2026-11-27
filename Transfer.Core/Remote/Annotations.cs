@@ -31,6 +31,14 @@ public interface IAnnotationRepository
     Task<RemoteDictionary> AddDictionaryItemAsync(AnnotationDictionaryKind kind, string name, CancellationToken ct = default);
 }
 
+public interface INgAnnotationRepository
+{
+    Task<string?> FindResultIdAsync(string equipmentNo, DateTime date, string batch, CancellationToken ct);
+    Task<RemoteAnnotation> SaveAsync(RemoteAnnotation annotation, bool requireNgResult, string? resultId, CancellationToken ct);
+    Task<int> DeleteImageAsync(string equipmentNo, DateTime date, string batch, string folderPath, string imageName,
+        bool requireNgResult, string? resultId, CancellationToken ct);
+}
+
 /// <summary>
 /// 标注读写入口。每次提交追加一张图片的标注记录：
 /// 支持 机台/yyyyMMdd/批次 和 DS616/机台/SaveImages/yyyyMMdd/批次，
@@ -39,6 +47,17 @@ public interface IAnnotationRepository
 /// </summary>
 public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository repository)
 {
+    public async Task<RemoteAnnotationTarget?> GetTargetAsync(string folderPath, CancellationToken ct)
+    {
+        if (repository is not INgAnnotationRepository linked) return null;
+        var key = ParseFolder(folderPath);
+        try
+        {
+            var id = await linked.FindResultIdAsync(key.Equipment, key.Date, key.Batch, ct);
+            return id is null ? new(Error: "没有找到对应的 NG 结果，请刷新目录后重试。") : new(id);
+        }
+        catch (IOException ex) { return new(Error: ex.Message); }
+    }
     public const int NoteLimit = 500;
     public const int OperatorLimit = 100;
     public const int NameLimit = 200;
@@ -122,11 +141,14 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
 
     /// <summary>读取一个对线文件夹的标注历史。</summary>
     public async Task<RemoteAnnotation[]> GetHistoryAsync(string folderPath, CancellationToken ct = default)
+        => (await GetHistoryStateAsync(folderPath, ct)).History;
+
+    public async Task<(RemoteAnnotation[] History, bool BatchHasAnnotations)> GetHistoryStateAsync(string folderPath, CancellationToken ct = default)
     {
         var key = ParseFolder(folderPath);
         var history = await repository.ListAsync(key.Equipment, key.Date, ct, key.Batch);
-        return history.Where(item => SameFolder(item.FolderPath, key.Normalized)
-            || (string.IsNullOrEmpty(item.FolderPath) && string.IsNullOrEmpty(item.ImageName))).ToArray();
+        return (history.Where(item => SameFolder(item.FolderPath, key.Normalized)
+            || (string.IsNullOrEmpty(item.FolderPath) && string.IsNullOrEmpty(item.ImageName))).ToArray(), history.Length > 0);
     }
 
     /// <summary>列出某台设备某天的全部对线标注，供列表的「标注状态」列使用。</summary>
@@ -138,6 +160,7 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
 
     public async Task<RemoteAnnotation> SaveAsync(RemoteRequest request, CancellationToken ct = default)
     {
+        var linked = GetWriteRepository(request.RequireNgResult, request.NgResultId);
         var key = ParseFolder(request.Path);
         string category = (request.CategoryCode ?? "").Trim();
         string plan = (request.PlanCode ?? "").Trim();
@@ -152,24 +175,43 @@ public sealed class AnnotationStore(RemoteFileStore store, IAnnotationRepository
         if (note.Length > NoteLimit) throw new IOException($"备注不能超过 {NoteLimit} 个字符");
         if (category.Length > NameLimit || plan.Length > NameLimit) throw new IOException($"取值不能超过 {NameLimit} 个字符");
 
-        var words = await DictionaryAsync(ct);
-        if (words.Categories.Length > 0 && words.Categories.All(item => !string.Equals(item.Name, category, StringComparison.OrdinalIgnoreCase)))
-            throw new IOException("异常归类不在字典中：" + category);
-        if (words.Plans.Length > 0 && words.Plans.All(item => !string.Equals(item.Name, plan, StringComparison.OrdinalIgnoreCase)))
-            throw new IOException("异常处理方案不在字典中：" + plan);
+        bool useSelectedId = linked is not null && request.NgResultId is not null && request.CategoryDictionaryId is not null;
+        if (!useSelectedId)
+        {
+            var words = await DictionaryAsync(ct);
+            if (words.Categories.Length > 0 && words.Categories.All(item => !string.Equals(item.Name, category, StringComparison.OrdinalIgnoreCase)))
+                throw new IOException("异常归类不在字典中：" + category);
+            if (words.Plans.Length > 0 && words.Plans.All(item => !string.Equals(item.Name, plan, StringComparison.OrdinalIgnoreCase)))
+                throw new IOException("异常处理方案不在字典中：" + plan);
+        }
 
         var annotation = new RemoteAnnotation(key.Normalized, key.Equipment, key.EquipmentType, key.Date, key.Batch,
-            category, plan, note, @operator, DateTime.UtcNow, imageName.Length == 0 ? null : imageName);
-        return await repository.SaveAsync(annotation, ct);
+            category, plan, note, @operator, DateTime.UtcNow, imageName.Length == 0 ? null : imageName)
+            { CategoryDictionaryId = useSelectedId ? request.CategoryDictionaryId : null };
+        return linked is not null
+            ? await linked.SaveAsync(annotation, request.RequireNgResult, request.NgResultId, ct)
+            : await repository.SaveAsync(annotation, ct);
     }
 
-    public Task<int> DeleteImageAsync(string folderPath, string? imageName, CancellationToken ct = default)
+    public Task<int> DeleteImageAsync(string folderPath, string? imageName, CancellationToken ct = default,
+        bool requireNgResult = false, string? resultId = null)
     {
         imageName = imageName?.Trim();
         if (string.IsNullOrEmpty(imageName)) throw new IOException("撤销标注必须指定图片");
         ValidateImageName(imageName);
         var key = ParseFolder(folderPath);
-        return repository.DeleteImageAsync(key.Equipment, key.Date, key.Batch, key.Normalized, imageName, ct);
+        var linked = GetWriteRepository(requireNgResult, resultId);
+        return linked is not null
+            ? linked.DeleteImageAsync(key.Equipment, key.Date, key.Batch, key.Normalized, imageName, requireNgResult, resultId, ct)
+            : repository.DeleteImageAsync(key.Equipment, key.Date, key.Batch, key.Normalized, imageName, ct);
+    }
+
+    private INgAnnotationRepository? GetWriteRepository(bool requireNgResult, string? resultId)
+    {
+        var linked = repository as INgAnnotationRepository;
+        if (linked is null && (requireNgResult || resultId is not null))
+            throw new IOException("服务端当前未启用 Oracle 标注联动，无法提交或撤销。请恢复数据库配置后重试。");
+        return linked;
     }
 
     private static void ValidateImageName(string imageName)

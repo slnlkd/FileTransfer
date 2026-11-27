@@ -193,6 +193,7 @@
     </Style>
 
     <!-- 右上角统一图标：16×16 线性描边，1.5 像素圆头，颜色跟随按钮前景色。 -->
+    <Geometry x:Key="IconDatabaseGeometry">M3,4.5 A5,2.5 0 1 0 13,4.5 A5,2.5 0 1 0 3,4.5 Z M3,4.5 V11.5 A5,2.5 0 0 0 13,11.5 V4.5 M3,8 A5,2.5 0 0 0 13,8</Geometry>
     <Geometry x:Key="IconLogsGeometry">M4,2 H9 L12,5 V14 H4 Z M9,2 V5 H12 M6,7.5 H10 M6,10 H10 M6,12 H9</Geometry>
     <Geometry x:Key="IconMoonGeometry">M13.5,9.5 A5.75,5.75 0 1 1 6.5,2.5 A4.5,4.5 0 0 0 13.5,9.5 Z</Geometry>
     <Geometry x:Key="IconSunGeometry">M8,5.25 A2.75,2.75 0 1 0 8,10.75 A2.75,2.75 0 1 0 8,5.25 Z M8,1.25 V2.75 M8,13.25 V14.75 M1.25,8 H2.75 M13.25,8 H14.75 M3.25,3.25 L4.3,4.3 M11.7,11.7 L12.75,12.75 M12.75,3.25 L11.7,4.3 M4.3,11.7 L3.25,12.75</Geometry>

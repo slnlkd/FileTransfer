@@ -6,13 +6,16 @@ public partial class MainWindow
 {
     partial void ConfigureService(RemoteFileService service)
     {
-        var query = OracleNgFolderQuery.Load();
-        if (query is not null)
+        var settings = NgFilterSettings.Load();
+        OracleFailureAnalysisRepository? annotations = null;
+        if (settings is not null)
         {
+            var query = new OracleNgFolderQuery(settings);
             service.ListFilter = query.ApplyAsync;
             service.NgBatchQuery = query.FindBatchesAsync;
+            service.AnnotationRepository = annotations = new(settings);
         }
-        // 标注写 RCMDB.AutoLineFailureAnalysisLog；没有数据库配置时服务端自动回退到本地 JSON。
-        if (OracleFailureAnalysisRepository.TryLoad() is { } annotations) service.AnnotationRepository = annotations;
+        var diagnostics = new OracleAnnotationDiagnostics(settings, annotations, service.NgBatchQuery is not null);
+        service.AnnotationDiagnostics = new(diagnostics.Snapshot, diagnostics.VerifyAsync);
     }
 }

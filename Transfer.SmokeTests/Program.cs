@@ -36,6 +36,7 @@ async Task Verify(string path, SharedFile file)
 try
 {
     await BatchIdentityChecks.RunAsync(root, Check);
+    await AnnotationDatabaseChecks.RunAsync(root, Check);
     if (args.Contains("--batch-identity-only"))
     {
         Console.WriteLine($"批次身份专项通过，共 {passed} 项检查。");

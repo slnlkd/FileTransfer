@@ -23,6 +23,7 @@ public sealed class RemoteFileService : IAsyncDisposable
     // 可选的目录过滤扩展；未设置时列表请求保持原样。
     public Func<string, string, RemoteEntry[], Task<RemoteFilterResult>>? ListFilter { get; set; }
     public Func<string, DateTime, DateTime, CancellationToken, Task<RemoteBatchKey[]>>? NgBatchQuery { get; set; }
+    public AnnotationDatabaseDiagnostics? AnnotationDiagnostics { get; set; }
     public event Action<string>? Activity;
     public event Action<RemoteTransferProgress>? TransferProgress;
     public int Port => (listener?.LocalEndpoint as IPEndPoint)?.Port ?? 0;
@@ -100,6 +101,13 @@ public sealed class RemoteFileService : IAsyncDisposable
                 switch (request.Command)
                 {
                     case "hello": response = new(true, Protocol: RemoteProtocol.Version); break;
+                    case "annotation-db-info":
+                        response = new(true)
+                        {
+                            AnnotationDatabase = AnnotationDiagnostics is { } diagnostics
+                                ? await diagnostics.ReadAsync(request.Text == "verify", stop, ct) : null
+                        };
+                        break;
                     case "update-info":
                         var update = ReadUpdateManifest();
                         string updatePath = Path.Combine(UpdateDirectory, update.File);
@@ -157,12 +165,19 @@ public sealed class RemoteFileService : IAsyncDisposable
                         response = new(true, NgDays: await Annotations.GetNgOverviewAsync(request.Path, request.StartDate, request.EndDate, query, ct));
                         break;
                     case "annotation-get":
-                        var history = await Annotations.GetHistoryAsync(request.Path, ct);
-                        response = new(true, Annotation: history.FirstOrDefault(), Annotations: history);
+                        var (history, batchHasAnnotations) = await Annotations.GetHistoryStateAsync(request.Path, ct);
+                        response = new(true, Annotation: history.FirstOrDefault(), Annotations: history)
+                            { BatchHasAnnotations = batchHasAnnotations };
+                        break;
+                    case "annotation-target":
+                        response = new(true) { AnnotationTarget = await Annotations.GetTargetAsync(request.Path, ct) };
                         break;
                     case "annotation-add":
                     case "annotation-save": response = new(true, Annotation: await Annotations.SaveAsync(request, ct)); break;
-                    case "annotation-delete": response = new(true, Total: await Annotations.DeleteImageAsync(request.Path, request.ImageName, ct)); break;
+                    case "annotation-delete":
+                        response = new(true, Total: await Annotations.DeleteImageAsync(request.Path, request.ImageName, ct,
+                            request.RequireNgResult, request.NgResultId));
+                        break;
                     case "compress":
                         await ReportAsync(stream, request, "等待压缩", 0, 0, 0, ct);
                         await Store.Mutation.WaitAsync(ct);

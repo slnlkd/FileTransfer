@@ -29,6 +29,7 @@ public sealed class DirectoryNavigationState(Func<DateTime>? utcNow = null) : ID
     private bool navigating, disposed;
     public event Action<RemoteEntry[]>? PageReceived;
     public string Path { get; private set; } = "";
+    public string? RootName { get; private set; }
     public ObservableCollection<RemoteEntry> Entries { get; private set; } = [];
     public int Total { get; private set; }
     public bool AllLoaded { get; private set; } = true;
@@ -45,7 +46,7 @@ public sealed class DirectoryNavigationState(Func<DateTime>? utcNow = null) : ID
         client = endpoint;
         Version++;
         ListingVersion++;
-        Path = ""; Entries = []; Total = 0; AllLoaded = true;
+        Path = ""; RootName = null; Entries = []; Total = 0; AllLoaded = true;
         PageLoad = Task.CompletedTask;
         navigating = false;
         InvalidateCache();
@@ -68,7 +69,7 @@ public sealed class DirectoryNavigationState(Func<DateTime>? utcNow = null) : ID
             ct.ThrowIfCancellationRequested();
             if (cancel.IsCancellationRequested || version != Version || !ReferenceEquals(client, endpoint)) return null;
             var page = response.Entries ?? [];
-            Path = path; filter = value;
+            Path = path; filter = value; RootName = response.RootName;
             ListingVersion++;
             Entries = new(page);
             Total = response.Total > 0 ? response.Total : page.Length;
@@ -93,6 +94,7 @@ public sealed class DirectoryNavigationState(Func<DateTime>? utcNow = null) : ID
         using var cancel = CancellationTokenSource.CreateLinkedTokenSource(session.Token, ct);
         var target = Entries;
         string path = Path;
+        int cachedAtVersion = cacheVersion;
         try
         {
             var response = await endpoint.ListAsync(new("list", path, Filter: filter, Skip: target.Count, Take: PageSize), cancel.Token);
@@ -104,6 +106,8 @@ public sealed class DirectoryNavigationState(Func<DateTime>? utcNow = null) : ID
             if (version != Version || !ReferenceEquals(Entries, target)) return;
             foreach (var entry in page) target.Add(entry);
             AllLoaded = page.Length == 0 || Entries.Count >= Total;
+            if (AllLoaded && Entries.Count >= Total && string.IsNullOrEmpty(filter) && cachedAtVersion == cacheVersion)
+                cache[path] = (now(), target.ToArray());
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested && (version != Version || cancel.IsCancellationRequested)) { }
         catch (Exception) when (!ct.IsCancellationRequested && (version != Version || !ReferenceEquals(client, endpoint))) { }

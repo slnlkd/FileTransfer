@@ -35,6 +35,7 @@ internal static partial class RemoteWindowChecks
             case "logs": await CheckLogDirectoryOpeningAsync(temp); break;
             case "annotation": await CheckAnnotationReopenAsync(temp); await CheckServerAnnotationPanelAsync(temp); await CheckAnnotationWriteNavigationAsync(temp); break;
             case "interaction": await CheckNextNgBatchAsync(temp); break;
+            case "annotation-database": await CheckAnnotationDatabaseWindowAsync(temp); break;
             default: throw new ArgumentException("未知测试分组：" + group);
         }
     }
@@ -59,6 +60,7 @@ internal static partial class RemoteWindowChecks
         await CheckAnnotationReopenAsync(temp);
         await CheckServerAnnotationPanelAsync(temp);
         await CheckAnnotationWriteNavigationAsync(temp);
+        await CheckAnnotationDatabaseWindowAsync(temp);
         await CheckNextNgBatchAsync(temp);
         string root = Path.Combine(temp, "remote-ui"); Directory.CreateDirectory(root);
         Directory.CreateDirectory(Path.Combine(root, "文本"));
@@ -633,12 +635,16 @@ internal static partial class RemoteWindowChecks
             var themeGlyph = (System.Windows.Shapes.Path)updateClient.FindName("ThemeIcon");
             var logsGlyph = (System.Windows.Shapes.Path)(FindButton(updateClient, "查看日志")
                 ?? throw new Exception("缺少日志按钮")).Content;
-            foreach (var glyph in new[] { themeGlyph, logsGlyph })
+            var databaseButton = FindButton(updateClient, "标注数据库") ?? throw new Exception("缺少标注数据库按钮");
+            if (databaseButton.Content is not System.Windows.Shapes.Path databaseGlyph
+                || !ReferenceEquals(databaseButton.Style, updateClient.FindResource("RoundIconButton")))
+                throw new Exception("标注数据库应使用与主题和日志一致的圆形图标按钮");
+            foreach (var glyph in new[] { databaseGlyph, themeGlyph, logsGlyph })
             {
                 Console.WriteLine($"工具栏图标尺寸：{glyph.Name}，容器 {glyph.ActualWidth} × {glyph.ActualHeight}，图形 {glyph.RenderedGeometry.Bounds}");
                 if (glyph.ActualWidth <= 0 || glyph.ActualWidth > 14.01 || Math.Abs(glyph.ActualHeight - 14) > 0.01
                     || glyph.RenderedGeometry.Bounds.Height > 14.01)
-                    throw new Exception("实际窗口中的主题与日志图标应限制在 14 个逻辑像素内");
+                    throw new Exception("实际窗口中的数据库、主题与日志图标应限制在 14 个逻辑像素内");
             }
             if (Environment.GetEnvironmentVariable("FILETRANSFER_TOOLBAR_PREVIEW") is { Length: > 0 } previewPath)
             {

@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private readonly ClientUpdateService updateService = new();
     private RemoteUpdateInfo? pendingUpdate;
     private LogViewer? logViewer;
+    private AnnotationDatabaseWindow? annotationDatabaseWindow;
     // 连接期间每 30 分钟静默复查一次，发现新版本只显示蓝色提示，不打断使用。
     private readonly DispatcherTimer updateTimer = new() { Interval = TimeSpan.FromMinutes(30) };
     public MainWindow() : this(AppLogging.GetSettingsPath("remote-client.json")) { }
@@ -77,6 +78,7 @@ public partial class MainWindow : Window
             return;
         }
         connecting = true; ConnectButton.IsEnabled = false; EndpointBox.IsEnabled = false; Browser.IsEnabled = false;
+        annotationDatabaseWindow?.Close();
         updateCheck?.Cancel();
         updateCheck = null;
         pendingUpdate = null;
@@ -228,6 +230,25 @@ public partial class MainWindow : Window
             Dialog.Notify(this, "更新失败：" + ex.Message, "检查更新", DialogTone.Warning);
         }
     }
+    private void AnnotationDatabase_Click(object sender, RoutedEventArgs e)
+    {
+        if (connecting || connectedPort == 0)
+        {
+            SetStatus("请先连接服务端。", ThemeBrush("WarningBrush"));
+            return;
+        }
+        if (annotationDatabaseWindow is { } existing)
+        {
+            if (existing.WindowState == WindowState.Minimized) existing.WindowState = WindowState.Normal;
+            existing.Activate();
+            return;
+        }
+        var window = new AnnotationDatabaseWindow(new RemoteFileClient(connectedHost, connectedPort)) { Owner = this, Icon = Icon };
+        annotationDatabaseWindow = window;
+        window.Closed += (_, _) => annotationDatabaseWindow = null;
+        window.Show();
+    }
+
     private void Logs_Click(object sender, RoutedEventArgs e)
     {
         try
